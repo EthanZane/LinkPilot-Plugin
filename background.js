@@ -47,6 +47,9 @@ async function persistBatchReport(message) {
   if (message.promotionSiteId) promotionSiteMetadata.promotionSiteId = message.promotionSiteId;
   if (message.promotionSiteName) promotionSiteMetadata.promotionSiteName = message.promotionSiteName;
   if (message.promotionSiteUrl) promotionSiteMetadata.promotionSiteUrl = message.promotionSiteUrl;
+  const pageMetrics = message.pageMetrics && typeof message.pageMetrics === 'object'
+    ? { pageMetrics: message.pageMetrics }
+    : {};
   const entry = {
     batchId,
     urlIndex,
@@ -55,6 +58,7 @@ async function persistBatchReport(message) {
     aiContent,
     errorMessage,
     ...promotionSiteMetadata,
+    ...pageMetrics,
     timestamp: Date.now()
   };
   const existingIndex = results.findIndex((item) => item.batchId === batchId && item.urlIndex === urlIndex);
@@ -75,6 +79,7 @@ async function persistBatchReport(message) {
 
   await chrome.storage.local.set({ batchResults: results, batchReportedUrls: reported });
   console.log('[background] persistBatchReport <<< 写入完成, 当前results长度:', results.length, 'time:', new Date().toISOString());
+  return results.find((item) => item.batchId === batchId && item.urlIndex === urlIndex) || entry;
 }
 
 // content.js 确认评论已提交（标签页可能刷新，context 丢失，background 仍活着）
@@ -83,7 +88,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('[background] 收到 BATCH_HANDLE_CONFIRM >>>', { batchId: message.batchId, urlIndex: message.urlIndex, url: message.url, aiContentLen: message.aiContent ? message.aiContent.length : 0, sender: sender.tab ? sender.tab.id : 'N/A', time: new Date().toISOString() });
     (async () => {
       try {
-        await persistBatchReport({
+        const persistedEntry = await persistBatchReport({
           batchId: message.batchId,
           urlIndex: message.urlIndex,
           url: message.url || '',
@@ -103,7 +108,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           urlIndex: message.urlIndex,
           result: message.result || 'success',
           aiContent: message.aiContent || null,
-          errorMessage: message.errorMessage || null
+          errorMessage: message.errorMessage || null,
+          promotionSiteId: persistedEntry && persistedEntry.promotionSiteId || '',
+          promotionSiteName: persistedEntry && persistedEntry.promotionSiteName || '',
+          promotionSiteUrl: persistedEntry && persistedEntry.promotionSiteUrl || '',
+          pageMetrics: persistedEntry && persistedEntry.pageMetrics || null
         }).then(() => {
           console.log('[background] BATCH_CONFIRMED 发送成功');
         }).catch((e) => {
@@ -131,7 +140,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('[background] 收到 BATCH_REPORT_RESULT >>>', { batchId: message.batchId, urlIndex: message.urlIndex, result: message.result, sender: sender.tab ? sender.tab.id : 'N/A', time: new Date().toISOString() });
     (async () => {
       try {
-        await persistBatchReport(message);
+        const persistedEntry = await persistBatchReport(message);
+        // 失败等非提交结果同样要通知批量页，避免只能等到外层超时后才显示结果和页面指标。
+        chrome.runtime.sendMessage({
+          type: 'BATCH_CONFIRMED',
+          urlIndex: message.urlIndex,
+          result: message.result || 'fail',
+          aiContent: message.aiContent || null,
+          errorMessage: message.errorMessage || null,
+          promotionSiteId: persistedEntry && persistedEntry.promotionSiteId || '',
+          promotionSiteName: persistedEntry && persistedEntry.promotionSiteName || '',
+          promotionSiteUrl: persistedEntry && persistedEntry.promotionSiteUrl || '',
+          pageMetrics: persistedEntry && persistedEntry.pageMetrics || null
+        }).catch((error) => {
+          console.log('[background] 非提交结果确认消息无人接收，结果已完成本地保存:', error.message || String(error));
+        });
         console.log('[background] BATCH_REPORT_RESULT <<< sendResponse({ok:true})');
         sendResponse({ ok: true });
       } catch (e) {

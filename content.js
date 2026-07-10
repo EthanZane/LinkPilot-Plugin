@@ -4581,6 +4581,30 @@
   }
 
   /**
+   * 采集当前页面的总深度。使用多个根节点高度的最大值，兼容标准文档、怪异模式和动态内容页面。
+   */
+  function collectPageDepthMetrics() {
+    const root = document.documentElement;
+    const body = document.body;
+    const documentHeightPx = Math.max(
+      root ? root.scrollHeight : 0,
+      root ? root.offsetHeight : 0,
+      root ? root.clientHeight : 0,
+      body ? body.scrollHeight : 0,
+      body ? body.offsetHeight : 0,
+      body ? body.clientHeight : 0
+    );
+    const viewportHeightPx = Math.max(window.innerHeight || 0, root ? root.clientHeight : 0, 1);
+    const pageDepthScreens = Number((documentHeightPx / viewportHeightPx).toFixed(1));
+    return {
+      documentHeightPx,
+      viewportHeightPx,
+      pageDepthScreens,
+      measuredAt: Date.now()
+    };
+  }
+
+  /**
    * 将待确认结果写入 storage（页面刷新前同步落盘，batch.js 轮询可立即读到）
    */
   async function writePendingResult(batchId, urlIndex, url, result, aiContent, errorMessage) {
@@ -4603,6 +4627,7 @@
         aiContent,
         errorMessage,
         ...getBatchPromotionSiteMetadata(activeSite),
+        pageMetrics: collectPageDepthMetrics(),
         timestamp: Date.now()
       };
       const existingIndex = results.findIndex((item) => item.batchId === batchId && item.urlIndex === urlIndex);
@@ -4642,7 +4667,8 @@
       result,
       aiContent,
       errorMessage,
-      ...getBatchPromotionSiteMetadata()
+      ...getBatchPromotionSiteMetadata(),
+      pageMetrics: collectPageDepthMetrics()
     };
 
     // 主路径：background 先落盘 storage 再 sendResponse；页面跳转/关页前必须 await，否则 batch 收不到成功
@@ -4688,6 +4714,7 @@
           aiContent,
           errorMessage,
           ...getBatchPromotionSiteMetadata(),
+          pageMetrics: collectPageDepthMetrics(),
           timestamp: Date.now()
         };
         const existingIndex = results.findIndex((item) => item.batchId === batchId && item.urlIndex === urlIndex);

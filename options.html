@@ -717,7 +717,7 @@
 
       .stats-filter {
         display: grid;
-        grid-template-columns: auto 150px 150px 150px minmax(180px, 1fr) auto;
+        grid-template-columns: auto 140px 140px 140px 140px minmax(180px, 1fr) auto;
         align-items: center;
         gap: 8px;
         margin: 14px 0;
@@ -780,6 +780,54 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+
+      .batch-site-summary {
+        display: grid;
+        grid-template-columns: auto minmax(140px, 0.5fr) minmax(260px, 1fr);
+        gap: 10px;
+        align-items: center;
+        margin-top: 14px;
+        padding: 11px 12px;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        background: #eff6ff;
+        color: #334155;
+        font-size: 12px;
+      }
+
+      .batch-site-summary strong { color: #1d4ed8; }
+
+      .target-url-cell {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 180px;
+      }
+
+      .target-url-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .open-url-btn {
+        width: 26px;
+        height: 26px;
+        flex: 0 0 26px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #2563eb;
+        cursor: pointer;
+        font-size: 15px;
+      }
+
+      .open-url-btn:hover { background: #dbeafe; border-color: #93c5fd; }
 
       .stats-table tr.url-success td { background: #f0fdf4; }
       .stats-table tr.url-fail td { background: #fff5f5; }
@@ -1135,6 +1183,12 @@
                   <div id="costHint" class="hint warn" style="display:none; margin-top:8px;"></div>
                 </div>
 
+                <div class="batch-site-summary" id="batchSiteSummary">
+                  <strong>即将使用</strong>
+                  <span id="batchSiteSummaryName">未选择网站</span>
+                  <span id="batchSiteSummaryUrl">—</span>
+                </div>
+
                 <div class="action-bar" id="actionBar">
                   <button class="btn btn-primary" id="startBtn" disabled>开始批量处理</button>
                   <button class="btn btn-danger" id="stopBtn" style="display:none;">停止</button>
@@ -1210,6 +1264,14 @@
                     <option value="30-60">30-60 秒</option>
                     <option value="60+">大于 60 秒</option>
                   </select>
+                  <select id="filterPageDepth">
+                    <option value="all">全部页面深度</option>
+                    <option value="0-10">不超过 10 屏</option>
+                    <option value="10-20">10-20 屏</option>
+                    <option value="20-40">20-40 屏</option>
+                    <option value="40+">超过 40 屏</option>
+                    <option value="unknown">深度未知</option>
+                  </select>
                   <input type="text" id="filterKeyword" placeholder="搜索 URL 或内容" />
                   <span class="stats-count-label" id="statsCountLabel">显示 0 / 0 条</span>
                 </div>
@@ -1219,11 +1281,13 @@
                       <tr>
                         <th>#</th>
                         <th>目标页面</th>
+                        <th>网站 URL</th>
+                        <th>页面深度</th>
                         <th>结果</th>
                         <th>错误信息</th>
                         <th>AI 生成内容</th>
                         <th>耗时</th>
-                        <th>时间</th>
+                        <th>执行时间</th>
                       </tr>
                     </thead>
                     <tbody id="statsTableBody"></tbody>

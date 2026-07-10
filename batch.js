@@ -89,10 +89,14 @@ const statsRate = document.getElementById('statsRate');
 const filterResult = document.getElementById('filterResult');
 const filterDomain = document.getElementById('filterDomain');
 const filterTimeRange = document.getElementById('filterTimeRange');
+const filterPageDepth = document.getElementById('filterPageDepth');
 const filterKeyword = document.getElementById('filterKeyword');
 const statsTableBody = document.getElementById('statsTableBody');
 const statsTableWrap = document.getElementById('statsTableWrap');
 const statsCountLabel = document.getElementById('statsCountLabel');
+const batchSiteSummaryName = document.getElementById('batchSiteSummaryName');
+const batchSiteSummaryUrl = document.getElementById('batchSiteSummaryUrl');
+const batchSiteSummary = document.getElementById('batchSiteSummary');
 
 // 批量任务设置勾选框
 const batchAutoOpenPanel = document.getElementById('batchAutoOpenPanel');
@@ -157,6 +161,7 @@ async function loadBatchPromotionSites(preferredSiteId) {
     batchPromotionSiteSelect.appendChild(option);
     batchPromotionSiteSelect.disabled = true;
     batchPromotionSite = null;
+    updateBatchPromotionSiteSummary();
     return;
   }
 
@@ -169,12 +174,27 @@ async function loadBatchPromotionSites(preferredSiteId) {
   batchPromotionSiteSelect.disabled = false;
   batchPromotionSiteSelect.value = selectedSite.id;
   batchPromotionSite = normalizeBatchPromotionSite(selectedSite);
+  updateBatchPromotionSiteSummary();
 }
 
 function getSelectedBatchPromotionSite() {
   if (!batchPromotionSiteSelect) return batchPromotionSite;
   const selected = availablePromotionSites.find((site) => site.id === batchPromotionSiteSelect.value);
   return selected ? normalizeBatchPromotionSite(selected) : null;
+}
+
+/**
+ * 在开始按钮附近展示本批次将使用的网站，运行后改为锁定状态，降低误选网站的风险。
+ */
+function updateBatchPromotionSiteSummary() {
+  if (!batchSiteSummaryName || !batchSiteSummaryUrl) return;
+  const site = batchPromotionSite;
+  batchSiteSummaryName.textContent = site ? (site.name || '未命名网站') : '未选择网站';
+  batchSiteSummaryUrl.textContent = site && site.url ? site.url : '—';
+  if (batchSiteSummary) {
+    const label = batchSiteSummary.querySelector('strong');
+    if (label) label.textContent = status === 'idle' ? '即将使用' : '本批次使用';
+  }
 }
 
 // 加载全局勾选框设置
@@ -271,6 +291,7 @@ function bindEvents() {
   if (batchPromotionSiteSelect) {
     batchPromotionSiteSelect.addEventListener('change', () => {
       batchPromotionSite = getSelectedBatchPromotionSite();
+      updateBatchPromotionSiteSummary();
       console.log('[batch] 已选择本批次推广网站:', batchPromotionSite && batchPromotionSite.name);
     });
   }
@@ -300,7 +321,12 @@ function bindEvents() {
     // background 通知：结果已落盘，标签页可以安全关闭了
     if (message.type === 'BATCH_CONFIRMED') {
       console.log('[batch] 收到 BATCH_CONFIRMED >>>', { urlIndex: message.urlIndex, result: message.result, aiContentLen: message.aiContent ? message.aiContent.length : 0, tabsPendingConfirm: [...tabsPendingConfirm.entries()], tabsWaitingClose: [...tabsWaitingClose], time: new Date().toISOString() });
-      handleTabConfirmed(message.urlIndex, message.result, message.aiContent, message.errorMessage);
+      handleTabConfirmed(message.urlIndex, message.result, message.aiContent, message.errorMessage, {
+        promotionSiteId: message.promotionSiteId,
+        promotionSiteName: message.promotionSiteName,
+        promotionSiteUrl: message.promotionSiteUrl,
+        pageMetrics: message.pageMetrics
+      });
     }
   });
 
@@ -308,6 +334,7 @@ function bindEvents() {
   filterResult.addEventListener('change', renderStats);
   filterDomain.addEventListener('change', renderStats);
   filterTimeRange.addEventListener('change', renderStats);
+  if (filterPageDepth) filterPageDepth.addEventListener('change', renderStats);
   filterKeyword.addEventListener('input', debounce(renderStats, 300));
 }
 
@@ -983,6 +1010,10 @@ function handleTabResult(urlIndex, result, aiContent, errorMessage, forcedElapse
     result: result,
     aiContent: aiContent || null,
     errorMessage: errorMessage || null,
+    promotionSiteId: options.promotionSiteId || (batchPromotionSite && batchPromotionSite.id) || '',
+    promotionSiteName: options.promotionSiteName || (batchPromotionSite && batchPromotionSite.name) || '',
+    promotionSiteUrl: options.promotionSiteUrl || (batchPromotionSite && batchPromotionSite.url) || '',
+    pageMetrics: options.pageMetrics && typeof options.pageMetrics === 'object' ? options.pageMetrics : null,
     timestamp: Date.now(),
     elapsed,
     originalRow: item.originalRow || null  // 保存原始行数据用于导出
@@ -1087,7 +1118,7 @@ function parseIntegerForStats(value) {
 }
 
 // background 通知：结果已落盘，可以安全关闭标签页了
-function handleTabConfirmed(urlIndex, result, aiContent, errorMessage) {
+function handleTabConfirmed(urlIndex, result, aiContent, errorMessage, resultMetadata = {}) {
   console.log('[batch] handleTabConfirmed >>>', { urlIndex, result, aiContentLen: aiContent ? aiContent.length : 0, errorMessage, tabsPendingConfirmBefore: [...tabsPendingConfirm.entries()] });
 
   // 如果已经记录过结果（标签页可能已被 onRemoved 提前关闭清理），跳过 handleTabResult
@@ -1096,7 +1127,7 @@ function handleTabConfirmed(urlIndex, result, aiContent, errorMessage) {
     checkAllCompleted();
   } else {
     // 处理结果（更新 UI、写入 storage）
-    handleTabResult(urlIndex, result, aiContent, errorMessage);
+    handleTabResult(urlIndex, result, aiContent, errorMessage, undefined, resultMetadata);
   }
 
   // 查找并关闭标签页（如果还在的话）
@@ -1262,6 +1293,7 @@ function updateUI() {
   if (batchPromotionSiteSelect) {
     batchPromotionSiteSelect.disabled = availablePromotionSites.length === 0 || isRunning || isTerminated;
   }
+  updateBatchPromotionSiteSummary();
 
   // 进度、实时日志、底部操作：终止状态保持显示
   progressSection.style.display = (isIdle) ? 'none' : 'block';
@@ -1312,7 +1344,7 @@ function exportResults() {
 
   const originalRowLen = getExportSourceColumnCount(sampleResult.originalRow);
 
-  // 根据原始列数生成表头，保持与导入格式一致，最后加"运行结果"
+  // 根据原始列数生成表头，并追加本次自动化现场采集的结果字段。
   const originalHeaders = [];
   for (let i = 0; i < originalRowLen; i++) {
     if (i === 0) originalHeaders.push('页面AS');
@@ -1323,7 +1355,15 @@ function exportResults() {
     else if (i === 5) originalHeaders.push('外部链接数量');
     else originalHeaders.push(`列${i + 1}`);
   }
-  const header = [...originalHeaders, '运行结果'].join(',');
+  const resultHeaders = [
+    '网站URL',
+    '页面总高度(px)',
+    '视口高度(px)',
+    '页面总深度(屏)',
+    '执行时间',
+    '运行结果'
+  ];
+  const header = [...originalHeaders, ...resultHeaders].join(',');
 
   const escape = (val) => {
     if (val == null) return '';
@@ -1340,8 +1380,17 @@ function exportResults() {
     for (let i = 0; i < originalRowLen; i++) {
       baseCols.push(escape(r.originalRow[i] || ''));
     }
+    const metrics = r.pageMetrics || {};
     const runResult = getExportRunResult(r.result);
-    return [...baseCols, runResult].join(',');
+    const resultCols = [
+      escape(r.promotionSiteUrl || ''),
+      escape(metrics.documentHeightPx || ''),
+      escape(metrics.viewportHeightPx || ''),
+      escape(metrics.pageDepthScreens || ''),
+      escape(r.timestamp ? formatDateTime(new Date(r.timestamp)) : ''),
+      escape(runResult)
+    ];
+    return [...baseCols, ...resultCols].join(',');
   });
 
   const csv = [header, ...rows].join('\n');
@@ -1363,8 +1412,17 @@ function getExportSourceColumnCount(originalRow) {
   const lastValue = String(originalRow[len - 1] || '').trim();
   const knownResultValues = new Set(['√', '×', '需手动处理', '成功', '失败', '非法站点，已拦截']);
   if (knownResultValues.has(lastValue)) {
+    const hasGeneratedMetrics = len >= 12
+      && /^https?:\/\//i.test(String(originalRow[len - 6] || '').trim())
+      && Number.isFinite(Number(originalRow[len - 5]))
+      && Number.isFinite(Number(originalRow[len - 4]))
+      && Number.isFinite(Number(originalRow[len - 3]));
+    if (hasGeneratedMetrics) return len - 6;
     return len - 1;
   }
+
+  // 标准七列 CSV 的最后一列是待写入的运行结果，空值时不作为源数据列重复导出。
+  if (len === 7 && !lastValue) return 6;
 
   return len;
 }
@@ -1400,6 +1458,7 @@ function clearBatch() {
   filterDomain.innerHTML = '<option value="all">全部域名</option>';
   filterResult.value = 'all';
   filterTimeRange.value = 'all';
+  if (filterPageDepth) filterPageDepth.value = 'all';
   filterKeyword.value = '';
   setStatus('idle');
   updateUI();
@@ -1471,6 +1530,18 @@ function filterTimeBucket(elapsedSecs) {
   return true;
 }
 
+function filterPageDepthBucket(pageMetrics) {
+  if (!filterPageDepth || filterPageDepth.value === 'all') return true;
+  const depth = Number(pageMetrics && pageMetrics.pageDepthScreens);
+  if (!Number.isFinite(depth) || depth <= 0) return filterPageDepth.value === 'unknown';
+  if (filterPageDepth.value === 'unknown') return false;
+  if (filterPageDepth.value === '0-10') return depth <= 10;
+  if (filterPageDepth.value === '10-20') return depth > 10 && depth <= 20;
+  if (filterPageDepth.value === '20-40') return depth > 20 && depth <= 40;
+  if (filterPageDepth.value === '40+') return depth > 40;
+  return true;
+}
+
 function renderStats() {
   if (localResults.length === 0) {
     statsPanel.classList.remove('visible');
@@ -1505,8 +1576,9 @@ function renderStats() {
     if (resultFilter !== 'all' && r.result !== resultFilter) return false;
     if (domainFilter !== 'all' && extractDomain(r.url) !== domainFilter) return false;
     if (!filterTimeBucket(r.elapsed)) return false;
+    if (!filterPageDepthBucket(r.pageMetrics)) return false;
     if (kw) {
-      const haystack = (r.url + ' ' + (r.aiContent || '') + ' ' + (r.errorMessage || '')).toLowerCase();
+      const haystack = (r.url + ' ' + (r.promotionSiteUrl || '') + ' ' + (r.aiContent || '') + ' ' + (r.errorMessage || '')).toLowerCase();
       if (!haystack.includes(kw)) return false;
     }
     return true;
@@ -1521,9 +1593,17 @@ function renderStats() {
     tr.className = 'url-' + r.result;
 
     const elapsedStr = r.elapsed != null ? r.elapsed + 's' : '—';
-    const timeStr = r.timestamp ? formatTime(new Date(r.timestamp)) : '—';
-    const domain = extractDomain(r.url);
+    const timeStr = r.timestamp ? formatDateTime(new Date(r.timestamp)) : '—';
     const shortUrl = r.url.length > 40 ? r.url.substring(0, 37) + '…' : r.url;
+    const promotionSiteUrl = r.promotionSiteUrl || '—';
+    const shortPromotionSiteUrl = promotionSiteUrl.length > 42
+      ? promotionSiteUrl.substring(0, 39) + '…'
+      : promotionSiteUrl;
+    const pageDepth = Number(r.pageMetrics && r.pageMetrics.pageDepthScreens);
+    const pageDepthStr = Number.isFinite(pageDepth) && pageDepth > 0 ? `${pageDepth} 屏` : '—';
+    const pageDepthTitle = Number.isFinite(pageDepth) && pageDepth > 0
+      ? `页面高度 ${r.pageMetrics.documentHeightPx || 0}px，视口高度 ${r.pageMetrics.viewportHeightPx || 0}px`
+      : '未采集到页面深度';
 
     const aiCell = document.createElement('td');
     if (r.aiContent) {
@@ -1540,10 +1620,23 @@ function renderStats() {
 
     tr.innerHTML = `
       <td style="color:#9ca3af;width:40px;text-align:center;">${r.originalIndex + 1}</td>
-      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(r.url)}">${escapeHtml(shortUrl)}</td>
+      <td title="${escapeHtml(r.url)}">
+        <div class="target-url-cell">
+          <span class="target-url-text">${escapeHtml(shortUrl)}</span>
+          <button type="button" class="open-url-btn" title="在新标签页打开目标页面" aria-label="在新标签页打开目标页面">↗</button>
+        </div>
+      </td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(promotionSiteUrl)}">${escapeHtml(shortPromotionSiteUrl)}</td>
+      <td style="white-space:nowrap;" title="${escapeHtml(pageDepthTitle)}">${pageDepthStr}</td>
       <td><span class="result-badge ${r.result}">${getResultText(r.result)}</span></td>
     `;
     tr.className = `url-${r.result}`;
+    const openUrlButton = tr.querySelector('.open-url-btn');
+    if (openUrlButton) {
+      openUrlButton.addEventListener('click', () => {
+        chrome.tabs.create({ url: r.url, active: true });
+      });
+    }
 
     const errCell = document.createElement('td');
     if (r.errorMessage) {
@@ -1733,11 +1826,14 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function formatTime(date) {
+function formatDateTime(date) {
+  const y = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   const h = String(date.getHours()).padStart(2, '0');
   const m = String(date.getMinutes()).padStart(2, '0');
   const s = String(date.getSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
+  return `${y}-${month}-${day} ${h}:${m}:${s}`;
 }
 
 function debounce(fn, delay) {
