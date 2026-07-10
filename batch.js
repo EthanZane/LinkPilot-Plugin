@@ -1,5 +1,9 @@
 // 批量外链评论自动化 - 扩展端核心逻辑（本地批次管理）
 
+// 设置页会同时加载 options.js 和 batch.js；使用独立作用域隔离顶层状态，避免同名配置键导致整份批量脚本停止执行。
+(() => {
+  'use strict';
+
 // ==================== 配置 ====================
 const POLL_INTERVAL = 3000;
 const TIMEOUT_CHECK_INTERVAL = 5000;
@@ -107,10 +111,17 @@ const batchAutoSubmit = document.getElementById('batchAutoSubmit');
 const BATCH_SETTINGS_KEY = 'batch_task_settings';
 const BATCH_URLS_KEY = 'batch_task_urls';
 const BATCH_SITES_CONFIG_STORAGE_KEY = 'promotion_sites_config';
+const BATCH_WEBSITE_URL_STORAGE_KEY = 'promotion_website_url';
+const BATCH_WEBSITE_CONTENT_STORAGE_KEY = 'promotion_website_content';
+const BATCH_USER_NAME_STORAGE_KEY = 'auto_fill_user_name';
+const BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
+const BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY = 'auto_comment_batch_selected_promotion_site_id';
 
 // 批次启动时锁定推广网站快照，防止运行过程中切换设置导致同一批次混用网站资料。
 let availablePromotionSites = [];
 let batchPromotionSite = null;
+let batchPromotionSiteUserSelected = false;
+let batchSavedPromotionSiteId = '';
 
 // 全局勾选框设置的 storage.sync 键
 const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
@@ -120,10 +131,12 @@ const batchPromotionSiteSelect = document.getElementById('batchPromotionSiteSele
  * 规范化批量任务使用的网站快照，仅保留生成评论和填写表单需要的字段。
  */
 function normalizeBatchPromotionSite(site) {
+  const url = String(site && site.url || '').trim();
+  const name = String(site && site.name || '').trim();
   return {
-    id: String(site && site.id || '').trim(),
-    name: String(site && site.name || '').trim(),
-    url: String(site && site.url || '').trim(),
+    id: String(site && site.id || url || name || 'default_site').trim(),
+    name,
+    url,
     content: String(site && site.content || '').trim(),
     anchors: Array.isArray(site && site.anchors)
       ? site.anchors.map((anchor) => ({
@@ -136,45 +149,185 @@ function normalizeBatchPromotionSite(site) {
 }
 
 /**
- * 从网站管理配置中加载可用站点，并默认选中网站管理里标记的当前站点。
+ * 生成批量页下拉框文案，选择只作用于本批次，不回写网站管理配置。
  */
-async function loadBatchPromotionSites(preferredSiteId) {
-  const data = await new Promise((resolve) => {
-    chrome.storage.local.get([BATCH_SITES_CONFIG_STORAGE_KEY], resolve);
-  });
-  const config = data && data[BATCH_SITES_CONFIG_STORAGE_KEY];
-  availablePromotionSites = Array.isArray(config && config.sites)
-    ? config.sites.map(normalizeBatchPromotionSite).filter((site) => site.id && site.url && site.content)
-    : [];
+function formatBatchPromotionSiteOption(site) {
+  const name = site.name || site.url || '未命名网站';
+  return `${name} - ${site.url || '未填写 URL'}`;
+}
 
+/**
+ * 从配置对象提取网站列表。批量页允许展示已配置但内容不完整的网站，开始执行时再做完整性校验。
+ */
+function getBatchPromotionSitesFromConfig(config) {
+  if (!config || !Array.isArray(config.sites)) return [];
+  return config.sites
+    .map(normalizeBatchPromotionSite)
+    .filter((site) => site.id && (site.name || site.url || site.content));
+}
+
+/**
+ * 设置批量推广网站下拉框的临时状态，避免初始化期间出现空白选择框。
+ */
+function setBatchPromotionSiteSelectMessage(text, disabled = false) {
   if (!batchPromotionSiteSelect) return;
-  const requestedId = preferredSiteId || (config && config.activeSiteId) || '';
+  batchPromotionSiteSelect.innerHTML = '';
+  const option = document.createElement('option');
+  option.value = '';
+  option.textContent = text;
+  option.label = text;
+  batchPromotionSiteSelect.appendChild(option);
+  batchPromotionSiteSelect.selectedIndex = 0;
+  batchPromotionSiteSelect.disabled = disabled;
+}
+
+/**
+ * 渲染批量页网站下拉框，默认选中上次选择的网站；没有历史选择时使用第一个网站。
+ */
+function renderBatchPromotionSiteSelect(preferredSiteId) {
+  if (!batchPromotionSiteSelect) return;
+  const requestedId = preferredSiteId || batchSavedPromotionSiteId || '';
   const selectedSite = availablePromotionSites.find((site) => site.id === requestedId)
     || availablePromotionSites[0]
     || null;
 
   batchPromotionSiteSelect.innerHTML = '';
   if (availablePromotionSites.length === 0) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = '请先在网站管理中配置网站';
-    batchPromotionSiteSelect.appendChild(option);
-    batchPromotionSiteSelect.disabled = true;
+    setBatchPromotionSiteSelectMessage('未读取到网站，请先保存网站管理', false);
     batchPromotionSite = null;
     updateBatchPromotionSiteSummary();
+    updateUI();
     return;
   }
 
   availablePromotionSites.forEach((site) => {
     const option = document.createElement('option');
     option.value = site.id;
-    option.textContent = `${site.name || site.url} (${site.url})`;
+    option.textContent = formatBatchPromotionSiteOption(site);
+    option.label = option.textContent;
     batchPromotionSiteSelect.appendChild(option);
   });
   batchPromotionSiteSelect.disabled = false;
   batchPromotionSiteSelect.value = selectedSite.id;
+  if (batchPromotionSiteSelect.selectedIndex < 0) {
+    batchPromotionSiteSelect.selectedIndex = 0;
+  }
+  const selectedOption = batchPromotionSiteSelect.options[batchPromotionSiteSelect.selectedIndex];
+  const selectedByDom = selectedOption
+    ? availablePromotionSites.find((site) => site.id === selectedOption.value)
+    : null;
   batchPromotionSite = normalizeBatchPromotionSite(selectedSite);
+  if (selectedByDom) {
+    batchPromotionSite = normalizeBatchPromotionSite(selectedByDom);
+  }
   updateBatchPromotionSiteSummary();
+  updateUI();
+}
+
+/**
+ * 应用网站管理页广播出的最新配置，让批量页能看到尚未写入 storage 的当前页面配置快照。
+ */
+function applyBatchSitesConfig(config, preferredSiteId) {
+  if (!config || !Array.isArray(config.sites)) return false;
+  availablePromotionSites = getBatchPromotionSitesFromConfig(config);
+  renderBatchPromotionSiteSelect(preferredSiteId || batchSavedPromotionSiteId);
+  return availablePromotionSites.length > 0;
+}
+
+// 暴露给 options.js 直接调用，避免同页脚本初始化时序导致批量下拉框错过网站管理数据。
+window.AutoCommentApplyBatchSitesConfig = (config, preferredSiteId) => {
+  return applyBatchSitesConfig(config, preferredSiteId);
+};
+
+if (window.AutoCommentSitesConfig) {
+  applyBatchSitesConfig(window.AutoCommentSitesConfig);
+}
+
+/**
+ * 从旧版提示词字段里按关键词提取网站资料，兼容早期单网站配置备份。
+ */
+function pickLegacyBatchPromptValue(values, keywords) {
+  if (!values || typeof values !== 'object') return '';
+  const normalizedKeywords = keywords.map((keyword) => String(keyword).toLowerCase());
+  const entry = Object.entries(values).find(([key, value]) => {
+    if (!value) return false;
+    const normalizedKey = String(key || '').toLowerCase();
+    return normalizedKeywords.some((keyword) => normalizedKey.includes(keyword));
+  });
+  return entry ? String(entry[1] || '').trim() : '';
+}
+
+/**
+ * 构造旧版单网站配置，确保批量页和实际内容脚本读取当前网站时行为一致。
+ */
+function buildLegacyBatchPromotionSite(syncData) {
+  const legacyUrl = String(syncData && syncData[BATCH_WEBSITE_URL_STORAGE_KEY] || '').trim()
+    || pickLegacyBatchPromptValue(syncData && syncData[BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY], [
+      '网站链接',
+      '网址',
+      'website link',
+      'website url',
+      'url'
+    ]);
+  const legacyContent = String(syncData && syncData[BATCH_WEBSITE_CONTENT_STORAGE_KEY] || '').trim()
+    || pickLegacyBatchPromptValue(syncData && syncData[BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY], [
+      '网站内容',
+      '网站介绍',
+      'website content',
+      'site content',
+      'description'
+    ]);
+  const legacyName = String(syncData && syncData[BATCH_USER_NAME_STORAGE_KEY] || '').trim();
+  return normalizeBatchPromotionSite({
+    id: 'default_site',
+    name: legacyName || legacyUrl || '默认网站',
+    url: legacyUrl,
+    content: legacyContent,
+    anchors: []
+  });
+}
+
+/**
+ * 从网站管理配置中加载可用站点，并默认选中上次用于批量任务的网站。
+ * 读取顺序与 content.js 保持一致：local 多站点配置 > sync 多站点配置 > 旧版当前网站字段。
+ */
+async function loadBatchPromotionSites(preferredSiteId) {
+  setBatchPromotionSiteSelectMessage('正在加载网站...', true);
+  const runtimeConfig = window.AutoCommentSitesConfig;
+  if (applyBatchSitesConfig(runtimeConfig, preferredSiteId)) {
+    return;
+  }
+
+  const localData = await new Promise((resolve) => {
+    chrome.storage.local.get([BATCH_SITES_CONFIG_STORAGE_KEY, BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY], resolve);
+  });
+  batchSavedPromotionSiteId = String(localData && localData[BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY] || '').trim();
+
+  const syncData = await new Promise((resolve) => {
+    chrome.storage.sync.get([
+      BATCH_SITES_CONFIG_STORAGE_KEY,
+      BATCH_WEBSITE_URL_STORAGE_KEY,
+      BATCH_WEBSITE_CONTENT_STORAGE_KEY,
+      BATCH_USER_NAME_STORAGE_KEY,
+      BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY
+    ], resolve);
+  });
+
+  const localConfig = localData && localData[BATCH_SITES_CONFIG_STORAGE_KEY];
+  const syncConfig = syncData && syncData[BATCH_SITES_CONFIG_STORAGE_KEY];
+  const config = Array.isArray(localConfig && localConfig.sites) && localConfig.sites.length > 0
+    ? localConfig
+    : syncConfig;
+  availablePromotionSites = getBatchPromotionSitesFromConfig(config);
+
+  if (availablePromotionSites.length === 0) {
+    const legacySite = buildLegacyBatchPromotionSite(syncData || {});
+    if (legacySite.url || legacySite.content) {
+      availablePromotionSites = [legacySite];
+    }
+  }
+
+  renderBatchPromotionSiteSelect(preferredSiteId || batchSavedPromotionSiteId);
 }
 
 function getSelectedBatchPromotionSite() {
@@ -202,9 +355,9 @@ async function loadBatchCheckboxSettings() {
   return new Promise((resolve) => {
     chrome.storage.sync.get([BATCH_CHECKBOX_SETTINGS_KEY], (data) => {
       const saved = data[BATCH_CHECKBOX_SETTINGS_KEY] || {};
-      batchAutoOpenPanel.checked = !!saved.autoOpenPanel;
-      batchAutoGenerate.checked = !!saved.autoGenerate;
-      batchAutoSubmit.checked = !!saved.autoSubmit;
+      batchAutoOpenPanel.checked = saved.autoOpenPanel !== false;
+      batchAutoGenerate.checked = saved.autoGenerate !== false;
+      batchAutoSubmit.checked = saved.autoSubmit !== false;
       console.log('[batch] 已加载全局勾选框设置:', saved);
       resolve();
     });
@@ -290,7 +443,10 @@ function bindEvents() {
 
   if (batchPromotionSiteSelect) {
     batchPromotionSiteSelect.addEventListener('change', () => {
+      batchPromotionSiteUserSelected = true;
+      batchSavedPromotionSiteId = batchPromotionSiteSelect.value;
       batchPromotionSite = getSelectedBatchPromotionSite();
+      chrome.storage.local.set({ [BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY]: batchPromotionSiteSelect.value }, () => {});
       updateBatchPromotionSiteSummary();
       console.log('[batch] 已选择本批次推广网站:', batchPromotionSite && batchPromotionSite.name);
     });
@@ -338,7 +494,7 @@ function bindEvents() {
   filterKeyword.addEventListener('input', debounce(renderStats, 300));
 }
 
-// 网站管理更新当前站点后，同步刷新尚未启动批次的网站选择器。
+// 网站管理更新网站列表后，同步刷新尚未启动批次的网站选择器。
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (
     areaName !== 'local'
@@ -346,8 +502,19 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     || status === 'running'
     || status === 'terminated'
   ) return;
-  const nextConfig = changes[BATCH_SITES_CONFIG_STORAGE_KEY].newValue;
-  loadBatchPromotionSites(nextConfig && nextConfig.activeSiteId);
+  const preferredSiteId = batchPromotionSiteUserSelected && batchPromotionSiteSelect
+    ? batchPromotionSiteSelect.value
+    : batchSavedPromotionSiteId;
+  loadBatchPromotionSites(preferredSiteId);
+});
+
+// 设置页的网站管理数据加载或编辑后会广播当前配置，批量页据此立即刷新下拉框。
+window.addEventListener('autoCommentSitesConfigChanged', (event) => {
+  if (status === 'running' || status === 'terminated') return;
+  const preferredSiteId = batchPromotionSiteUserSelected && batchPromotionSiteSelect && batchPromotionSiteSelect.value
+    ? batchPromotionSiteSelect.value
+    : '';
+  applyBatchSitesConfig(event.detail, preferredSiteId);
 });
 
 // ==================== CSV 解析 ====================
@@ -1291,7 +1458,7 @@ function updateUI() {
   exportBtn.disabled = localResults.length === 0;
   clearBtn.disabled = isRunning;
   if (batchPromotionSiteSelect) {
-    batchPromotionSiteSelect.disabled = availablePromotionSites.length === 0 || isRunning || isTerminated;
+    batchPromotionSiteSelect.disabled = isRunning || isTerminated;
   }
   updateBatchPromotionSiteSummary();
 
@@ -1866,3 +2033,5 @@ function debounce(fn, delay) {
     timer = setTimeout(() => fn.apply(this, args), delay);
   };
 }
+
+})();

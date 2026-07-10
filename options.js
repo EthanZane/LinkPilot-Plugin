@@ -8,8 +8,10 @@ const LEGACY_SKILL_TEMPLATE_STORAGE_KEY = 'qwen_skill_template';
 const LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
 const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
 const AI_CONFIG_STORAGE_KEY = 'auto_comment_ai_config';
+const TIMEOUT_STORAGE_KEY = 'batch_timeout_seconds';
+const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
 
-const CONFIG_VERSION = 4;
+const CONFIG_VERSION = 5;
 
 const ACTIVE_STORAGE_KEYS = [
   WEBSITE_URL_STORAGE_KEY,
@@ -20,12 +22,23 @@ const ACTIVE_STORAGE_KEYS = [
   SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
 ];
 
-const IMPORT_COMPAT_STORAGE_KEYS = [
+// 配置备份只导出可复用设置，不导出批次结果、当前任务 URL 和冷却记录等运行态数据。
+const SYNC_CONFIG_STORAGE_KEYS = [
   ...ACTIVE_STORAGE_KEYS,
-  SITES_CONFIG_STORAGE_KEY,
+  TIMEOUT_STORAGE_KEY,
+  BATCH_CHECKBOX_SETTINGS_KEY,
   LEGACY_SKILL_TEMPLATE_STORAGE_KEY,
-  LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY,
-  AI_CONFIG_STORAGE_KEY
+  LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY
+];
+
+const LOCAL_CONFIG_STORAGE_KEYS = [
+  AI_CONFIG_STORAGE_KEY,
+  SITES_CONFIG_STORAGE_KEY
+];
+
+const IMPORT_COMPAT_STORAGE_KEYS = [
+  ...SYNC_CONFIG_STORAGE_KEYS,
+  ...LOCAL_CONFIG_STORAGE_KEYS
 ];
 
 /**
@@ -98,7 +111,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const anchorList = document.getElementById('anchorList');
   const newSiteBtn = document.getElementById('newSiteBtn');
   const addAnchorTextsBtn = document.getElementById('addAnchorTextsBtn');
-  const setActiveSiteBtn = document.getElementById('setActiveSiteBtn');
   const deleteSiteBtn = document.getElementById('deleteSiteBtn');
   const userEmailInput = document.getElementById('userEmail');
   const userPasswordInput = document.getElementById('userPassword');
@@ -418,12 +430,6 @@ document.addEventListener('DOMContentLoaded', () => {
       || null;
   }
 
-  function getActiveSite() {
-    return sitesConfig.sites.find((site) => site.id === sitesConfig.activeSiteId)
-      || sitesConfig.sites[0]
-      || null;
-  }
-
   function updateEditingSiteInMemory(partial) {
     const site = getEditingSite();
     if (!site) return null;
@@ -455,7 +461,6 @@ document.addEventListener('DOMContentLoaded', () => {
       button.innerHTML = `
         <div class="site-item-name">
           <span>${escapeHtml(site.name || '未命名网站')}</span>
-          ${site.id === sitesConfig.activeSiteId ? '<span class="site-current-badge">当前</span>' : ''}
         </div>
         <div class="site-item-url">${escapeHtml(site.url || '未填写 URL')}</div>
       `;
@@ -474,7 +479,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!site || site.anchors.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'anchor-empty';
-      empty.textContent = '当前站点还没有锚文本。未配置时，AI 会根据页面上下文自然生成锚文本。';
+      empty.textContent = '这个网站还没有锚文本。未配置时，AI 会根据页面上下文自然生成锚文本。';
       anchorList.appendChild(empty);
       return;
     }
@@ -524,7 +529,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function persistSitesConfig(callback) {
-    const activeSite = getActiveSite();
+    const activeSite = sitesConfig.sites[0] || null;
     const localPayload = {
       [SITES_CONFIG_STORAGE_KEY]: sitesConfig
     };
@@ -546,7 +551,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      // 这些旧字段继续写入 sync，给旧逻辑和导出配置提供当前站点兜底值。
+      // 这些旧字段继续写入 sync，给旧逻辑和导出配置提供单网站兜底值。
       chrome.storage.sync.set(syncPayload, () => {
         if (chrome.runtime.lastError) {
           const message = chrome.runtime.lastError.message || String(chrome.runtime.lastError);
@@ -569,6 +574,18 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/'/g, '&#39;');
   }
 
+  // 将网站管理列表快照广播给批量页。批量页只读取这份快照，不会反向修改网站管理配置。
+  function publishSitesConfigForBatch() {
+    if (!sitesConfig || !Array.isArray(sitesConfig.sites)) return;
+    saveEditingSiteDraft();
+    const snapshot = clone(sitesConfig);
+    window.AutoCommentSitesConfig = snapshot;
+    if (typeof window.AutoCommentApplyBatchSitesConfig === 'function') {
+      window.AutoCommentApplyBatchSitesConfig(snapshot);
+    }
+    window.dispatchEvent(new CustomEvent('autoCommentSitesConfigChanged', { detail: snapshot }));
+  }
+
   function loadSettings() {
     chrome.storage.sync.get(IMPORT_COMPAT_STORAGE_KEYS, (syncResult) => {
       if (chrome.runtime.lastError) {
@@ -589,8 +606,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           sitesConfig = normalizeSitesConfig(localResult[SITES_CONFIG_STORAGE_KEY], data);
         }
-        editingSiteId = sitesConfig.activeSiteId;
+        editingSiteId = sitesConfig.sites[0] ? sitesConfig.sites[0].id : sitesConfig.activeSiteId;
         fillSiteForm(getEditingSite());
+        // 将旧版字段或导入数据规范化后写回本地存储，保证批量页和内容脚本都能读取同一份网站列表。
+        chrome.storage.local.set({ [SITES_CONFIG_STORAGE_KEY]: sitesConfig }, () => {});
+        publishSitesConfigForBatch();
       });
     });
 
@@ -639,6 +659,7 @@ document.addEventListener('DOMContentLoaded', () => {
   requiredSettingsFields.forEach(({ el }) => {
     el.addEventListener('input', () => {
       el.classList.toggle('is-invalid', !(el.checkValidity() && !!el.value.trim()));
+      publishSitesConfigForBatch();
     });
   });
 
@@ -667,6 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         renderSiteList();
         fillSiteForm(site);
+        publishSitesConfigForBatch();
         showStatus(statusEl, successText, 3500);
       });
     } catch (error) {
@@ -700,27 +722,8 @@ document.addEventListener('DOMContentLoaded', () => {
       editingSiteId = site.id;
       renderSiteList();
       fillSiteForm(site);
+      publishSitesConfigForBatch();
       showStatus(settingsStatusEl, '已创建新网站，请填写后保存', 2600);
-    });
-  }
-
-  if (setActiveSiteBtn) {
-    setActiveSiteBtn.addEventListener('click', () => {
-      if (!validateRequiredSettings()) return;
-      try {
-        const site = readSiteForm();
-        const index = sitesConfig.sites.findIndex((item) => item.id === site.id);
-        if (index >= 0) sitesConfig.sites[index] = site;
-        sitesConfig.activeSiteId = site.id;
-        editingSiteId = site.id;
-        persistSitesConfig(() => {
-          renderSiteList();
-          fillSiteForm(site);
-          showStatus(settingsStatusEl, `当前站点：${site.name}`, 2600);
-        });
-      } catch (error) {
-        showStatus(settingsStatusEl, error.message || '站点配置无效', 3000);
-      }
     });
   }
 
@@ -737,9 +740,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (sitesConfig.activeSiteId === site.id) {
         sitesConfig.activeSiteId = sitesConfig.sites[0].id;
       }
-      editingSiteId = sitesConfig.activeSiteId;
+      editingSiteId = sitesConfig.sites[0].id;
       persistSitesConfig(() => {
         fillSiteForm(getEditingSite());
+        publishSitesConfigForBatch();
         showStatus(settingsStatusEl, '网站已删除');
       });
     });
@@ -765,6 +769,7 @@ document.addEventListener('DOMContentLoaded', () => {
       site.anchors.push(...nextAnchors);
       anchorTextInput.value = '';
       renderAnchorList(site);
+      publishSitesConfigForBatch();
       showStatus(settingsStatusEl, `已添加 ${nextAnchors.length} 个锚文本，请保存站点`, 2600);
     });
   }
@@ -787,6 +792,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (event.target.dataset.anchorAction === 'toggle') {
       anchor.enabled = !!event.target.checked;
       row.classList.toggle('is-disabled', !anchor.enabled);
+      publishSitesConfigForBatch();
       showStatus(settingsStatusEl, '锚文本状态已修改，请保存站点', 2400);
     }
   });
@@ -798,6 +804,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const anchor = site.anchors.find((item) => item.id === row.dataset.anchorId);
     if (!anchor) return;
     anchor.text = normalizeText(event.target.value);
+    publishSitesConfigForBatch();
   });
 
   anchorList.addEventListener('click', (event) => {
@@ -808,6 +815,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!row || !site) return;
     site.anchors = site.anchors.filter((item) => item.id !== row.dataset.anchorId);
     renderAnchorList(site);
+    publishSitesConfigForBatch();
     showStatus(settingsStatusEl, '锚文本已删除，请保存站点', 2400);
   });
 
@@ -967,16 +975,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (exportConfigBtn) {
     exportConfigBtn.addEventListener('click', () => {
-      chrome.storage.sync.get(ACTIVE_STORAGE_KEYS, (syncResult) => {
+      chrome.storage.sync.get(SYNC_CONFIG_STORAGE_KEYS, (syncResult) => {
         if (chrome.runtime.lastError) {
           showImportExportStatus('导出失败：' + chrome.runtime.lastError.message, true);
           return;
         }
 
-        chrome.storage.local.get([AI_CONFIG_STORAGE_KEY, SITES_CONFIG_STORAGE_KEY], (localResult) => {
+        chrome.storage.local.get(LOCAL_CONFIG_STORAGE_KEYS, (localResult) => {
+          if (chrome.runtime.lastError) {
+            showImportExportStatus('导出失败：' + chrome.runtime.lastError.message, true);
+            return;
+          }
+
           saveEditingSiteDraft();
-          const activeSite = getActiveSite();
-          const exportSitesConfig = normalizeSitesConfig(localResult[SITES_CONFIG_STORAGE_KEY] || sitesConfig, syncResult || {});
+          const exportSitesConfig = normalizeSitesConfig(
+            sitesConfig && Array.isArray(sitesConfig.sites) && sitesConfig.sites.length > 0
+              ? sitesConfig
+              : localResult[SITES_CONFIG_STORAGE_KEY],
+            syncResult || {}
+          );
+          const activeSite = exportSitesConfig.sites[0] || null;
+          const exportAiConfig = normalizeAiConfig(localResult[AI_CONFIG_STORAGE_KEY] || aiConfig);
           const mergedData = {
             ...syncResult,
             [SITES_CONFIG_STORAGE_KEY]: exportSitesConfig,
@@ -984,22 +1003,15 @@ document.addEventListener('DOMContentLoaded', () => {
             [WEBSITE_CONTENT_STORAGE_KEY]: activeSite ? activeSite.content : websiteContentInput.value.trim(),
             [USER_NAME_STORAGE_KEY]: activeSite ? activeSite.name : '',
             [USER_EMAIL_STORAGE_KEY]: userEmailInput.value.trim(),
-            [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim()
+            [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim(),
+            [AI_CONFIG_STORAGE_KEY]: exportAiConfig
           };
-          const sanitizedAiConfig = normalizeAiConfig(localResult[AI_CONFIG_STORAGE_KEY] || aiConfig);
-          sanitizedAiConfig.providers = sanitizedAiConfig.providers.map((provider) => ({
-            ...provider,
-            apiKey: ''
-          }));
 
           const config = {
             _version: CONFIG_VERSION,
             _exportTime: new Date().toISOString(),
-            _note: '出于安全考虑，导出的配置不会包含 AI API Key。',
-            data: {
-              ...mergedData,
-              [AI_CONFIG_STORAGE_KEY]: sanitizedAiConfig
-            }
+            _note: '此配置备份包含 AI API Key、网站资料、表单基础信息和批量设置，请只在可信环境保存和导入。',
+            data: mergedData
           };
 
           if (!exportSitesConfig.sites.some((site) => site.url && site.content)) {
@@ -1016,7 +1028,7 @@ document.addEventListener('DOMContentLoaded', () => {
           a.click();
           a.remove();
           URL.revokeObjectURL(url);
-          showImportExportStatus('配置已导出，API Key 未包含在文件中。', false);
+          showImportExportStatus('配置已完整导出，包含 API Key。', false);
         });
       });
     });
@@ -1042,7 +1054,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           const syncToSave = {};
-          ACTIVE_STORAGE_KEYS.forEach((key) => {
+          SYNC_CONFIG_STORAGE_KEYS.forEach((key) => {
             if (importedData[key] !== undefined) {
               syncToSave[key] = importedData[key];
             }
@@ -1079,6 +1091,11 @@ document.addEventListener('DOMContentLoaded', () => {
               return;
             }
             chrome.storage.local.set(localToSave, () => {
+              if (chrome.runtime.lastError) {
+                showImportExportStatus('导入失败：' + chrome.runtime.lastError.message, true);
+                return;
+              }
+
               showImportExportStatus('配置已导入！页面将自动刷新...', false);
               setTimeout(() => {
                 location.reload();

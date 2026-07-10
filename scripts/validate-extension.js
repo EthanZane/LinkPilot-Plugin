@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const rootDir = process.cwd();
 
@@ -62,8 +63,25 @@ function validateJavaScriptSyntax() {
   }
 }
 
+/**
+ * 按设置页真实加载顺序组合解析普通脚本，捕获单文件语法检查无法发现的顶层 const/let 重名问题。
+ */
+function validateOptionsPageScriptScope() {
+  const scriptFiles = ['illegal-site-filter.js', 'options.js', 'batch.js'];
+  const combinedSource = scriptFiles
+    .map((file) => `\n// 来源文件：${file}\n${readFileSync(path.join(rootDir, file), 'utf8')}`)
+    .join('\n');
+
+  try {
+    new vm.Script(combinedSource, { filename: 'options.html 普通脚本组合校验' });
+  } catch (error) {
+    throw new Error(`设置页脚本作用域校验失败：${error.message}`);
+  }
+}
+
 validateRequiredFiles();
 validateManifest();
 validateJavaScriptSyntax();
+validateOptionsPageScriptScope();
 
-console.log('扩展校验通过：manifest 和核心 JS 文件均可加载。');
+console.log('扩展校验通过：manifest、核心 JS 文件及设置页组合脚本均可加载。');

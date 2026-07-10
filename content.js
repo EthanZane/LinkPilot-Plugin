@@ -365,6 +365,7 @@
   const USER_PASSWORD_STORAGE_KEY = 'auto_fill_user_password';
   const PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
   const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
+  const SELECTED_PROMOTION_SITE_STORAGE_KEY = 'auto_comment_selected_promotion_site_id';
 
   // ====== 批量任务设置（从 storage.local 读取）======
   const BATCH_SETTINGS_KEY = 'batch_task_settings';
@@ -421,6 +422,112 @@
     };
   }
 
+  function formatPromotionSiteOption(site) {
+    const name = site.name || site.url || '未命名网站';
+    return `${name} - ${site.url || '未填写 URL'}`;
+  }
+
+  function getPromotionSitesFromConfig(config) {
+    if (!config || !Array.isArray(config.sites)) return [];
+    return config.sites
+      .map(normalizePromotionSite)
+      .filter((site) => site.id && (site.url || site.content || site.name));
+  }
+
+  function buildLegacyPromotionSite(data) {
+    const legacyUrl = data && typeof data[WEBSITE_URL_STORAGE_KEY] === 'string'
+      ? data[WEBSITE_URL_STORAGE_KEY].trim()
+      : pickLegacyPromptValue(data && data[PROMPT_FIELD_VALUES_STORAGE_KEY], [
+        '网站链接',
+        '网址',
+        'website link',
+        'website url',
+        'url'
+      ]);
+    const legacyContent = data && typeof data[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
+      ? data[WEBSITE_CONTENT_STORAGE_KEY].trim()
+      : pickLegacyPromptValue(data && data[PROMPT_FIELD_VALUES_STORAGE_KEY], [
+        '网站内容',
+        '网站介绍',
+        'website content',
+        'site content',
+        'description'
+      ]);
+    return normalizePromotionSite({
+      id: 'legacy_site',
+      name: legacyUrl || '默认网站',
+      url: legacyUrl,
+      content: legacyContent,
+      anchors: []
+    });
+  }
+
+  function choosePromotionSite(sites, selectedSiteId) {
+    return sites.find((site) => site.id && site.id === selectedSiteId)
+      || sites[0]
+      || normalizePromotionSite({});
+  }
+
+  function saveSelectedPromotionSiteId(siteId) {
+    return new Promise((resolve) => {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        resolve();
+        return;
+      }
+      chrome.storage.local.set({ [SELECTED_PROMOTION_SITE_STORAGE_KEY]: String(siteId || '') }, resolve);
+    });
+  }
+
+  function loadPromotionSiteSelectionContext() {
+    return new Promise((resolve) => {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        resolve({ sites: [], selectedSiteId: '' });
+        return;
+      }
+
+      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY, SELECTED_PROMOTION_SITE_STORAGE_KEY], (localResult) => {
+        const selectedSiteId = String(localResult && localResult[SELECTED_PROMOTION_SITE_STORAGE_KEY] || '').trim();
+        if (!chrome.runtime?.lastError) {
+          const localSites = getPromotionSitesFromConfig(localResult && localResult[SITES_CONFIG_STORAGE_KEY]);
+          if (localSites.length > 0) {
+            resolve({ sites: localSites, selectedSiteId });
+            return;
+          }
+        } else {
+          console.error('读取本地推广网站列表失败：', chrome.runtime.lastError);
+        }
+
+        chrome.storage.sync.get(
+          [
+            SITES_CONFIG_STORAGE_KEY,
+            WEBSITE_URL_STORAGE_KEY,
+            WEBSITE_CONTENT_STORAGE_KEY,
+            PROMPT_FIELD_VALUES_STORAGE_KEY
+          ],
+          (syncResult) => {
+            if (chrome.runtime && chrome.runtime.lastError) {
+              console.error('读取推广网站兼容配置失败：', chrome.runtime.lastError);
+              resolve({ sites: [], selectedSiteId });
+              return;
+            }
+
+            const syncSites = getPromotionSitesFromConfig(syncResult && syncResult[SITES_CONFIG_STORAGE_KEY]);
+            if (syncSites.length > 0) {
+              resolve({ sites: syncSites, selectedSiteId });
+              return;
+            }
+
+            const legacySite = buildLegacyPromotionSite(syncResult || {});
+            resolve({
+              sites: legacySite.url || legacySite.content ? [legacySite] : [],
+              selectedSiteId
+            });
+          }
+        );
+      });
+    });
+  }
+
   function pickRandomEnabledAnchor(site) {
     const enabledAnchors = (site && Array.isArray(site.anchors) ? site.anchors : [])
       .filter((anchor) => anchor && anchor.enabled !== false && anchor.text);
@@ -470,7 +577,7 @@
         '本次评论必须包含一个指向"网站链接"的 HTML 链接，链接的可点击文本必须完全等于上面的"本次锚文本"。'
       ]
       : [
-        '当前站点未配置启用的锚文本；如果输出 HTML 链接，请根据页面上下文自然生成锚文本。'
+        '所选网站未配置启用的锚文本；如果输出 HTML 链接，请根据页面上下文自然生成锚文本。'
       ];
 
     return [
@@ -528,76 +635,8 @@
         resolve(normalizePromotionSite(_batchCtx.promotionSite));
         return;
       }
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
-        resolve(normalizePromotionSite({}));
-        return;
-      }
-      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY], (localResult) => {
-        if (!chrome.runtime?.lastError) {
-          const localConfig = localResult && localResult[SITES_CONFIG_STORAGE_KEY];
-          if (localConfig && Array.isArray(localConfig.sites) && localConfig.sites.length > 0) {
-            const sites = localConfig.sites.map(normalizePromotionSite).filter((site) => site.url || site.content);
-            const activeSite = sites.find((site) => site.id && site.id === localConfig.activeSiteId) || sites[0];
-            if (activeSite) {
-              resolve(activeSite);
-              return;
-            }
-          }
-        } else {
-          console.error('读取本地推广网站配置失败：', chrome.runtime.lastError);
-        }
-
-        chrome.storage.sync.get(
-        [
-          SITES_CONFIG_STORAGE_KEY,
-          WEBSITE_URL_STORAGE_KEY,
-          WEBSITE_CONTENT_STORAGE_KEY,
-          PROMPT_FIELD_VALUES_STORAGE_KEY
-        ],
-        (result) => {
-          if (chrome.runtime && chrome.runtime.lastError) {
-            console.error('读取推广网站配置失败：', chrome.runtime.lastError);
-            resolve(normalizePromotionSite({}));
-            return;
-          }
-
-          const config = result && result[SITES_CONFIG_STORAGE_KEY];
-          if (config && Array.isArray(config.sites) && config.sites.length > 0) {
-            const sites = config.sites.map(normalizePromotionSite).filter((site) => site.url || site.content);
-            const activeSite = sites.find((site) => site.id && site.id === config.activeSiteId) || sites[0];
-            if (activeSite) {
-              resolve(activeSite);
-              return;
-            }
-          }
-
-          const legacyUrl = result && typeof result[WEBSITE_URL_STORAGE_KEY] === 'string'
-            ? result[WEBSITE_URL_STORAGE_KEY].trim()
-            : pickLegacyPromptValue(result && result[PROMPT_FIELD_VALUES_STORAGE_KEY], [
-              '网站链接',
-              '网址',
-              'website link',
-              'website url',
-              'url'
-            ]);
-          const legacyContent = result && typeof result[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
-            ? result[WEBSITE_CONTENT_STORAGE_KEY].trim()
-            : pickLegacyPromptValue(result && result[PROMPT_FIELD_VALUES_STORAGE_KEY], [
-              '网站内容',
-              '网站介绍',
-              'website content',
-              'site content',
-              'description'
-            ]);
-          resolve(normalizePromotionSite({
-            id: 'legacy_site',
-            name: legacyUrl,
-            url: legacyUrl,
-            content: legacyContent,
-            anchors: []
-          }));
-        }
-        );
+      loadPromotionSiteSelectionContext().then(({ sites, selectedSiteId }) => {
+        resolve(choosePromotionSite(sites, selectedSiteId));
       });
     });
   }
@@ -613,7 +652,7 @@
     return site.content || '';
   }
 
-  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 使用当前站点名称，邮箱和密码仍为全局配置。
+  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 使用所选网站名称，邮箱和密码仍为全局配置。
   async function getUserProfile() {
     const activeSite = await getActivePromotionSite();
     const siteName = String(activeSite && activeSite.name || '').trim();
@@ -2862,12 +2901,12 @@
     const EMAIL = userProfile.email || '';
 
     console.log('[AutoComment] ===== ensureAllCommentFormFieldsFilled 开始 =====');
-    console.log('[AutoComment] 将填入 - Name(当前站点名称):', USERNAME, '| Email:', EMAIL, '| Website:', WEBSITE, '| skipComment:', skipCommentValidation);
+    console.log('[AutoComment] 将填入 - Name(所选网站名称):', USERNAME, '| Email:', EMAIL, '| Website:', WEBSITE, '| skipComment:', skipCommentValidation);
 
     // ── 前置检查：配置缺失则直接报错，不静默失败 ─────────────────
     if (!USERNAME || !EMAIL) {
       const missing = [];
-      if (!USERNAME) missing.push('当前站点名称（Name）');
+      if (!USERNAME) missing.push('所选网站名称（Name）');
       if (!EMAIL) missing.push('邮箱（Email）');
       const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
       console.error('[AutoComment] ' + msg);
@@ -3324,6 +3363,26 @@
     hint.style.color = '#9ca3af';
     hint.style.lineHeight = '1.4';
 
+    const siteField = document.createElement('label');
+    siteField.style.display = 'flex';
+    siteField.style.flexDirection = 'column';
+    siteField.style.gap = '4px';
+    siteField.style.color = '#cbd5e1';
+    siteField.style.fontSize = '11px';
+    siteField.textContent = '推广网站';
+
+    const siteSelect = document.createElement('select');
+    siteSelect.style.width = '100%';
+    siteSelect.style.boxSizing = 'border-box';
+    siteSelect.style.border = '1px solid rgba(148,163,184,0.55)';
+    siteSelect.style.borderRadius = '8px';
+    siteSelect.style.background = 'rgba(15,23,42,0.95)';
+    siteSelect.style.color = '#e5e7eb';
+    siteSelect.style.fontSize = '12px';
+    siteSelect.style.padding = '7px 8px';
+    siteSelect.style.outline = 'none';
+    siteField.appendChild(siteSelect);
+
     const btnRow = document.createElement('div');
     btnRow.style.display = 'flex';
     btnRow.style.alignItems = 'center';
@@ -3384,6 +3443,7 @@
     btnRow.appendChild(copyBtn);
 
     body.appendChild(hint);
+    body.appendChild(siteField);
     body.appendChild(btnRow);
     body.appendChild(statusEl);
     body.appendChild(textarea);
@@ -3398,6 +3458,8 @@
     qwenPanelEl._qwenSetStatus = setStatus;
     qwenPanelEl._qwenSetCopyEnabled = setCopyEnabled;
     qwenPanelEl._qwenSetGenerateLoading = setGenerateLoading;
+
+    let promotionSiteSelectReady = true;
 
     if (lastGeneratedPromotionCopy) {
       textarea.value = lastGeneratedPromotionCopy;
@@ -3424,14 +3486,59 @@
         generateBtn.style.boxShadow = 'none';
         generateBtn.textContent = '生成中…';
       } else {
-        generateBtn.disabled = false;
-        generateBtn.style.opacity = '1';
-        generateBtn.style.cursor = 'pointer';
-        generateBtn.style.background = 'linear-gradient(135deg, #2563eb, #4f46e5)';
-        generateBtn.style.boxShadow = '0 10px 24px rgba(37,99,235,0.45)';
+        generateBtn.disabled = !promotionSiteSelectReady;
+        generateBtn.style.opacity = promotionSiteSelectReady ? '1' : '0.55';
+        generateBtn.style.cursor = promotionSiteSelectReady ? 'pointer' : 'not-allowed';
+        generateBtn.style.background = promotionSiteSelectReady
+          ? 'linear-gradient(135deg, #2563eb, #4f46e5)'
+          : '#4b5563';
+        generateBtn.style.boxShadow = promotionSiteSelectReady
+          ? '0 10px 24px rgba(37,99,235,0.45)'
+          : 'none';
         generateBtn.textContent = 'AI生成推广文案';
       }
     }
+
+    async function populatePromotionSiteSelect() {
+      const { sites, selectedSiteId } = await loadPromotionSiteSelectionContext();
+      siteSelect.innerHTML = '';
+      if (sites.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '请先在设置页配置网站';
+        siteSelect.appendChild(option);
+        siteSelect.disabled = true;
+        promotionSiteSelectReady = false;
+        setGenerateLoading(false);
+        setStatus('请先在扩展设置页添加至少一个推广网站。', '#f59e0b');
+        return;
+      }
+
+      sites.forEach((site) => {
+        const option = document.createElement('option');
+        option.value = site.id;
+        option.textContent = formatPromotionSiteOption(site);
+        siteSelect.appendChild(option);
+      });
+      const selectedSite = choosePromotionSite(sites, selectedSiteId);
+      siteSelect.value = selectedSite.id || sites[0].id;
+      siteSelect.disabled = false;
+      promotionSiteSelectReady = true;
+      setGenerateLoading(false);
+      if (!selectedSiteId && selectedSite.id) {
+        await saveSelectedPromotionSiteId(selectedSite.id);
+      }
+    }
+
+    siteSelect.addEventListener('change', async () => {
+      await saveSelectedPromotionSiteId(siteSelect.value);
+      lastGeneratedPromotionCopy = '';
+      textarea.value = '';
+      setCopyEnabled(false);
+      setStatus('已切换推广网站，下次生成会使用该网站配置。', '#9ca3af');
+    });
+
+    populatePromotionSiteSelect();
 
     generateBtn.addEventListener('click', async () => {
       setStatus('正在生成推广文案，请稍候…', '#9ca3af');
@@ -3468,7 +3575,7 @@
         console.log('[AutoComment] >>>[4] 检查用户配置是否完整...');
         if (!userProfile.name || !userProfile.email) {
           const missing = [];
-          if (!userProfile.name) missing.push('当前站点名称（Name）');
+          if (!userProfile.name) missing.push('所选网站名称（Name）');
           if (!userProfile.email) missing.push('邮箱（Email）');
           const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
           setStatus(msg, '#f97373');
