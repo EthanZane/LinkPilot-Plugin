@@ -1,20 +1,16 @@
 // 批量外链评论自动化 - 扩展端核心逻辑（本地批次管理）
 
 // ==================== 配置 ====================
-const API_BASE = 'https://jieyunsang.cn/api';
-const BLOG_RUN_STATS_ENDPOINT = `${API_BASE}/blog-run-stats`;
 const POLL_INTERVAL = 3000;
 const TIMEOUT_CHECK_INTERVAL = 5000;
 const TIMEOUT_STORAGE_KEY = 'batch_timeout_seconds';
 
 // ==================== 状态 ====================
 let batchId = null;
-let userId = null;
 let parsedUrls = [];                // [{originalIndex, url}]
 let status = 'idle';                // idle | running | completed
 let activeTabCount = 0;
 let currentIndex = 0;               // 当前处理到的索引（本地管理）
-let initialPoints = 0;
 
 // 实时计数
 let totalCount = 0;
@@ -73,8 +69,8 @@ const progressText = document.getElementById('progressText');
 const footerActions = document.getElementById('footerActions');
 const exportBtn = document.getElementById('exportBtn');
 const clearBtn = document.getElementById('clearBtn');
-const pointsBalance = document.getElementById('pointsBalance');
-const pointsHint = document.getElementById('pointsHint');
+const providerSource = document.getElementById('providerSource');
+const providerHint = document.getElementById('providerHint');
 const costHint = document.getElementById('costHint');
 const statusBadge = document.getElementById('statusBadge');
 const timeoutInput = document.getElementById('timeoutInput');
@@ -141,40 +137,11 @@ async function saveBatchCheckboxSettings() {
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
-  await loadUserId();
-  await loadPoints();
   await loadTimeoutSetting();
   await loadBatchCheckboxSettings(); // 全局记忆的勾选框设置
   bindEvents();
 
   updateUI();
-}
-
-async function loadUserId() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(['auto_comment_user_id'], (data) => {
-      userId = data.auto_comment_user_id || '';
-      resolve();
-    });
-  });
-}
-
-async function loadPoints() {
-  if (!userId) {
-    pointsBalance.textContent = '—';
-    return;
-  }
-  try {
-    const resp = await fetch(`${API_BASE}/get-points?userId=${encodeURIComponent(userId)}`);
-    const json = await resp.json();
-    if (json.success && json.points !== undefined) {
-      pointsBalance.textContent = json.points;
-    } else {
-      pointsBalance.textContent = '0';
-    }
-  } catch (e) {
-    pointsBalance.textContent = '—';
-  }
 }
 
 async function loadTimeoutSetting() {
@@ -480,16 +447,12 @@ function updateCostHint(count) {
   if (count === 0) {
     costHint.textContent = '';
   } else {
-    costHint.textContent = `本次预计消耗 ${count} 条积分`;
+    costHint.textContent = `本次预计会调用 AI ${count} 次，实际费用由当前 Provider 账户结算。`;
   }
 }
 
 // ==================== 批量处理核心 ====================
 async function startBatch() {
-  if (!userId) {
-    alert('请先在设置页面中配置用户 ID');
-    return;
-  }
   if (parsedUrls.length === 0) {
     alert('请先上传有效的 CSV 文件');
     return;
@@ -502,7 +465,6 @@ async function startBatch() {
   // 保存批量任务设置和 URL 列表到 storage.local，供 content.js 读取
   await saveBatchTaskSettings();
 
-  initialPoints = parseInt(pointsBalance.textContent || '0', 10);
   batchId = generateUUID();
   totalCount = parsedUrls.length;
   successCount = 0;
@@ -879,26 +841,9 @@ function handleTabResult(urlIndex, result, aiContent, errorMessage, forcedElapse
 }
 
 function reportBlogRunStatsIfNeeded(item, result) {
-  if (result !== 'success' && result !== 'manual_required') return;
-
-  const payload = buildBlogRunStatsPayload(item, result);
-  if (!payload.urlDomain) return;
-
-  try {
-    fetch(BLOG_RUN_STATS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      keepalive: true
-    }).then((response) => {
-      if (!response.ok) {
-        console.warn('[batch] blog-run-stats 上报失败:', response.status, payload);
-      }
-    }).catch((error) => {
-      console.warn('[batch] blog-run-stats 上报异常:', error, payload);
-    });
-  } catch (error) {
-    console.warn('[batch] blog-run-stats 上报启动失败:', error, payload);
+  // 个人本地版不再写入远程 blog_run_stats，批量结果只保存在本地并可手动导出。
+  if (result === 'success' || result === 'manual_required') {
+    console.log('[batch] 本地模式跳过远程运行统计上报:', buildBlogRunStatsPayload(item, result));
   }
 }
 
@@ -1039,21 +984,6 @@ async function onAllCompleted() {
     try {
       chrome.tabs.remove(tabId, () => {});
     } catch (_) {}
-  }
-
-  // 通过积分差值计算成功/失败数（备用验证）
-  let finalPoints = initialPoints;
-  try {
-    const resp = await fetch(`${API_BASE}/get-points?userId=${encodeURIComponent(userId)}`);
-    const json = await resp.json();
-    if (json.success && json.points !== undefined) {
-      finalPoints = json.points;
-    }
-  } catch (_) {}
-
-  const pointsDiff = initialPoints - finalPoints;
-  if (pointsDiff > 0 && Math.abs(pointsDiff - successCount) > 2) {
-    console.warn(`积分差值(${pointsDiff})与成功数(${successCount})不一致，请以实际结果为准`);
   }
 
   updateStatsUI();

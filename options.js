@@ -1,16 +1,14 @@
-const LEGACY_SKILL_TEMPLATE_STORAGE_KEY = 'qwen_skill_template';
 const WEBSITE_URL_STORAGE_KEY = 'promotion_website_url';
 const WEBSITE_CONTENT_STORAGE_KEY = 'promotion_website_content';
 const USER_NAME_STORAGE_KEY = 'auto_fill_user_name';
 const USER_EMAIL_STORAGE_KEY = 'auto_fill_user_email';
 const USER_PASSWORD_STORAGE_KEY = 'auto_fill_user_password';
-const USER_ID_STORAGE_KEY = 'auto_comment_user_id';
+const LEGACY_SKILL_TEMPLATE_STORAGE_KEY = 'qwen_skill_template';
 const LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
 const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
+const AI_CONFIG_STORAGE_KEY = 'auto_comment_ai_config';
 
-const POINTS_API_BASE = 'https://jieyunsang.cn/api';
-const CONFIG_VERSION = 2;
-const USER_ID_NOT_ASSIGNED_MESSAGE = 'userid需要由管理员手动分配';
+const CONFIG_VERSION = 3;
 
 const ACTIVE_STORAGE_KEYS = [
   WEBSITE_URL_STORAGE_KEY,
@@ -18,15 +16,74 @@ const ACTIVE_STORAGE_KEYS = [
   USER_NAME_STORAGE_KEY,
   USER_EMAIL_STORAGE_KEY,
   USER_PASSWORD_STORAGE_KEY,
-  USER_ID_STORAGE_KEY,
   SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
 ];
 
 const IMPORT_COMPAT_STORAGE_KEYS = [
   ...ACTIVE_STORAGE_KEYS,
   LEGACY_SKILL_TEMPLATE_STORAGE_KEY,
-  LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY
+  LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY,
+  AI_CONFIG_STORAGE_KEY
 ];
+
+/**
+ * 内置 Provider 模板。API Key 默认留空，用户需要在本机设置页自行填写。
+ */
+const DEFAULT_AI_CONFIG = {
+  activeProviderId: 'dashscope',
+  providers: [
+    {
+      id: 'dashscope',
+      name: '通义千问',
+      type: 'openai_compatible',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      apiKey: '',
+      model: 'qwen-plus',
+      temperature: 0.7,
+      maxTokens: 800
+    },
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      type: 'openai_compatible',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: '',
+      model: 'deepseek-chat',
+      temperature: 0.7,
+      maxTokens: 800
+    },
+    {
+      id: 'tuzi',
+      name: 'tuzi',
+      type: 'openai_compatible',
+      baseUrl: 'https://api.tu-zi.com/v1',
+      apiKey: '',
+      model: 'gpt-5.5',
+      temperature: 0.7,
+      maxTokens: 800
+    },
+    {
+      id: 'avman',
+      name: 'avman',
+      type: 'openai_compatible',
+      baseUrl: 'https://api.mjdjourney.cn/v1',
+      apiKey: '',
+      model: 'gpt-3.5-turbo',
+      temperature: 0.7,
+      maxTokens: 800
+    },
+    {
+      id: 'openrouter',
+      name: 'OpenRouter',
+      type: 'openai_compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: '',
+      model: 'openai/gpt-4o-mini',
+      temperature: 0.7,
+      maxTokens: 800
+    }
+  ]
+};
 
 document.addEventListener('DOMContentLoaded', () => {
   const websiteUrlInput = document.getElementById('websiteUrl');
@@ -36,36 +93,42 @@ document.addEventListener('DOMContentLoaded', () => {
   const userPasswordInput = document.getElementById('userPassword');
   const saveSettingsBtn = document.getElementById('saveSettingsBtn');
   const settingsStatusEl = document.getElementById('settingsStatus');
-  const savePointsBtn = document.getElementById('savePointsBtn');
-  const pointsStatusEl = document.getElementById('pointsStatus');
-  const userIdInput = document.getElementById('userId');
-  const pointsBalanceEl = document.getElementById('pointsBalance');
   const exportConfigBtn = document.getElementById('exportConfigBtn');
   const importConfigBtn = document.getElementById('importConfigBtn');
   const importConfigFileInput = document.getElementById('importConfigFileInput');
   const importExportStatus = document.getElementById('importExportStatus');
   const openBatchBtn = document.getElementById('openBatchBtn');
-  const openPaymentBtn = document.getElementById('openPaymentBtn');
   const toggleExportOutlinksFloatingBtn = document.getElementById('toggleExportOutlinksFloatingBtn');
-  const purchaseStatusEl = document.getElementById('purchaseStatus');
-  const purchasePlanEl = document.getElementById('purchasePlan');
-  const purchaseOrderNoEl = document.getElementById('purchaseOrderNo');
-  const purchaseUpdatedAtEl = document.getElementById('purchaseUpdatedAt');
 
-  if (
-    !websiteUrlInput ||
-    !websiteContentInput ||
-    !userNameInput ||
-    !userEmailInput ||
-    !userPasswordInput ||
-    !saveSettingsBtn ||
-    !settingsStatusEl
-  ) {
-    console.error('Options page 初始化失败：元素未找到');
+  const providerSelect = document.getElementById('providerSelect');
+  const providerNameInput = document.getElementById('providerName');
+  const providerTypeInput = document.getElementById('providerType');
+  const providerBaseUrlInput = document.getElementById('providerBaseUrl');
+  const providerApiKeyInput = document.getElementById('providerApiKey');
+  const providerModelInput = document.getElementById('providerModel');
+  const providerTemperatureInput = document.getElementById('providerTemperature');
+  const providerMaxTokensInput = document.getElementById('providerMaxTokens');
+  const newProviderBtn = document.getElementById('newProviderBtn');
+  const saveProviderBtn = document.getElementById('saveProviderBtn');
+  const setActiveProviderBtn = document.getElementById('setActiveProviderBtn');
+  const testProviderBtn = document.getElementById('testProviderBtn');
+  const deleteProviderBtn = document.getElementById('deleteProviderBtn');
+  const providerStatusEl = document.getElementById('providerStatus');
+
+  if (!websiteUrlInput || !websiteContentInput || !userNameInput || !userEmailInput || !saveSettingsBtn) {
+    console.error('设置页初始化失败：关键表单元素不存在');
     return;
   }
 
-  function showStatus(el, text, timeout = 1600) {
+  let showExportOutlinksFloatingButton = true;
+  let aiConfig = clone(DEFAULT_AI_CONFIG);
+  let editingProviderId = DEFAULT_AI_CONFIG.activeProviderId;
+
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function showStatus(el, text, timeout = 1800) {
     if (!el) return;
     el.textContent = text;
     el.style.opacity = '1';
@@ -74,7 +137,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }, timeout);
   }
 
-  let showExportOutlinksFloatingButton = true;
+  function normalizeText(value) {
+    return String(value || '').trim();
+  }
+
+  function normalizeNumber(value, fallback, min, max) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, number));
+  }
+
+  function createProviderId(name) {
+    const base = normalizeText(name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'provider';
+    const suffix = Date.now().toString(36);
+    return `${base}_${suffix}`;
+  }
+
+  function normalizeProvider(provider) {
+    const name = normalizeText(provider && provider.name) || '自定义 Provider';
+    return {
+      id: normalizeText(provider && provider.id) || createProviderId(name),
+      name,
+      type: 'openai_compatible',
+      baseUrl: normalizeText(provider && provider.baseUrl).replace(/\/+$/, ''),
+      apiKey: normalizeText(provider && provider.apiKey),
+      model: normalizeText(provider && provider.model),
+      temperature: normalizeNumber(provider && provider.temperature, 0.7, 0, 2),
+      maxTokens: Math.round(normalizeNumber(provider && provider.maxTokens, 800, 1, 32000))
+    };
+  }
+
+  function normalizeAiConfig(config) {
+    const rawProviders = Array.isArray(config && config.providers)
+      ? config.providers
+      : DEFAULT_AI_CONFIG.providers;
+    const providers = rawProviders.map(normalizeProvider);
+    const providerIds = new Set(providers.map((provider) => provider.id));
+    DEFAULT_AI_CONFIG.providers.forEach((defaultProvider) => {
+      if (!providerIds.has(defaultProvider.id)) {
+        providers.push(normalizeProvider(defaultProvider));
+      }
+    });
+    const fallbackActiveId = providers[0] ? providers[0].id : DEFAULT_AI_CONFIG.activeProviderId;
+    const activeProviderId = providers.some((provider) => provider.id === config?.activeProviderId)
+      ? config.activeProviderId
+      : fallbackActiveId;
+    return { activeProviderId, providers };
+  }
+
+  function getCurrentProvider() {
+    return aiConfig.providers.find((provider) => provider.id === editingProviderId)
+      || aiConfig.providers.find((provider) => provider.id === aiConfig.activeProviderId)
+      || aiConfig.providers[0]
+      || null;
+  }
 
   function renderExportOutlinksFloatingToggle() {
     if (!toggleExportOutlinksFloatingBtn) return;
@@ -84,6 +203,54 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleExportOutlinksFloatingBtn.title = showExportOutlinksFloatingButton
       ? '点击后页面不再显示“导出外链”浮动按钮'
       : '点击后页面显示“导出外链”浮动按钮';
+  }
+
+  function renderProviderSelect() {
+    if (!providerSelect) return;
+    providerSelect.innerHTML = '';
+    aiConfig.providers.forEach((provider) => {
+      const option = document.createElement('option');
+      option.value = provider.id;
+      option.textContent = provider.id === aiConfig.activeProviderId
+        ? `${provider.name}（当前）`
+        : provider.name;
+      providerSelect.appendChild(option);
+    });
+    if (getCurrentProvider()) {
+      providerSelect.value = getCurrentProvider().id;
+    }
+  }
+
+  function fillProviderForm(provider) {
+    if (!provider) return;
+    editingProviderId = provider.id;
+    providerNameInput.value = provider.name || '';
+    providerTypeInput.value = provider.type || 'openai_compatible';
+    providerBaseUrlInput.value = provider.baseUrl || '';
+    providerApiKeyInput.value = provider.apiKey || '';
+    providerModelInput.value = provider.model || '';
+    providerTemperatureInput.value = String(provider.temperature ?? 0.7);
+    providerMaxTokensInput.value = String(provider.maxTokens ?? 800);
+    renderProviderSelect();
+  }
+
+  function readProviderForm(existingProvider) {
+    const name = normalizeText(providerNameInput.value);
+    const provider = normalizeProvider({
+      id: existingProvider ? existingProvider.id : '',
+      name,
+      type: providerTypeInput.value,
+      baseUrl: providerBaseUrlInput.value,
+      apiKey: providerApiKeyInput.value,
+      model: providerModelInput.value,
+      temperature: providerTemperatureInput.value,
+      maxTokens: providerMaxTokensInput.value
+    });
+
+    if (!provider.name) throw new Error('请填写 Provider 名称');
+    if (!provider.baseUrl) throw new Error('请填写 Base URL');
+    if (!provider.model) throw new Error('请填写模型名称');
+    return provider;
   }
 
   function pickLegacyPromptValue(values, keywords) {
@@ -117,70 +284,37 @@ document.addEventListener('DOMContentLoaded', () => {
     ]);
   }
 
-  function getInputValue(input) {
-    return input && typeof input.value === 'string' ? input.value.trim() : '';
-  }
-
-  function mergeCurrentFormValues(data) {
-    const merged = { ...(data || {}) };
-    const currentValues = {
-      [WEBSITE_URL_STORAGE_KEY]: getInputValue(websiteUrlInput),
-      [WEBSITE_CONTENT_STORAGE_KEY]: getInputValue(websiteContentInput),
-      [USER_NAME_STORAGE_KEY]: getInputValue(userNameInput),
-      [USER_EMAIL_STORAGE_KEY]: getInputValue(userEmailInput),
-      [USER_PASSWORD_STORAGE_KEY]: getInputValue(userPasswordInput),
-      [USER_ID_STORAGE_KEY]: getInputValue(userIdInput)
-    };
-
-    ACTIVE_STORAGE_KEYS.forEach((key) => {
-      if (currentValues[key] !== '') {
-        merged[key] = currentValues[key];
-      }
-    });
-
-    return merged;
-  }
-
-  function getImportedData(config) {
-    if (!config || typeof config !== 'object') return null;
-    if (config.data && typeof config.data === 'object') {
-      return config.data;
-    }
-    return config;
-  }
-
   function loadSettings() {
-    chrome.storage.sync.get(IMPORT_COMPAT_STORAGE_KEYS, (result) => {
+    chrome.storage.sync.get(IMPORT_COMPAT_STORAGE_KEYS, (syncResult) => {
       if (chrome.runtime.lastError) {
         console.error('读取设置失败：', chrome.runtime.lastError);
         return;
       }
 
-      const data = result || {};
+      const data = syncResult || {};
       websiteUrlInput.value = typeof data[WEBSITE_URL_STORAGE_KEY] === 'string'
         ? data[WEBSITE_URL_STORAGE_KEY]
         : getLegacyWebsiteUrl(data);
       websiteContentInput.value = typeof data[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
         ? data[WEBSITE_CONTENT_STORAGE_KEY]
         : getLegacyWebsiteContent(data);
-      userNameInput.value = typeof data[USER_NAME_STORAGE_KEY] === 'string'
-        ? data[USER_NAME_STORAGE_KEY]
-        : '';
-      userEmailInput.value = typeof data[USER_EMAIL_STORAGE_KEY] === 'string'
-        ? data[USER_EMAIL_STORAGE_KEY]
-        : '';
-      userPasswordInput.value = typeof data[USER_PASSWORD_STORAGE_KEY] === 'string'
-        ? data[USER_PASSWORD_STORAGE_KEY]
-        : '';
-      if (userIdInput && typeof data[USER_ID_STORAGE_KEY] === 'string') {
-        userIdInput.value = data[USER_ID_STORAGE_KEY];
-        if (data[USER_ID_STORAGE_KEY]) {
-          fetchPointsBalance(data[USER_ID_STORAGE_KEY]);
-          fetchPurchaseStatus(data[USER_ID_STORAGE_KEY]);
-        }
-      }
+      userNameInput.value = typeof data[USER_NAME_STORAGE_KEY] === 'string' ? data[USER_NAME_STORAGE_KEY] : '';
+      userEmailInput.value = typeof data[USER_EMAIL_STORAGE_KEY] === 'string' ? data[USER_EMAIL_STORAGE_KEY] : '';
+      userPasswordInput.value = typeof data[USER_PASSWORD_STORAGE_KEY] === 'string' ? data[USER_PASSWORD_STORAGE_KEY] : '';
       showExportOutlinksFloatingButton = data[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false;
       renderExportOutlinksFloatingToggle();
+    });
+
+    chrome.storage.local.get([AI_CONFIG_STORAGE_KEY], (localResult) => {
+      if (chrome.runtime.lastError) {
+        console.error('读取 AI Provider 配置失败：', chrome.runtime.lastError);
+        return;
+      }
+      aiConfig = normalizeAiConfig(localResult[AI_CONFIG_STORAGE_KEY] || DEFAULT_AI_CONFIG);
+      chrome.storage.local.set({ [AI_CONFIG_STORAGE_KEY]: aiConfig }, () => {});
+      editingProviderId = aiConfig.activeProviderId;
+      renderProviderSelect();
+      fillProviderForm(getCurrentProvider());
     });
   }
 
@@ -221,9 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   saveSettingsBtn.addEventListener('click', () => {
-    if (!validateRequiredSettings()) {
-      return;
-    }
+    if (!validateRequiredSettings()) return;
 
     chrome.storage.sync.set(
       {
@@ -235,7 +367,7 @@ document.addEventListener('DOMContentLoaded', () => {
       },
       () => {
         if (chrome.runtime.lastError) {
-          console.error('保存设置失败：', chrome.runtime.lastError);
+          console.error('保存自动填表设置失败：', chrome.runtime.lastError);
           showStatus(settingsStatusEl, '保存失败', 2000);
           return;
         }
@@ -244,43 +376,121 @@ document.addEventListener('DOMContentLoaded', () => {
     );
   });
 
-  if (savePointsBtn && userIdInput) {
-    savePointsBtn.addEventListener('click', async () => {
-      const userId = userIdInput.value.trim();
-      let validatedPoints = null;
+  if (providerSelect) {
+    providerSelect.addEventListener('change', () => {
+      const provider = aiConfig.providers.find((item) => item.id === providerSelect.value);
+      if (provider) fillProviderForm(provider);
+    });
+  }
 
-      if (userId) {
-        try {
-          validatedPoints = await validateUserIdExists(userId);
-        } catch (error) {
-          console.error('validate userId failed:', error);
-          if (error && error.code === 'USER_NOT_FOUND') {
-            alert(USER_ID_NOT_ASSIGNED_MESSAGE);
-            showStatus(pointsStatusEl, USER_ID_NOT_ASSIGNED_MESSAGE, 3000);
-            setPointsBalance(null);
-            setPurchaseStatus(null);
+  if (newProviderBtn) {
+    newProviderBtn.addEventListener('click', () => {
+      const provider = normalizeProvider({
+        id: createProviderId('provider'),
+        name: '新的 Provider',
+        type: 'openai_compatible',
+        baseUrl: '',
+        apiKey: '',
+        model: '',
+        temperature: 0.7,
+        maxTokens: 800
+      });
+      aiConfig.providers.push(provider);
+      editingProviderId = provider.id;
+      renderProviderSelect();
+      fillProviderForm(provider);
+      showStatus(providerStatusEl, '已创建草稿，请填写后保存', 2400);
+    });
+  }
+
+  if (saveProviderBtn) {
+    saveProviderBtn.addEventListener('click', () => {
+      try {
+        const existing = aiConfig.providers.find((provider) => provider.id === editingProviderId);
+        const provider = readProviderForm(existing);
+        const index = aiConfig.providers.findIndex((item) => item.id === provider.id);
+        if (index >= 0) {
+          aiConfig.providers[index] = provider;
+        } else {
+          aiConfig.providers.push(provider);
+        }
+
+        chrome.storage.local.set({ [AI_CONFIG_STORAGE_KEY]: aiConfig }, () => {
+          if (chrome.runtime.lastError) {
+            console.error('保存 AI Provider 失败：', chrome.runtime.lastError);
+            showStatus(providerStatusEl, '保存失败', 2200);
             return;
           }
-          alert('校验用户ID失败，请稍后重试');
-          showStatus(pointsStatusEl, '校验失败', 3000);
-          return;
-        }
+          editingProviderId = provider.id;
+          renderProviderSelect();
+          showStatus(providerStatusEl, 'Provider 已保存');
+        });
+      } catch (error) {
+        showStatus(providerStatusEl, error.message || 'Provider 配置无效', 3000);
+      }
+    });
+  }
+
+  if (setActiveProviderBtn) {
+    setActiveProviderBtn.addEventListener('click', () => {
+      const provider = getCurrentProvider();
+      if (!provider) {
+        showStatus(providerStatusEl, '没有可用 Provider', 2200);
+        return;
+      }
+      aiConfig.activeProviderId = provider.id;
+      chrome.storage.local.set({ [AI_CONFIG_STORAGE_KEY]: aiConfig }, () => {
+        renderProviderSelect();
+        showStatus(providerStatusEl, `当前 Provider：${provider.name}`, 2400);
+      });
+    });
+  }
+
+  if (testProviderBtn) {
+    testProviderBtn.addEventListener('click', () => {
+      let provider;
+      try {
+        provider = readProviderForm(aiConfig.providers.find((item) => item.id === editingProviderId));
+      } catch (error) {
+        showStatus(providerStatusEl, error.message || 'Provider 配置无效', 3000);
+        return;
       }
 
-      chrome.storage.sync.set({ [USER_ID_STORAGE_KEY]: userId }, () => {
+      showStatus(providerStatusEl, '正在测试连接...', 60000);
+      chrome.runtime.sendMessage({ type: 'TEST_AI_PROVIDER', provider }, (response) => {
         if (chrome.runtime.lastError) {
-          console.error('保存用户ID失败：', chrome.runtime.lastError);
-          showStatus(pointsStatusEl, '保存失败', 2000);
+          console.error('测试 AI Provider 消息失败：', chrome.runtime.lastError);
+          showStatus(providerStatusEl, '测试失败：后台脚本无响应', 3000);
           return;
         }
-        showStatus(pointsStatusEl, '已保存');
-        if (userId) {
-          setPointsBalance(validatedPoints);
-          fetchPurchaseStatus(userId);
-        } else {
-          setPointsBalance(null);
-          setPurchaseStatus(null);
+        if (!response || !response.ok) {
+          showStatus(providerStatusEl, `测试失败：${response?.error || '未知错误'}`, 5000);
+          return;
         }
+        showStatus(providerStatusEl, `测试成功：${response.text || '连接正常'}`, 4000);
+      });
+    });
+  }
+
+  if (deleteProviderBtn) {
+    deleteProviderBtn.addEventListener('click', () => {
+      if (aiConfig.providers.length <= 1) {
+        showStatus(providerStatusEl, '至少保留一个 Provider', 2400);
+        return;
+      }
+      const provider = getCurrentProvider();
+      if (!provider) return;
+      if (!confirm(`确认删除「${provider.name}」？`)) return;
+
+      aiConfig.providers = aiConfig.providers.filter((item) => item.id !== provider.id);
+      if (aiConfig.activeProviderId === provider.id) {
+        aiConfig.activeProviderId = aiConfig.providers[0].id;
+      }
+      editingProviderId = aiConfig.activeProviderId;
+      chrome.storage.local.set({ [AI_CONFIG_STORAGE_KEY]: aiConfig }, () => {
+        renderProviderSelect();
+        fillProviderForm(getCurrentProvider());
+        showStatus(providerStatusEl, 'Provider 已删除');
       });
     });
   }
@@ -305,120 +515,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function setPointsBalance(points) {
-    if (pointsBalanceEl) {
-      pointsBalanceEl.textContent = (points !== null && points !== undefined) ? points : '-';
-    }
-  }
-
-  async function validateUserIdExists(userId) {
-    const response = await fetch(`${POINTS_API_BASE}/get-points?userId=${encodeURIComponent(userId)}`);
-    const data = await response.json().catch(() => ({}));
-    if (response.status === 404 || data.code === 'USER_NOT_FOUND') {
-      const error = new Error(USER_ID_NOT_ASSIGNED_MESSAGE);
-      error.code = 'USER_NOT_FOUND';
-      throw error;
-    }
-    if (!response.ok || !data.success) {
-      throw new Error(data.error || 'Failed to validate userId');
-    }
-    return data.points;
-  }
-
-  async function fetchPointsBalance(userId) {
-    if (!userId) {
-      setPointsBalance(null);
-      return;
-    }
-    try {
-      const response = await fetch(`${POINTS_API_BASE}/get-points?userId=${encodeURIComponent(userId)}`);
-      const data = await response.json();
-      if (data.success) {
-        setPointsBalance(data.points);
-      } else if (data.code === 'USER_NOT_FOUND') {
-        setPointsBalance(USER_ID_NOT_ASSIGNED_MESSAGE);
-      } else {
-        setPointsBalance('查询失败');
-      }
-    } catch (error) {
-      console.error('查询积分失败:', error);
-      setPointsBalance('网络错误');
-    }
-  }
-
-  function formatPurchaseDateText(value) {
-    if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  }
-
-  function setPurchaseStatus(data) {
-    if (!purchaseStatusEl) return;
-
-    if (!data || data.status === 'none') {
-      purchaseStatusEl.textContent = '未购买';
-      purchaseStatusEl.style.color = '#6b7280';
-      if (purchasePlanEl) {
-        purchasePlanEl.style.display = 'none';
-        purchasePlanEl.textContent = '';
-      }
-      if (purchaseUpdatedAtEl) {
-        purchaseUpdatedAtEl.style.display = 'none';
-        purchaseUpdatedAtEl.textContent = '';
-      }
-      if (purchaseOrderNoEl) {
-        purchaseOrderNoEl.style.display = 'none';
-        purchaseOrderNoEl.textContent = '';
-      }
-      return;
-    }
-
-    purchaseStatusEl.textContent = data.statusText || data.status || '未知状态';
-    purchaseStatusEl.style.color = data.status === 'fulfilled' ? '#059669' : '#1d4ed8';
-    if (purchasePlanEl) {
-      purchasePlanEl.style.display = 'block';
-      purchasePlanEl.textContent = data.planName ? `当前文件：${data.planName}` : '';
-    }
-    if (purchaseOrderNoEl) {
-      purchaseOrderNoEl.style.display = data.outTradeNo ? 'block' : 'none';
-      purchaseOrderNoEl.textContent = data.outTradeNo ? `订单号：${data.outTradeNo}` : '';
-    }
-    if (purchaseUpdatedAtEl) {
-      const updatedAtText = formatPurchaseDateText(data.updatedAt || data.fulfilledAt || data.paidAt || data.createdAt);
-      purchaseUpdatedAtEl.style.display = updatedAtText ? 'block' : 'none';
-      purchaseUpdatedAtEl.textContent = updatedAtText ? `最后更新时间：${updatedAtText}` : '';
-    }
-  }
-
-  async function fetchPurchaseStatus(userId) {
-    if (!userId) {
-      setPurchaseStatus(null);
-      return;
-    }
-
-    try {
-      const response = await fetch(`${POINTS_API_BASE}/purchase-status?userId=${encodeURIComponent(userId)}`);
-      const data = await response.json();
-      if (data.success) {
-        setPurchaseStatus(data);
-      } else if (purchaseStatusEl) {
-        purchaseStatusEl.textContent = '查询失败';
-        purchaseStatusEl.style.color = '#dc2626';
-      }
-    } catch (error) {
-      console.error('查询购买状态失败:', error);
-      if (purchaseStatusEl) {
-        purchaseStatusEl.textContent = '网络错误';
-        purchaseStatusEl.style.color = '#dc2626';
-      }
-    }
+  function getImportedData(config) {
+    if (!config || typeof config !== 'object') return null;
+    return config.data && typeof config.data === 'object' ? config.data : config;
   }
 
   function showImportExportStatus(text, isError) {
@@ -433,40 +532,53 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (exportConfigBtn) {
     exportConfigBtn.addEventListener('click', () => {
-      chrome.storage.sync.get(ACTIVE_STORAGE_KEYS, (result) => {
+      chrome.storage.sync.get(ACTIVE_STORAGE_KEYS, (syncResult) => {
         if (chrome.runtime.lastError) {
           showImportExportStatus('导出失败：' + chrome.runtime.lastError.message, true);
           return;
         }
 
-        const mergedData = mergeCurrentFormValues(result);
-        const config = {
-          _version: CONFIG_VERSION,
-          _exportTime: new Date().toISOString(),
-          data: {}
-        };
+        chrome.storage.local.get([AI_CONFIG_STORAGE_KEY], (localResult) => {
+          const mergedData = {
+            ...syncResult,
+            [WEBSITE_URL_STORAGE_KEY]: websiteUrlInput.value.trim(),
+            [WEBSITE_CONTENT_STORAGE_KEY]: websiteContentInput.value.trim(),
+            [USER_NAME_STORAGE_KEY]: userNameInput.value.trim(),
+            [USER_EMAIL_STORAGE_KEY]: userEmailInput.value.trim(),
+            [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim()
+          };
+          const sanitizedAiConfig = normalizeAiConfig(localResult[AI_CONFIG_STORAGE_KEY] || aiConfig);
+          sanitizedAiConfig.providers = sanitizedAiConfig.providers.map((provider) => ({
+            ...provider,
+            apiKey: ''
+          }));
 
-        ACTIVE_STORAGE_KEYS.forEach((key) => {
-          if (mergedData[key] !== undefined) {
-            config.data[key] = mergedData[key];
+          const config = {
+            _version: CONFIG_VERSION,
+            _exportTime: new Date().toISOString(),
+            _note: '出于安全考虑，导出的配置不会包含 AI API Key。',
+            data: {
+              ...mergedData,
+              [AI_CONFIG_STORAGE_KEY]: sanitizedAiConfig
+            }
+          };
+
+          if (!config.data[WEBSITE_CONTENT_STORAGE_KEY]) {
+            showImportExportStatus('导出失败：请先填写你的网站内容。', true);
+            return;
           }
+
+          const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'autocomment-local-config-' + new Date().toISOString().slice(0, 10) + '.json';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          showImportExportStatus('配置已导出，API Key 未包含在文件中。', false);
         });
-
-        if (!config.data[WEBSITE_CONTENT_STORAGE_KEY]) {
-          showImportExportStatus('导出失败：请先填写你的网站内容。', true);
-          return;
-        }
-
-        const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'autocomment-config-' + new Date().toISOString().slice(0, 10) + '.json';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        showImportExportStatus('配置已导出！', false);
       });
     });
   }
@@ -476,53 +588,56 @@ document.addEventListener('DOMContentLoaded', () => {
       importConfigFileInput.click();
     });
 
-    importConfigFileInput.addEventListener('change', (e) => {
-      const file = e.target.files && e.target.files[0];
+    importConfigFileInput.addEventListener('change', (event) => {
+      const file = event.target.files && event.target.files[0];
       if (!file) return;
 
       const reader = new FileReader();
-      reader.onload = (ev) => {
+      reader.onload = (readerEvent) => {
         try {
-          const config = JSON.parse(ev.target.result);
+          const config = JSON.parse(readerEvent.target.result);
           const importedData = getImportedData(config);
           if (!importedData) {
             showImportExportStatus('文件格式无效，不是有效的配置文件。', true);
             return;
           }
 
-          const toSave = {};
-          IMPORT_COMPAT_STORAGE_KEYS.forEach((key) => {
+          const syncToSave = {};
+          ACTIVE_STORAGE_KEYS.forEach((key) => {
             if (importedData[key] !== undefined) {
-              toSave[key] = importedData[key];
+              syncToSave[key] = importedData[key];
             }
           });
 
-          if (toSave[WEBSITE_URL_STORAGE_KEY] === undefined) {
+          if (syncToSave[WEBSITE_URL_STORAGE_KEY] === undefined) {
             const legacyWebsiteUrl = getLegacyWebsiteUrl(importedData);
-            if (legacyWebsiteUrl) {
-              toSave[WEBSITE_URL_STORAGE_KEY] = legacyWebsiteUrl;
-            }
+            if (legacyWebsiteUrl) syncToSave[WEBSITE_URL_STORAGE_KEY] = legacyWebsiteUrl;
           }
 
-          if (toSave[WEBSITE_CONTENT_STORAGE_KEY] === undefined) {
+          if (syncToSave[WEBSITE_CONTENT_STORAGE_KEY] === undefined) {
             const legacyWebsiteContent = getLegacyWebsiteContent(importedData);
-            if (legacyWebsiteContent) {
-              toSave[WEBSITE_CONTENT_STORAGE_KEY] = legacyWebsiteContent;
-            }
+            if (legacyWebsiteContent) syncToSave[WEBSITE_CONTENT_STORAGE_KEY] = legacyWebsiteContent;
           }
 
-          chrome.storage.sync.set(toSave, () => {
+          const localToSave = {};
+          if (importedData[AI_CONFIG_STORAGE_KEY]) {
+            localToSave[AI_CONFIG_STORAGE_KEY] = normalizeAiConfig(importedData[AI_CONFIG_STORAGE_KEY]);
+          }
+
+          chrome.storage.sync.set(syncToSave, () => {
             if (chrome.runtime.lastError) {
               showImportExportStatus('导入失败：' + chrome.runtime.lastError.message, true);
               return;
             }
-            showImportExportStatus('配置已导入！页面将自动刷新...', false);
-            setTimeout(() => {
-              location.reload();
-            }, 1500);
+            chrome.storage.local.set(localToSave, () => {
+              showImportExportStatus('配置已导入！页面将自动刷新...', false);
+              setTimeout(() => {
+                location.reload();
+              }, 1200);
+            });
           });
-        } catch (err) {
-          showImportExportStatus('解析文件失败：' + err.message, true);
+        } catch (error) {
+          showImportExportStatus('解析文件失败：' + error.message, true);
         }
       };
       reader.readAsText(file);
@@ -533,12 +648,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (openBatchBtn) {
     openBatchBtn.addEventListener('click', () => {
       chrome.tabs.create({ url: 'batch.html' });
-    });
-  }
-
-  if (openPaymentBtn) {
-    openPaymentBtn.addEventListener('click', () => {
-      chrome.tabs.create({ url: 'payment.html' });
     });
   }
 

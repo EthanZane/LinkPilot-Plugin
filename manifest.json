@@ -8,9 +8,10 @@
     "storage"
   ],
   "host_permissions": [
-    "https://dashscope.aliyuncs.com/*",
-    "https://*.vercel.app/*",
-    "https://jieyunsang.cn/*"
+    "https://*/*",
+    "http://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -613,8 +613,8 @@
         margin-bottom: 10px;
       }
 
-      /* 积分信息 */
-      .points-bar {
+      /* 本地模式状态信息 */
+      .local-mode-bar {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -622,7 +622,7 @@
         color: #6b7280;
       }
 
-      .points-bar .balance {
+      .local-mode-bar .provider-source {
         font-weight: 700;
         color: #2563eb;
         font-size: 14px;
@@ -724,15 +724,15 @@
         </div>
       </div>
 
-      <!-- 积分信息 -->
+      <!-- 本地模式状态 -->
       <div class="card">
-        <div class="card-title">积分消耗</div>
+        <div class="card-title">本地模式</div>
         <div class="current-status">
           当前状态：<span class="status-badge idle" id="statusBadge">空闲</span>
         </div>
-        <div class="points-bar">
-          当前积分余额：<span class="balance" id="pointsBalance">—</span>
-          <span id="pointsHint" style="color:#9ca3af"></span>
+        <div class="local-mode-bar">
+          AI 调用来源：<span class="provider-source" id="providerSource">本机配置</span>
+          <span id="providerHint" style="color:#9ca3af">请先在设置页配置可用的 AI Provider。</span>
         </div>
         <div id="costHint" class="hint warn" style="display:none; margin-top:8px;"></div>
       </div>

@@ -1,7 +1,37 @@
-// 点击扩展图标时，在当前标签页内打开/关闭浮动窗口
+import { generateCommentWithActiveProvider, testProvider } from './ai-providers.js';
+
+// 点击扩展图标时打开设置页，个人版所有配置都集中在这里维护。
 chrome.action.onClicked.addListener((tab) => {
-  // 打开选项页面
   chrome.tabs.create({ url: chrome.runtime.getURL('options.html') });
+});
+
+// AI 生成请求统一由后台 Service Worker 发起，避免 content script 分散保存 Provider 调用细节。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === 'GENERATE_COMMENT') {
+    (async () => {
+      try {
+        const text = await generateCommentWithActiveProvider(message.payload || {});
+        sendResponse({ ok: true, text });
+      } catch (error) {
+        console.error('[background] AI 评论生成失败:', error);
+        sendResponse({ ok: false, error: error.message || String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message && message.type === 'TEST_AI_PROVIDER') {
+    (async () => {
+      try {
+        const result = await testProvider(message.provider || {});
+        sendResponse({ ok: true, text: result.text });
+      } catch (error) {
+        console.error('[background] AI Provider 测试失败:', error);
+        sendResponse({ ok: false, error: error.message || String(error) });
+      }
+    })();
+    return true;
+  }
 });
 
 /**
