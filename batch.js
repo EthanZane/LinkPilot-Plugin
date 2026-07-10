@@ -1360,6 +1360,10 @@ function exportResults() {
     '页面总高度(px)',
     '视口高度(px)',
     '页面总深度(屏)',
+    '结果',
+    '结果信息',
+    'AI生成内容',
+    '耗时(秒)',
     '执行时间',
     '运行结果'
   ];
@@ -1387,6 +1391,10 @@ function exportResults() {
       escape(metrics.documentHeightPx || ''),
       escape(metrics.viewportHeightPx || ''),
       escape(metrics.pageDepthScreens || ''),
+      escape(getResultText(r.result)),
+      escape(r.errorMessage || ''),
+      escape(r.aiContent || ''),
+      escape(r.elapsed != null ? r.elapsed : ''),
       escape(r.timestamp ? formatDateTime(new Date(r.timestamp)) : ''),
       escape(runResult)
     ];
@@ -1410,14 +1418,22 @@ function getExportSourceColumnCount(originalRow) {
   if (len <= 0) return 0;
 
   const lastValue = String(originalRow[len - 1] || '').trim();
-  const knownResultValues = new Set(['√', '×', '需手动处理', '成功', '失败', '非法站点，已拦截']);
+  const knownResultValues = new Set(['1', '0', '√', '×', '需手动处理', '成功', '失败', '非法站点，已拦截']);
   if (knownResultValues.has(lastValue)) {
-    const hasGeneratedMetrics = len >= 12
+    const hasCompleteGeneratedResult = len >= 16
+      && /^https?:\/\//i.test(String(originalRow[len - 10] || '').trim())
+      && Number.isFinite(Number(originalRow[len - 9]))
+      && Number.isFinite(Number(originalRow[len - 8]))
+      && Number.isFinite(Number(originalRow[len - 7]));
+    if (hasCompleteGeneratedResult) return len - 10;
+
+    // 兼容上一版仅包含网站、页面深度、时间和运行结果的导出格式。
+    const hasLegacyGeneratedMetrics = len >= 12
       && /^https?:\/\//i.test(String(originalRow[len - 6] || '').trim())
       && Number.isFinite(Number(originalRow[len - 5]))
       && Number.isFinite(Number(originalRow[len - 4]))
       && Number.isFinite(Number(originalRow[len - 3]));
-    if (hasGeneratedMetrics) return len - 6;
+    if (hasLegacyGeneratedMetrics) return len - 6;
     return len - 1;
   }
 
@@ -1428,10 +1444,7 @@ function getExportSourceColumnCount(originalRow) {
 }
 
 function getExportRunResult(result) {
-  if (result === 'success' || result === 'skipped') return '√';
-  if (result === 'manual_required') return '需手动处理';
-  if (result === 'blocked_illegal') return '非法站点，已拦截';
-  return '×';
+  return result === 'success' || result === 'skipped' ? '1' : '0';
 }
 
 function clearBatch() {
@@ -1650,10 +1663,20 @@ function renderStats() {
     tr.appendChild(errCell);
     tr.appendChild(aiCell);
 
-    tr.innerHTML += `
-      <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">${elapsedStr}</td>
-      <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">${timeStr}</td>
-    `;
+    // 不能使用 innerHTML += 追加单元格，否则浏览器会重建整行 DOM，导致打开链接和 AI 内容展开事件丢失。
+    const elapsedCell = document.createElement('td');
+    elapsedCell.style.fontSize = '11px';
+    elapsedCell.style.color = '#9ca3af';
+    elapsedCell.style.whiteSpace = 'nowrap';
+    elapsedCell.textContent = elapsedStr;
+    tr.appendChild(elapsedCell);
+
+    const timeCell = document.createElement('td');
+    timeCell.style.fontSize = '11px';
+    timeCell.style.color = '#9ca3af';
+    timeCell.style.whiteSpace = 'nowrap';
+    timeCell.textContent = timeStr;
+    tr.appendChild(timeCell);
 
     statsTableBody.appendChild(tr);
   }
