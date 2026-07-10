@@ -20,6 +20,15 @@
         margin: 0 auto;
       }
 
+      body.embedded {
+        padding: 0;
+        background: transparent;
+      }
+
+      body.embedded .container {
+        max-width: none;
+      }
+
       h1 {
         font-size: 20px;
         margin: 0 0 4px;
@@ -48,6 +57,29 @@
         display: flex;
         align-items: center;
         gap: 6px;
+      }
+
+      .promotion-site-field {
+        max-width: 520px;
+      }
+
+      .promotion-site-field label {
+        display: block;
+        margin-bottom: 7px;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .promotion-site-field select {
+        width: 100%;
+        min-height: 40px;
+        padding: 8px 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #1f2937;
+        font-size: 13px;
       }
 
       /* 上传区域 */
@@ -130,6 +162,43 @@
       }
 
       .file-remove:hover { color: #dc2626; }
+
+      .manual-url-block {
+        margin-top: 14px;
+      }
+
+      .manual-url-block label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 8px;
+      }
+
+      .manual-url-textarea {
+        width: 100%;
+        min-height: 132px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #d1d5db;
+        font-size: 12px;
+        line-height: 1.5;
+        outline: none;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+      }
+
+      .manual-url-textarea:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+      }
+
+      .manual-url-tools {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+      }
 
       /* URL 预览 */
       .url-preview {
@@ -637,6 +706,16 @@
       <div class="subtitle">上传 CSV 文件，批量打开目标页面，自动发送评论并记录结果</div>
 
 
+      <div class="card">
+        <div class="card-title">本批次推广网站</div>
+        <div class="promotion-site-field">
+          <label for="batchPromotionSiteSelect">推广网站</label>
+          <select id="batchPromotionSiteSelect"></select>
+        </div>
+        <div class="hint" style="margin-top: 8px;">开始处理时会锁定这里选择的网站；AI 文案、链接、锚文本和评论表单名称都会使用该网站的配置。</div>
+      </div>
+
+
       <!-- 文件上传区 -->
       <div class="card">
         <div class="card-title">上传 CSV 文件</div>
@@ -651,6 +730,16 @@
           <span class="file-name" id="fileName"></span>
           <span class="file-count" id="fileCount"></span>
           <span class="file-remove" id="fileRemove" title="移除文件">×</span>
+        </div>
+
+        <div class="manual-url-block">
+          <label for="manualUrlsInput">直接粘贴 URL</label>
+          <textarea id="manualUrlsInput" class="manual-url-textarea" rows="7" placeholder="一行一个 URL，例如：&#10;https://example.com/post-a&#10;https://example.com/post-b"></textarea>
+          <div class="manual-url-tools">
+            <button class="btn btn-secondary" id="parseManualUrlsBtn" type="button">解析粘贴 URL</button>
+            <button class="btn btn-secondary" id="clearManualUrlsBtn" type="button">清空粘贴内容</button>
+          </div>
+          <div class="hint">支持一行一个 URL；也兼容用空格、逗号分隔。未写协议时会自动补全为 https://。</div>
         </div>
 
         <div class="url-preview" id="urlPreview">
@@ -859,6 +948,11 @@
 
     </div>
 
+    <script>
+      if (window.self !== window.top) {
+        document.body.classList.add('embedded');
+      }
+    </script>
     <script src="lib/papaparse.min.js"></script>
     <script src="illegal-site-filter.js"></script>
     <script src="batch.js"></script>

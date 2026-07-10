@@ -43,6 +43,10 @@ async function persistBatchReport(message) {
 
   const data = await chrome.storage.local.get(['batchResults', 'batchReportedUrls']);
   const results = Array.isArray(data.batchResults) ? data.batchResults : [];
+  const promotionSiteMetadata = {};
+  if (message.promotionSiteId) promotionSiteMetadata.promotionSiteId = message.promotionSiteId;
+  if (message.promotionSiteName) promotionSiteMetadata.promotionSiteName = message.promotionSiteName;
+  if (message.promotionSiteUrl) promotionSiteMetadata.promotionSiteUrl = message.promotionSiteUrl;
   const entry = {
     batchId,
     urlIndex,
@@ -50,6 +54,7 @@ async function persistBatchReport(message) {
     result,
     aiContent,
     errorMessage,
+    ...promotionSiteMetadata,
     timestamp: Date.now()
   };
   const existingIndex = results.findIndex((item) => item.batchId === batchId && item.urlIndex === urlIndex);
@@ -84,7 +89,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           url: message.url || '',
           result: message.result || 'success',
           aiContent: message.aiContent || null,
-          errorMessage: message.errorMessage || null
+          errorMessage: message.errorMessage || null,
+          promotionSiteId: message.promotionSiteId || '',
+          promotionSiteName: message.promotionSiteName || '',
+          promotionSiteUrl: message.promotionSiteUrl || ''
         });
         console.log('[background] persistBatchReport 完成，准备发送 BATCH_CONFIRMED');
 

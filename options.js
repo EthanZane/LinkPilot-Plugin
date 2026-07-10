@@ -1,5 +1,6 @@
 const WEBSITE_URL_STORAGE_KEY = 'promotion_website_url';
 const WEBSITE_CONTENT_STORAGE_KEY = 'promotion_website_content';
+const SITES_CONFIG_STORAGE_KEY = 'promotion_sites_config';
 const USER_NAME_STORAGE_KEY = 'auto_fill_user_name';
 const USER_EMAIL_STORAGE_KEY = 'auto_fill_user_email';
 const USER_PASSWORD_STORAGE_KEY = 'auto_fill_user_password';
@@ -8,7 +9,7 @@ const LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
 const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
 const AI_CONFIG_STORAGE_KEY = 'auto_comment_ai_config';
 
-const CONFIG_VERSION = 3;
+const CONFIG_VERSION = 4;
 
 const ACTIVE_STORAGE_KEYS = [
   WEBSITE_URL_STORAGE_KEY,
@@ -21,6 +22,7 @@ const ACTIVE_STORAGE_KEYS = [
 
 const IMPORT_COMPAT_STORAGE_KEYS = [
   ...ACTIVE_STORAGE_KEYS,
+  SITES_CONFIG_STORAGE_KEY,
   LEGACY_SKILL_TEMPLATE_STORAGE_KEY,
   LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY,
   AI_CONFIG_STORAGE_KEY
@@ -86,18 +88,28 @@ const DEFAULT_AI_CONFIG = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
+  const tabPanels = Array.from(document.querySelectorAll('[data-tab-panel]'));
+  const siteList = document.getElementById('siteList');
+  const siteNameInput = document.getElementById('siteName');
   const websiteUrlInput = document.getElementById('websiteUrl');
   const websiteContentInput = document.getElementById('websiteContent');
-  const userNameInput = document.getElementById('userName');
+  const anchorTextInput = document.getElementById('anchorTextInput');
+  const anchorList = document.getElementById('anchorList');
+  const newSiteBtn = document.getElementById('newSiteBtn');
+  const addAnchorTextsBtn = document.getElementById('addAnchorTextsBtn');
+  const setActiveSiteBtn = document.getElementById('setActiveSiteBtn');
+  const deleteSiteBtn = document.getElementById('deleteSiteBtn');
   const userEmailInput = document.getElementById('userEmail');
   const userPasswordInput = document.getElementById('userPassword');
   const saveSettingsBtn = document.getElementById('saveSettingsBtn');
   const settingsStatusEl = document.getElementById('settingsStatus');
+  const saveProfileSettingsBtn = document.getElementById('saveProfileSettingsBtn');
+  const profileSettingsStatusEl = document.getElementById('profileSettingsStatus');
   const exportConfigBtn = document.getElementById('exportConfigBtn');
   const importConfigBtn = document.getElementById('importConfigBtn');
   const importConfigFileInput = document.getElementById('importConfigFileInput');
   const importExportStatus = document.getElementById('importExportStatus');
-  const openBatchBtn = document.getElementById('openBatchBtn');
   const toggleExportOutlinksFloatingBtn = document.getElementById('toggleExportOutlinksFloatingBtn');
 
   const providerSelect = document.getElementById('providerSelect');
@@ -115,7 +127,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const deleteProviderBtn = document.getElementById('deleteProviderBtn');
   const providerStatusEl = document.getElementById('providerStatus');
 
-  if (!websiteUrlInput || !websiteContentInput || !userNameInput || !userEmailInput || !saveSettingsBtn) {
+  if (!siteList || !siteNameInput || !websiteUrlInput || !websiteContentInput || !anchorList || !userEmailInput || !saveSettingsBtn) {
     console.error('设置页初始化失败：关键表单元素不存在');
     return;
   }
@@ -123,6 +135,33 @@ document.addEventListener('DOMContentLoaded', () => {
   let showExportOutlinksFloatingButton = true;
   let aiConfig = clone(DEFAULT_AI_CONFIG);
   let editingProviderId = DEFAULT_AI_CONFIG.activeProviderId;
+  let sitesConfig = { activeSiteId: '', sites: [] };
+  let editingSiteId = '';
+
+  function activateTab(tabName) {
+    const targetName = tabPanels.some((panel) => panel.dataset.tabPanel === tabName) ? tabName : 'ai';
+    tabButtons.forEach((button) => {
+      button.classList.toggle('active', button.dataset.tabTarget === targetName);
+    });
+    tabPanels.forEach((panel) => {
+      panel.classList.toggle('active', panel.dataset.tabPanel === targetName);
+    });
+    try {
+      chrome.storage.local.set({ auto_comment_options_active_tab: targetName }, () => {});
+    } catch (_) {}
+  }
+
+  function initTabs() {
+    tabButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        activateTab(button.dataset.tabTarget);
+      });
+    });
+
+    chrome.storage.local.get(['auto_comment_options_active_tab'], (data) => {
+      activateTab(data.auto_comment_options_active_tab || 'ai');
+    });
+  }
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -154,6 +193,30 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/^_+|_+$/g, '') || 'provider';
     const suffix = Date.now().toString(36);
     return `${base}_${suffix}`;
+  }
+
+  function createSiteId(name) {
+    const base = normalizeText(name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'site';
+    return `${base}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function createAnchorId(text) {
+    const base = normalizeText(text)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'anchor';
+    return `${base}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function getDomainFromUrl(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./i, '');
+    } catch (_) {
+      return '';
+    }
   }
 
   function normalizeProvider(provider) {
@@ -284,6 +347,228 @@ document.addEventListener('DOMContentLoaded', () => {
     ]);
   }
 
+  // 站点配置采用结构化数据，便于后续按站点扩展锚文本权重、使用次数和阶段状态。
+  function normalizeAnchor(anchor) {
+    if (typeof anchor === 'string') {
+      const text = normalizeText(anchor);
+      return text ? { id: createAnchorId(text), text, enabled: true } : null;
+    }
+    const text = normalizeText(anchor && anchor.text);
+    if (!text) return null;
+    return {
+      id: normalizeText(anchor && anchor.id) || createAnchorId(text),
+      text,
+      enabled: anchor && anchor.enabled === false ? false : true
+    };
+  }
+
+  function normalizeSite(site) {
+    const url = normalizeText(site && site.url);
+    const content = normalizeText(site && site.content);
+    const name = normalizeText(site && site.name) || getDomainFromUrl(url) || '未命名网站';
+    const anchors = Array.isArray(site && site.anchors)
+      ? site.anchors.map(normalizeAnchor).filter(Boolean)
+      : [];
+    return {
+      id: normalizeText(site && site.id) || createSiteId(name),
+      name,
+      url,
+      content,
+      anchors
+    };
+  }
+
+  // 兼容旧版本的单网站配置：首次打开新版设置页时会自动构造一个默认站点。
+  function buildLegacySite(data) {
+    const legacyUrl = typeof data[WEBSITE_URL_STORAGE_KEY] === 'string'
+      ? data[WEBSITE_URL_STORAGE_KEY].trim()
+      : getLegacyWebsiteUrl(data);
+    const legacyContent = typeof data[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
+      ? data[WEBSITE_CONTENT_STORAGE_KEY].trim()
+      : getLegacyWebsiteContent(data);
+    return normalizeSite({
+      id: 'default_site',
+      name: getDomainFromUrl(legacyUrl) || '默认网站',
+      url: legacyUrl,
+      content: legacyContent,
+      anchors: []
+    });
+  }
+
+  function normalizeSitesConfig(config, legacyData = {}) {
+    let sites = Array.isArray(config && config.sites)
+      ? config.sites.map(normalizeSite).filter(Boolean)
+      : [];
+
+    if (sites.length === 0) {
+      sites = [buildLegacySite(legacyData)];
+    }
+
+    const activeSiteId = sites.some((site) => site.id === config?.activeSiteId)
+      ? config.activeSiteId
+      : sites[0].id;
+
+    return { activeSiteId, sites };
+  }
+
+  function getEditingSite() {
+    return sitesConfig.sites.find((site) => site.id === editingSiteId)
+      || sitesConfig.sites.find((site) => site.id === sitesConfig.activeSiteId)
+      || sitesConfig.sites[0]
+      || null;
+  }
+
+  function getActiveSite() {
+    return sitesConfig.sites.find((site) => site.id === sitesConfig.activeSiteId)
+      || sitesConfig.sites[0]
+      || null;
+  }
+
+  function updateEditingSiteInMemory(partial) {
+    const site = getEditingSite();
+    if (!site) return null;
+    Object.assign(site, partial);
+    return site;
+  }
+
+  function parseAnchorInput(value) {
+    const seen = new Set();
+    return String(value || '')
+      .split(/[,，\n]/)
+      .map((item) => normalizeText(item))
+      .filter((item) => {
+        const key = item.toLowerCase();
+        if (!item || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }
+
+  function renderSiteList() {
+    siteList.innerHTML = '';
+    sitesConfig.sites.forEach((site) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'site-item';
+      button.classList.toggle('active', site.id === editingSiteId);
+      button.dataset.siteId = site.id;
+      button.innerHTML = `
+        <div class="site-item-name">
+          <span>${escapeHtml(site.name || '未命名网站')}</span>
+          ${site.id === sitesConfig.activeSiteId ? '<span class="site-current-badge">当前</span>' : ''}
+        </div>
+        <div class="site-item-url">${escapeHtml(site.url || '未填写 URL')}</div>
+      `;
+      button.addEventListener('click', () => {
+        saveEditingSiteDraft();
+        editingSiteId = site.id;
+        renderSiteList();
+        fillSiteForm(site);
+      });
+      siteList.appendChild(button);
+    });
+  }
+
+  function renderAnchorList(site) {
+    anchorList.innerHTML = '';
+    if (!site || site.anchors.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'anchor-empty';
+      empty.textContent = '当前站点还没有锚文本。未配置时，AI 会根据页面上下文自然生成锚文本。';
+      anchorList.appendChild(empty);
+      return;
+    }
+
+    site.anchors.forEach((anchor) => {
+      const row = document.createElement('div');
+      row.className = 'anchor-row';
+      row.classList.toggle('is-disabled', !anchor.enabled);
+      row.dataset.anchorId = anchor.id;
+      row.innerHTML = `
+        <input type="checkbox" data-anchor-action="toggle" ${anchor.enabled ? 'checked' : ''} title="启用或禁用该锚文本" />
+        <input type="text" data-anchor-action="text" value="${escapeHtml(anchor.text)}" />
+        <button class="btn btn-secondary" type="button" data-anchor-action="delete">删除</button>
+      `;
+      anchorList.appendChild(row);
+    });
+  }
+
+  function fillSiteForm(site) {
+    if (!site) return;
+    editingSiteId = site.id;
+    siteNameInput.value = site.name || '';
+    websiteUrlInput.value = site.url || '';
+    websiteContentInput.value = site.content || '';
+    anchorTextInput.value = '';
+    renderAnchorList(site);
+    renderSiteList();
+  }
+
+  function saveEditingSiteDraft() {
+    const site = getEditingSite();
+    if (!site) return null;
+    site.name = normalizeText(siteNameInput.value) || getDomainFromUrl(websiteUrlInput.value) || site.name || '未命名网站';
+    site.url = normalizeText(websiteUrlInput.value);
+    site.content = normalizeText(websiteContentInput.value);
+    return site;
+  }
+
+  function readSiteForm() {
+    const existing = saveEditingSiteDraft();
+    if (!existing) throw new Error('当前没有可保存的网站');
+    const site = normalizeSite(existing);
+    if (!site.name) throw new Error('请填写网站名称');
+    if (!site.url) throw new Error('请填写网站链接');
+    if (!site.content) throw new Error('请填写网站内容');
+    return site;
+  }
+
+  function persistSitesConfig(callback) {
+    const activeSite = getActiveSite();
+    const localPayload = {
+      [SITES_CONFIG_STORAGE_KEY]: sitesConfig
+    };
+    const syncPayload = {
+      [WEBSITE_URL_STORAGE_KEY]: activeSite ? activeSite.url : '',
+      [WEBSITE_CONTENT_STORAGE_KEY]: activeSite ? activeSite.content : '',
+      [USER_NAME_STORAGE_KEY]: activeSite ? activeSite.name : '',
+      [USER_EMAIL_STORAGE_KEY]: userEmailInput.value.trim(),
+      [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim()
+    };
+
+    // 多站点配置可能包含较长的网站描述和锚文本池，使用 storage.local 避免 sync 单项配额导致保存失败。
+    chrome.storage.local.set(localPayload, () => {
+      if (chrome.runtime.lastError) {
+        const message = chrome.runtime.lastError.message || String(chrome.runtime.lastError);
+        console.error('保存网站管理配置到本地失败：', chrome.runtime.lastError);
+        showStatus(settingsStatusEl, `保存失败：${message}`, 5000);
+        if (callback) callback(new Error(message));
+        return;
+      }
+
+      // 这些旧字段继续写入 sync，给旧逻辑和导出配置提供当前站点兜底值。
+      chrome.storage.sync.set(syncPayload, () => {
+        if (chrome.runtime.lastError) {
+          const message = chrome.runtime.lastError.message || String(chrome.runtime.lastError);
+          console.error('保存网站管理兼容配置失败：', chrome.runtime.lastError);
+          showStatus(settingsStatusEl, `保存失败：${message}`, 5000);
+          if (callback) callback(new Error(message));
+          return;
+        }
+        if (callback) callback(null);
+      });
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function loadSettings() {
     chrome.storage.sync.get(IMPORT_COMPAT_STORAGE_KEYS, (syncResult) => {
       if (chrome.runtime.lastError) {
@@ -292,17 +577,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const data = syncResult || {};
-      websiteUrlInput.value = typeof data[WEBSITE_URL_STORAGE_KEY] === 'string'
-        ? data[WEBSITE_URL_STORAGE_KEY]
-        : getLegacyWebsiteUrl(data);
-      websiteContentInput.value = typeof data[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
-        ? data[WEBSITE_CONTENT_STORAGE_KEY]
-        : getLegacyWebsiteContent(data);
-      userNameInput.value = typeof data[USER_NAME_STORAGE_KEY] === 'string' ? data[USER_NAME_STORAGE_KEY] : '';
       userEmailInput.value = typeof data[USER_EMAIL_STORAGE_KEY] === 'string' ? data[USER_EMAIL_STORAGE_KEY] : '';
       userPasswordInput.value = typeof data[USER_PASSWORD_STORAGE_KEY] === 'string' ? data[USER_PASSWORD_STORAGE_KEY] : '';
       showExportOutlinksFloatingButton = data[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false;
       renderExportOutlinksFloatingToggle();
+
+      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY], (localResult) => {
+        if (chrome.runtime.lastError) {
+          console.error('读取本地网站配置失败：', chrome.runtime.lastError);
+          sitesConfig = normalizeSitesConfig(null, data);
+        } else {
+          sitesConfig = normalizeSitesConfig(localResult[SITES_CONFIG_STORAGE_KEY], data);
+        }
+        editingSiteId = sitesConfig.activeSiteId;
+        fillSiteForm(getEditingSite());
+      });
     });
 
     chrome.storage.local.get([AI_CONFIG_STORAGE_KEY], (localResult) => {
@@ -319,10 +608,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const requiredSettingsFields = [
-    { el: websiteUrlInput, label: '网站链接' },
-    { el: websiteContentInput, label: '网站内容' },
-    { el: userNameInput, label: '姓名/昵称' },
-    { el: userEmailInput, label: '邮箱' }
+    { el: siteNameInput, label: '网站名称' },
+    { el: websiteUrlInput, label: '当前网站链接' },
+    { el: websiteContentInput, label: '当前网站内容' }
   ];
 
   function validateRequiredSettings() {
@@ -354,26 +642,173 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  saveSettingsBtn.addEventListener('click', () => {
+  function saveWebsiteSettings(button, statusEl, successText) {
     if (!validateRequiredSettings()) return;
 
-    chrome.storage.sync.set(
-      {
-        [WEBSITE_URL_STORAGE_KEY]: websiteUrlInput.value.trim(),
-        [WEBSITE_CONTENT_STORAGE_KEY]: websiteContentInput.value.trim(),
-        [USER_NAME_STORAGE_KEY]: userNameInput.value.trim(),
-        [USER_EMAIL_STORAGE_KEY]: userEmailInput.value.trim(),
-        [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim()
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          console.error('保存自动填表设置失败：', chrome.runtime.lastError);
-          showStatus(settingsStatusEl, '保存失败', 2000);
+    const originalText = button.textContent;
+    try {
+      button.disabled = true;
+      button.textContent = '正在保存...';
+      showStatus(statusEl, '正在保存...', 60000);
+      const site = readSiteForm();
+      const index = sitesConfig.sites.findIndex((item) => item.id === site.id);
+      if (index >= 0) {
+        sitesConfig.sites[index] = site;
+      } else {
+        sitesConfig.sites.push(site);
+      }
+      editingSiteId = site.id;
+      persistSitesConfig((error) => {
+        button.disabled = false;
+        button.textContent = originalText;
+        if (error) {
+          showStatus(statusEl, `保存失败：${error.message}`, 5000);
           return;
         }
-        showStatus(settingsStatusEl, '已保存');
+        renderSiteList();
+        fillSiteForm(site);
+        showStatus(statusEl, successText, 3500);
+      });
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = originalText;
+      showStatus(statusEl, error.message || '站点配置无效', 3000);
+    }
+  }
+
+  saveSettingsBtn.addEventListener('click', () => {
+    saveWebsiteSettings(saveSettingsBtn, settingsStatusEl, '站点已保存，刷新后仍会保留');
+  });
+
+  if (saveProfileSettingsBtn) {
+    saveProfileSettingsBtn.addEventListener('click', () => {
+      saveWebsiteSettings(saveProfileSettingsBtn, profileSettingsStatusEl || settingsStatusEl, '基础信息已保存，刷新后仍会保留');
+    });
+  }
+
+  if (newSiteBtn) {
+    newSiteBtn.addEventListener('click', () => {
+      saveEditingSiteDraft();
+      const site = normalizeSite({
+        id: createSiteId('site'),
+        name: '新网站',
+        url: '',
+        content: '',
+        anchors: []
+      });
+      sitesConfig.sites.push(site);
+      editingSiteId = site.id;
+      renderSiteList();
+      fillSiteForm(site);
+      showStatus(settingsStatusEl, '已创建新网站，请填写后保存', 2600);
+    });
+  }
+
+  if (setActiveSiteBtn) {
+    setActiveSiteBtn.addEventListener('click', () => {
+      if (!validateRequiredSettings()) return;
+      try {
+        const site = readSiteForm();
+        const index = sitesConfig.sites.findIndex((item) => item.id === site.id);
+        if (index >= 0) sitesConfig.sites[index] = site;
+        sitesConfig.activeSiteId = site.id;
+        editingSiteId = site.id;
+        persistSitesConfig(() => {
+          renderSiteList();
+          fillSiteForm(site);
+          showStatus(settingsStatusEl, `当前站点：${site.name}`, 2600);
+        });
+      } catch (error) {
+        showStatus(settingsStatusEl, error.message || '站点配置无效', 3000);
       }
-    );
+    });
+  }
+
+  if (deleteSiteBtn) {
+    deleteSiteBtn.addEventListener('click', () => {
+      const site = getEditingSite();
+      if (!site) return;
+      if (sitesConfig.sites.length <= 1) {
+        showStatus(settingsStatusEl, '至少保留一个网站', 2400);
+        return;
+      }
+      if (!confirm(`确认删除「${site.name}」？`)) return;
+      sitesConfig.sites = sitesConfig.sites.filter((item) => item.id !== site.id);
+      if (sitesConfig.activeSiteId === site.id) {
+        sitesConfig.activeSiteId = sitesConfig.sites[0].id;
+      }
+      editingSiteId = sitesConfig.activeSiteId;
+      persistSitesConfig(() => {
+        fillSiteForm(getEditingSite());
+        showStatus(settingsStatusEl, '网站已删除');
+      });
+    });
+  }
+
+  if (addAnchorTextsBtn && anchorTextInput) {
+    addAnchorTextsBtn.addEventListener('click', () => {
+      const site = saveEditingSiteDraft();
+      if (!site) return;
+      const texts = parseAnchorInput(anchorTextInput.value);
+      if (texts.length === 0) {
+        showStatus(settingsStatusEl, '请输入要添加的锚文本', 2200);
+        return;
+      }
+      const existingTexts = new Set(site.anchors.map((anchor) => anchor.text.toLowerCase()));
+      const nextAnchors = texts
+        .filter((text) => !existingTexts.has(text.toLowerCase()))
+        .map((text) => ({ id: createAnchorId(text), text, enabled: true }));
+      if (nextAnchors.length === 0) {
+        showStatus(settingsStatusEl, '这些锚文本已存在', 2200);
+        return;
+      }
+      site.anchors.push(...nextAnchors);
+      anchorTextInput.value = '';
+      renderAnchorList(site);
+      showStatus(settingsStatusEl, `已添加 ${nextAnchors.length} 个锚文本，请保存站点`, 2600);
+    });
+  }
+
+  if (anchorTextInput) {
+    anchorTextInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addAnchorTextsBtn?.click();
+      }
+    });
+  }
+
+  anchorList.addEventListener('change', (event) => {
+    const row = event.target.closest('.anchor-row');
+    const site = getEditingSite();
+    if (!row || !site) return;
+    const anchor = site.anchors.find((item) => item.id === row.dataset.anchorId);
+    if (!anchor) return;
+    if (event.target.dataset.anchorAction === 'toggle') {
+      anchor.enabled = !!event.target.checked;
+      row.classList.toggle('is-disabled', !anchor.enabled);
+      showStatus(settingsStatusEl, '锚文本状态已修改，请保存站点', 2400);
+    }
+  });
+
+  anchorList.addEventListener('input', (event) => {
+    const row = event.target.closest('.anchor-row');
+    const site = getEditingSite();
+    if (!row || !site || event.target.dataset.anchorAction !== 'text') return;
+    const anchor = site.anchors.find((item) => item.id === row.dataset.anchorId);
+    if (!anchor) return;
+    anchor.text = normalizeText(event.target.value);
+  });
+
+  anchorList.addEventListener('click', (event) => {
+    const action = event.target.dataset.anchorAction;
+    if (action !== 'delete') return;
+    const row = event.target.closest('.anchor-row');
+    const site = getEditingSite();
+    if (!row || !site) return;
+    site.anchors = site.anchors.filter((item) => item.id !== row.dataset.anchorId);
+    renderAnchorList(site);
+    showStatus(settingsStatusEl, '锚文本已删除，请保存站点', 2400);
   });
 
   if (providerSelect) {
@@ -538,12 +973,16 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        chrome.storage.local.get([AI_CONFIG_STORAGE_KEY], (localResult) => {
+        chrome.storage.local.get([AI_CONFIG_STORAGE_KEY, SITES_CONFIG_STORAGE_KEY], (localResult) => {
+          saveEditingSiteDraft();
+          const activeSite = getActiveSite();
+          const exportSitesConfig = normalizeSitesConfig(localResult[SITES_CONFIG_STORAGE_KEY] || sitesConfig, syncResult || {});
           const mergedData = {
             ...syncResult,
-            [WEBSITE_URL_STORAGE_KEY]: websiteUrlInput.value.trim(),
-            [WEBSITE_CONTENT_STORAGE_KEY]: websiteContentInput.value.trim(),
-            [USER_NAME_STORAGE_KEY]: userNameInput.value.trim(),
+            [SITES_CONFIG_STORAGE_KEY]: exportSitesConfig,
+            [WEBSITE_URL_STORAGE_KEY]: activeSite ? activeSite.url : websiteUrlInput.value.trim(),
+            [WEBSITE_CONTENT_STORAGE_KEY]: activeSite ? activeSite.content : websiteContentInput.value.trim(),
+            [USER_NAME_STORAGE_KEY]: activeSite ? activeSite.name : '',
             [USER_EMAIL_STORAGE_KEY]: userEmailInput.value.trim(),
             [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim()
           };
@@ -563,8 +1002,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           };
 
-          if (!config.data[WEBSITE_CONTENT_STORAGE_KEY]) {
-            showImportExportStatus('导出失败：请先填写你的网站内容。', true);
+          if (!exportSitesConfig.sites.some((site) => site.url && site.content)) {
+            showImportExportStatus('导出失败：请先至少填写一个完整的网站。', true);
             return;
           }
 
@@ -619,7 +1058,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (legacyWebsiteContent) syncToSave[WEBSITE_CONTENT_STORAGE_KEY] = legacyWebsiteContent;
           }
 
-          const localToSave = {};
+          const importedSitesConfig = normalizeSitesConfig(
+            importedData[SITES_CONFIG_STORAGE_KEY],
+            {
+              ...importedData,
+              ...syncToSave
+            }
+          );
+
+          const localToSave = {
+            [SITES_CONFIG_STORAGE_KEY]: importedSitesConfig
+          };
           if (importedData[AI_CONFIG_STORAGE_KEY]) {
             localToSave[AI_CONFIG_STORAGE_KEY] = normalizeAiConfig(importedData[AI_CONFIG_STORAGE_KEY]);
           }
@@ -645,11 +1094,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  if (openBatchBtn) {
-    openBatchBtn.addEventListener('click', () => {
-      chrome.tabs.create({ url: 'batch.html' });
-    });
-  }
-
+  initTabs();
   loadSettings();
 });

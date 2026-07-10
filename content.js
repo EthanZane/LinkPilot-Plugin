@@ -359,6 +359,7 @@
   // ====== AI 生成配置 ======
   const WEBSITE_URL_STORAGE_KEY = 'promotion_website_url';
   const WEBSITE_CONTENT_STORAGE_KEY = 'promotion_website_content';
+  const SITES_CONFIG_STORAGE_KEY = 'promotion_sites_config';
   const USER_NAME_STORAGE_KEY = 'auto_fill_user_name';
   const USER_EMAIL_STORAGE_KEY = 'auto_fill_user_email';
   const USER_PASSWORD_STORAGE_KEY = 'auto_fill_user_password';
@@ -395,9 +396,82 @@
   // 最近一次 AI 生成的推广文案（用于页面自动填充 & 浮动窗口回显）
   let lastGeneratedPromotionCopy = '';
 
-  function buildQwenSkillTemplate(promotionWebsiteUrl, promotionWebsiteContent) {
-    const targetWebsiteUrl = promotionWebsiteUrl || '未配置网站链接';
-    const targetWebsiteContent = promotionWebsiteContent || '未配置网站内容';
+  function normalizePromotionAnchor(anchor) {
+    if (typeof anchor === 'string') {
+      const text = anchor.trim();
+      return text ? { text, enabled: true } : null;
+    }
+    const text = String(anchor && anchor.text || '').trim();
+    if (!text) return null;
+    return {
+      text,
+      enabled: anchor && anchor.enabled === false ? false : true
+    };
+  }
+
+  function normalizePromotionSite(site) {
+    return {
+      id: String(site && site.id || '').trim(),
+      name: String(site && site.name || '').trim(),
+      url: String(site && site.url || '').trim(),
+      content: String(site && site.content || '').trim(),
+      anchors: Array.isArray(site && site.anchors)
+        ? site.anchors.map(normalizePromotionAnchor).filter(Boolean)
+        : []
+    };
+  }
+
+  function pickRandomEnabledAnchor(site) {
+    const enabledAnchors = (site && Array.isArray(site.anchors) ? site.anchors : [])
+      .filter((anchor) => anchor && anchor.enabled !== false && anchor.text);
+    if (enabledAnchors.length === 0) return '';
+    const index = Math.floor(Math.random() * enabledAnchors.length);
+    return enabledAnchors[index].text;
+  }
+
+  function escapeHtmlForComment(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function buildHtmlLinkWithRequiredLineBreak(url, anchorText) {
+    const targetUrl = String(url || '').trim().replace(/"/g, '%22');
+    const text = escapeHtmlForComment(String(anchorText || '').trim());
+    if (!targetUrl || !text) return '';
+    return `<a href="${targetUrl}
+">${text}</a>`;
+  }
+
+  function enforceConfiguredAnchorText(aiText, site, anchorText) {
+    if (!anchorText) return aiText;
+    const text = String(aiText || '').trim();
+    const linkHtml = buildHtmlLinkWithRequiredLineBreak(site && site.url, anchorText);
+    if (!linkHtml) return text;
+
+    // 如果模型已经输出了 HTML 链接，则只替换第一个链接的可点击文本，保留其 href 和其它属性。
+    if (/<a\b[^>]*>[\s\S]*?<\/a>/i.test(text)) {
+      return text.replace(
+        /(<a\b[^>]*>)([\s\S]*?)(<\/a>)/i,
+        (_, openTag, _oldText, closeTag) => `${openTag}${escapeHtmlForComment(anchorText)}${closeTag}`
+      );
+    }
+
+    return `${text}\n\n${linkHtml}`.trim();
+  }
+
+  function buildQwenSkillTemplate(activeSite, anchorText) {
+    const targetWebsiteUrl = activeSite && activeSite.url ? activeSite.url : '未配置网站链接';
+    const targetWebsiteContent = activeSite && activeSite.content ? activeSite.content : '未配置网站内容';
+    const anchorInstruction = anchorText
+      ? [
+        `本次锚文本：${anchorText}`,
+        '本次评论必须包含一个指向"网站链接"的 HTML 链接，链接的可点击文本必须完全等于上面的"本次锚文本"。'
+      ]
+      : [
+        '当前站点未配置启用的锚文本；如果输出 HTML 链接，请根据页面上下文自然生成锚文本。'
+      ];
 
     return [
       '你是一个合规的网站营销与评论文案助手，为网站撰写自然、真实的评论文案。',
@@ -406,6 +480,7 @@
       '【我的网站信息】',
       `网站链接：${targetWebsiteUrl}`,
       `网站内容：${targetWebsiteContent}`,
+      ...anchorInstruction,
       '',
       '',
       '【输出要求】',
@@ -426,11 +501,13 @@
   }
 
   async function getQwenSkillTemplate() {
-    const [promotionWebsiteUrl, promotionWebsiteContent] = await Promise.all([
-      getWebsiteUrl(),
-      getWebsiteContent()
-    ]);
-    return buildQwenSkillTemplate(promotionWebsiteUrl, promotionWebsiteContent);
+    const activeSite = await getActivePromotionSite();
+    const anchorText = pickRandomEnabledAnchor(activeSite);
+    return {
+      systemPrompt: buildQwenSkillTemplate(activeSite, anchorText),
+      activeSite,
+      anchorText
+    };
   }
 
   function pickLegacyPromptValue(values, keywords) {
@@ -444,78 +521,118 @@
     return entry ? String(entry[1] || '').trim() : '';
   }
 
+  function getActivePromotionSite() {
+    return new Promise((resolve) => {
+      // 批量任务使用启动时锁定的网站快照，确保整批任务的网站、锚文本和表单名称保持一致。
+      if (_batchCtx && _batchCtx.promotionSite) {
+        resolve(normalizePromotionSite(_batchCtx.promotionSite));
+        return;
+      }
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
+        resolve(normalizePromotionSite({}));
+        return;
+      }
+      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY], (localResult) => {
+        if (!chrome.runtime?.lastError) {
+          const localConfig = localResult && localResult[SITES_CONFIG_STORAGE_KEY];
+          if (localConfig && Array.isArray(localConfig.sites) && localConfig.sites.length > 0) {
+            const sites = localConfig.sites.map(normalizePromotionSite).filter((site) => site.url || site.content);
+            const activeSite = sites.find((site) => site.id && site.id === localConfig.activeSiteId) || sites[0];
+            if (activeSite) {
+              resolve(activeSite);
+              return;
+            }
+          }
+        } else {
+          console.error('读取本地推广网站配置失败：', chrome.runtime.lastError);
+        }
+
+        chrome.storage.sync.get(
+        [
+          SITES_CONFIG_STORAGE_KEY,
+          WEBSITE_URL_STORAGE_KEY,
+          WEBSITE_CONTENT_STORAGE_KEY,
+          PROMPT_FIELD_VALUES_STORAGE_KEY
+        ],
+        (result) => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            console.error('读取推广网站配置失败：', chrome.runtime.lastError);
+            resolve(normalizePromotionSite({}));
+            return;
+          }
+
+          const config = result && result[SITES_CONFIG_STORAGE_KEY];
+          if (config && Array.isArray(config.sites) && config.sites.length > 0) {
+            const sites = config.sites.map(normalizePromotionSite).filter((site) => site.url || site.content);
+            const activeSite = sites.find((site) => site.id && site.id === config.activeSiteId) || sites[0];
+            if (activeSite) {
+              resolve(activeSite);
+              return;
+            }
+          }
+
+          const legacyUrl = result && typeof result[WEBSITE_URL_STORAGE_KEY] === 'string'
+            ? result[WEBSITE_URL_STORAGE_KEY].trim()
+            : pickLegacyPromptValue(result && result[PROMPT_FIELD_VALUES_STORAGE_KEY], [
+              '网站链接',
+              '网址',
+              'website link',
+              'website url',
+              'url'
+            ]);
+          const legacyContent = result && typeof result[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
+            ? result[WEBSITE_CONTENT_STORAGE_KEY].trim()
+            : pickLegacyPromptValue(result && result[PROMPT_FIELD_VALUES_STORAGE_KEY], [
+              '网站内容',
+              '网站介绍',
+              'website content',
+              'site content',
+              'description'
+            ]);
+          resolve(normalizePromotionSite({
+            id: 'legacy_site',
+            name: legacyUrl,
+            url: legacyUrl,
+            content: legacyContent,
+            anchors: []
+          }));
+        }
+        );
+      });
+    });
+  }
+
   // 从 chrome.storage.sync 中异步获取推广网站地址
-  function getWebsiteUrl() {
-    return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
-        resolve('');
-        return;
-      }
-      chrome.storage.sync.get([WEBSITE_URL_STORAGE_KEY, PROMPT_FIELD_VALUES_STORAGE_KEY], (result) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          console.error('读取推广网站地址失败：', chrome.runtime.lastError);
-          resolve('');
-          return;
-        }
-        const savedUrl = result && typeof result[WEBSITE_URL_STORAGE_KEY] === 'string'
-          ? result[WEBSITE_URL_STORAGE_KEY].trim()
-          : '';
-        const legacyUrl = pickLegacyPromptValue(result && result[PROMPT_FIELD_VALUES_STORAGE_KEY], [
-          '网站链接',
-          '网址',
-          'website link',
-          'website url',
-          'url'
-        ]);
-        resolve(savedUrl || legacyUrl);
-      });
-    });
+  async function getWebsiteUrl() {
+    const site = await getActivePromotionSite();
+    return site.url || '';
   }
 
-  function getWebsiteContent() {
-    return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
-        resolve('');
-        return;
-      }
-      chrome.storage.sync.get([WEBSITE_CONTENT_STORAGE_KEY, PROMPT_FIELD_VALUES_STORAGE_KEY], (result) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          console.error('读取推广网站内容失败：', chrome.runtime.lastError);
-          resolve('');
-          return;
-        }
-        const savedContent = result && typeof result[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
-          ? result[WEBSITE_CONTENT_STORAGE_KEY].trim()
-          : '';
-        const legacyContent = pickLegacyPromptValue(result && result[PROMPT_FIELD_VALUES_STORAGE_KEY], [
-          '网站内容',
-          '网站介绍',
-          'website content',
-          'site content',
-          'description'
-        ]);
-        resolve(savedContent || legacyContent);
-      });
-    });
+  async function getWebsiteContent() {
+    const site = await getActivePromotionSite();
+    return site.content || '';
   }
 
-  // 从 chrome.storage.sync 中异步获取用户的姓名 / 邮箱 / 密码
-  function getUserProfile() {
+  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 使用当前站点名称，邮箱和密码仍为全局配置。
+  async function getUserProfile() {
+    const activeSite = await getActivePromotionSite();
+    const siteName = String(activeSite && activeSite.name || '').trim();
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
-        resolve({ name: DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+        resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
         return;
       }
       chrome.storage.sync.get(
         [USER_NAME_STORAGE_KEY, USER_EMAIL_STORAGE_KEY, USER_PASSWORD_STORAGE_KEY],
         (result) => {
           if (chrome.runtime && chrome.runtime.lastError) {
-            console.error('读取用户姓名/邮箱/密码失败：', chrome.runtime.lastError);
-            resolve({ name: DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+            console.error('读取评论表单基础信息失败：', chrome.runtime.lastError);
+            resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
             return;
           }
-          let name = result && typeof result[USER_NAME_STORAGE_KEY] === 'string'
+          const legacyName = result && typeof result[USER_NAME_STORAGE_KEY] === 'string'
             ? result[USER_NAME_STORAGE_KEY].trim() : '';
+          let name = siteName || legacyName;
           let email = result && typeof result[USER_EMAIL_STORAGE_KEY] === 'string'
             ? result[USER_EMAIL_STORAGE_KEY].trim() : '';
           let password = result && typeof result[USER_PASSWORD_STORAGE_KEY] === 'string'
@@ -805,12 +922,26 @@
   // 在页面打开时自动调用一次 AI 生成
   let autoGeneratedOnce = false;
 
-  // 批处理模式上下文（由 BATCH_HANDLE 消息注入）
-  let _batchCtx = null; // { batchId, urlIndex, url }
+  // 批处理模式上下文（由 BATCH_HANDLE 消息注入），promotionSite 为批次启动时锁定的网站快照。
+  let _batchCtx = null; // { batchId, urlIndex, url, promotionSite }
   let runningBatchTaskKey = null;
 
-  function setBatchContext(batchId, urlIndex, url) {
-    _batchCtx = { batchId, urlIndex, url };
+  function setBatchContext(batchId, urlIndex, url, promotionSite) {
+    _batchCtx = {
+      batchId,
+      urlIndex,
+      url,
+      promotionSite: promotionSite ? normalizePromotionSite(promotionSite) : null
+    };
+  }
+
+  function getBatchPromotionSiteMetadata(site) {
+    const normalizedSite = normalizePromotionSite(site || (_batchCtx && _batchCtx.promotionSite));
+    return {
+      promotionSiteId: normalizedSite.id || '',
+      promotionSiteName: normalizedSite.name || '',
+      promotionSiteUrl: normalizedSite.url || ''
+    };
   }
 
   function getBatchTaskKey(batchId, urlIndex) {
@@ -819,6 +950,7 @@
 
   async function persistBatchSubmitContext(batchId, urlIndex, url, result, aiContent, errorMessage) {
     if (typeof chrome === 'undefined' || !chrome.storage) return;
+    const promotionSite = normalizePromotionSite(_batchCtx && _batchCtx.promotionSite);
     await new Promise((resolve) => {
       chrome.storage.local.set({
         batchSubmitCtx: {
@@ -828,6 +960,7 @@
           result,
           aiContent: aiContent || null,
           errorMessage: errorMessage || null,
+          promotionSite,
           timestamp: Date.now()
         }
       }, resolve);
@@ -856,7 +989,8 @@
         url: ctx.url || '',
         aiContent: ctx.aiContent || '',
         result: ctx.result || 'success',
-        errorMessage: ctx.errorMessage || null
+        errorMessage: ctx.errorMessage || null,
+        ...getBatchPromotionSiteMetadata(ctx.promotionSite)
       }).then(resolve).catch(resolve);
     });
 
@@ -891,7 +1025,8 @@
           batchId,
           urlIndex,
           url: url || '',
-          aiContent
+          aiContent,
+          ...getBatchPromotionSiteMetadata()
         }).then(resolve).catch(resolve);
       });
     }
@@ -911,9 +1046,9 @@
     console.log('[AutoComment] handleBatchTaskForAutoMode _batchCtx:', _batchCtx);
 
     try {
-      // 尝试获取缓存的文案或之前生成的文案
-      let promotionText = await getCachedPromotionCopy() || lastGeneratedPromotionCopy;
-      console.log('[AutoComment] handleBatchTaskForAutoMode cachedCopy:', !!await getCachedPromotionCopy(), 'lastGeneratedPromotionCopy:', !!lastGeneratedPromotionCopy);
+      // 批量模式每个目标页都重新生成评论，避免缓存文案导致锚文本随机失效。
+      let promotionText = '';
+      console.log('[AutoComment] handleBatchTaskForAutoMode 批量模式将重新生成文案，确保锚文本随机生效');
 
       // 如果没有缓存文案，则触发评论表单流程并生成 AI 文案
       if (!promotionText) {
@@ -2727,12 +2862,12 @@
     const EMAIL = userProfile.email || '';
 
     console.log('[AutoComment] ===== ensureAllCommentFormFieldsFilled 开始 =====');
-    console.log('[AutoComment] 将填入 - Name:', USERNAME, '| Email:', EMAIL, '| Website:', WEBSITE, '| skipComment:', skipCommentValidation);
+    console.log('[AutoComment] 将填入 - Name(当前站点名称):', USERNAME, '| Email:', EMAIL, '| Website:', WEBSITE, '| skipComment:', skipCommentValidation);
 
     // ── 前置检查：配置缺失则直接报错，不静默失败 ─────────────────
     if (!USERNAME || !EMAIL) {
       const missing = [];
-      if (!USERNAME) missing.push('姓名（Name）');
+      if (!USERNAME) missing.push('当前站点名称（Name）');
       if (!EMAIL) missing.push('邮箱（Email）');
       const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
       console.error('[AutoComment] ' + msg);
@@ -3013,7 +3148,7 @@
 
   // 收集当前页面内容 + 调用本地配置的 AI Provider 生成推广文案
   async function generatePromotionCopyWithQwen() {
-    const QWEN_SKILL_TEMPLATE = await getQwenSkillTemplate();
+    const promptContext = await getQwenSkillTemplate();
     const websiteUrl = window.location.href || '';
     const title = document.title || '';
     const descriptionMeta =
@@ -3038,7 +3173,7 @@
     const response = await chrome.runtime.sendMessage({
       type: 'GENERATE_COMMENT',
       payload: {
-        systemPrompt: QWEN_SKILL_TEMPLATE,
+        systemPrompt: promptContext.systemPrompt,
         userPrompt: buildAiUserPrompt({
           websiteUrl,
           title,
@@ -3052,12 +3187,19 @@
       throw new Error(response && response.error ? `生成失败: ${response.error}` : 'AI Provider 返回异常，请检查设置页配置。');
     }
 
-    const aiText = String(response.text || '').trim();
+    const aiText = enforceConfiguredAnchorText(
+      String(response.text || '').trim(),
+      promptContext.activeSite,
+      promptContext.anchorText
+    );
     if (!aiText) {
       throw new Error('AI Provider 返回了空内容，请检查模型或提示词配置。');
     }
 
     console.log('AI 生成的网站推广文案：\n', aiText);
+    if (promptContext.anchorText) {
+      console.log('[AutoComment] 本次使用锚文本:', promptContext.anchorText);
+    }
     return aiText;
   }
 
@@ -3326,7 +3468,7 @@
         console.log('[AutoComment] >>>[4] 检查用户配置是否完整...');
         if (!userProfile.name || !userProfile.email) {
           const missing = [];
-          if (!userProfile.name) missing.push('姓名（Name）');
+          if (!userProfile.name) missing.push('当前站点名称（Name）');
           if (!userProfile.email) missing.push('邮箱（Email）');
           const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
           setStatus(msg, '#f97373');
@@ -3818,7 +3960,7 @@
           _sendResponse({ ok: false, error: 'duplicate_batch_task_running', urlIndex: message.urlIndex });
           return;
         }
-        setBatchContext(message.batchId, message.urlIndex, message.url);
+        setBatchContext(message.batchId, message.urlIndex, message.url, message.promotionSite);
         handleBatchTask(message.batchId, message.urlIndex, message.url)
           .then(() => {
             console.log('[content] BATCH_HANDLE 处理完成, 发送响应 {ok:true}');
@@ -3871,7 +4013,8 @@
         url: url || location.href || '',
         aiContent: '',
         result: 'blocked_illegal',
-        errorMessage: reason
+        errorMessage: reason,
+        ...getBatchPromotionSiteMetadata()
       }).then((response) => {
         console.log('[content] blocked_illegal BATCH_HANDLE_CONFIRM 响应:', response);
         resolve(response);
@@ -3970,20 +4113,15 @@
         await reportManualRequiredAndClose(batchId, urlIndex, url, null);
         return;
       }
-      let aiContent = await getCachedPromotionCopy() || lastGeneratedPromotionCopy;
-      if (aiContent) {
-        console.log('[content] 4/6 复用已有推广文案，跳过AI生成，长度:', aiContent.length);
-      } else {
-        console.log('[content] 4/6 生成AI文案...');
-        aiGenerated = true; // AI即将生成，标记用于失败时补偿
-        aiContent = await generatePromotionCopyWithQwen();
-        if (!aiContent) {
-          aiGenerated = false;
-          console.log('[content] AI 文案命中黑名单，跳过当前 URL');
-          await writePendingResult(batchId, urlIndex, url, 'skipped', null, 'blocked_keyword');
-          await reportBatchResult(batchId, urlIndex, 'skipped', null, 'blocked_keyword', url);
-          return;
-        }
+      console.log('[content] 4/6 生成AI文案...');
+      aiGenerated = true; // AI即将生成，标记用于失败时补偿
+      const aiContent = await generatePromotionCopyWithQwen();
+      if (!aiContent) {
+        aiGenerated = false;
+        console.log('[content] AI 文案命中黑名单，跳过当前 URL');
+        await writePendingResult(batchId, urlIndex, url, 'skipped', null, 'blocked_keyword');
+        await reportBatchResult(batchId, urlIndex, 'skipped', null, 'blocked_keyword', url);
+        return;
       }
       console.log('[content] AI文案生成完成，长度:', aiContent ? aiContent.length : 0, aiContent ? aiContent.substring(0, 80) + '...' : 'null');
       console.log('[content] 5/6 填充表单字段...');
@@ -4066,7 +4204,8 @@
             batchId,
             urlIndex,
             url: url || '',
-            aiContent
+            aiContent,
+            ...getBatchPromotionSiteMetadata()
           }).then((res) => {
             console.log('[content] background 响应:', res);
             resolve(res);
@@ -4103,7 +4242,8 @@
             url: url || '',
             aiContent: '',
             result: 'no_comment_box',
-            errorMessage: '未找到评论框'
+            errorMessage: '未找到评论框',
+            ...getBatchPromotionSiteMetadata()
           }).then((response) => {
             console.log('[content] no_comment_box BATCH_HANDLE_CONFIRM 响应:', response);
             resolve(response);
@@ -4192,14 +4332,44 @@
   }
 
   /**
-   * 检查 URL 是否已在 batchResults 中处理过
+   * 统一推广网站 URL 的比较格式，避免末尾斜杠差异导致同一网站无法识别。
+   */
+  function normalizePromotionSiteUrlForComparison(value) {
+    return String(value || '').trim().toLowerCase().replace(/\/+$/, '');
+  }
+
+  /**
+   * 判断历史结果是否属于当前推广网站。新版结果直接使用站点标识；旧结果仅在评论正文中能确认链接时兼容匹配。
+   */
+  function isBatchResultForPromotionSite(result, activeSite) {
+    const activeSiteId = String(activeSite && activeSite.id || '').trim();
+    const activeSiteUrl = normalizePromotionSiteUrlForComparison(activeSite && activeSite.url);
+    const resultSiteId = String(result && result.promotionSiteId || '').trim();
+    const resultSiteUrl = normalizePromotionSiteUrlForComparison(result && result.promotionSiteUrl);
+
+    if (resultSiteId && activeSiteId && resultSiteId === activeSiteId) return true;
+    if (resultSiteUrl && activeSiteUrl && resultSiteUrl === activeSiteUrl) return true;
+    if (resultSiteId || resultSiteUrl || !activeSiteUrl) return false;
+
+    // 旧版记录没有站点元数据，只在历史 AI 文案明确包含当前网站链接时才视为同站点记录。
+    const compactAiContent = String(result && result.aiContent || '').toLowerCase().replace(/\s+/g, '');
+    return compactAiContent.includes(activeSiteUrl.replace(/\s+/g, ''));
+  }
+
+  /**
+   * 检查“目标页面 URL + 当前推广网站”是否已经成功处理过。
    */
   async function checkExistingBatchResult(batchId, url, urlIndex) {
+    const activeSite = await getActivePromotionSite();
     return new Promise((resolve) => {
       chrome.storage.local.get(['batchResults'], (data) => {
         const results = data.batchResults || [];
-        // 只要这个 URL 之前成功处理过（不限 batchId），就跳过 AI 生成
-        const match = results.find(r => r.url === url && r.result === 'success');
+        // 历史去重不限制批次，但必须同时属于当前批次锁定的推广网站。
+        const match = results.find((result) => (
+          result.url === url
+          && result.result === 'success'
+          && isBatchResultForPromotionSite(result, activeSite)
+        ));
         resolve(match || null);
       });
     });
@@ -4220,7 +4390,8 @@
           url: url || '',
           aiContent: aiContent || '',
           result: 'skipped',
-          errorMessage: 'already_commented'
+          errorMessage: 'already_commented',
+          ...getBatchPromotionSiteMetadata()
         }).then(resolve).catch(resolve);
       });
     }
@@ -4398,7 +4569,8 @@
           url: url || '',
           aiContent: aiContent || '',
           result: 'manual_required',
-          errorMessage: MANUAL_REQUIRED_MESSAGE
+          errorMessage: MANUAL_REQUIRED_MESSAGE,
+          ...getBatchPromotionSiteMetadata()
         }).then(resolve).catch(resolve);
       });
     }
@@ -4418,6 +4590,7 @@
       return;
     }
     try {
+      const activeSite = await getActivePromotionSite();
       const data = await new Promise((resolve) => {
         chrome.storage.local.get(['batchResults', 'batchReportedUrls'], (d) => resolve(d));
       });
@@ -4429,6 +4602,7 @@
         result,
         aiContent,
         errorMessage,
+        ...getBatchPromotionSiteMetadata(activeSite),
         timestamp: Date.now()
       };
       const existingIndex = results.findIndex((item) => item.batchId === batchId && item.urlIndex === urlIndex);
@@ -4467,7 +4641,8 @@
       url: pageUrl || '',
       result,
       aiContent,
-      errorMessage
+      errorMessage,
+      ...getBatchPromotionSiteMetadata()
     };
 
     // 主路径：background 先落盘 storage 再 sendResponse；页面跳转/关页前必须 await，否则 batch 收不到成功
@@ -4512,6 +4687,7 @@
           result,
           aiContent,
           errorMessage,
+          ...getBatchPromotionSiteMetadata(),
           timestamp: Date.now()
         };
         const existingIndex = results.findIndex((item) => item.batchId === batchId && item.urlIndex === urlIndex);

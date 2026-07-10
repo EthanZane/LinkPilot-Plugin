@@ -35,6 +35,7 @@ let activeTabsByIndex = new Map();  // urlIndex -> { urlIndex, startTime }
 // 定时器
 let timeoutCheckTimer = null;
 let timeoutSeconds = 60;
+let manualUrlParseTimer = null;
 
 // 标签打开锁（防止并发）
 let isOpeningTab = false;
@@ -55,6 +56,9 @@ const fileCount = document.getElementById('fileCount');
 const fileRemove = document.getElementById('fileRemove');
 const urlPreview = document.getElementById('urlPreview');
 const urlPreviewBody = document.getElementById('urlPreviewBody');
+const manualUrlsInput = document.getElementById('manualUrlsInput');
+const parseManualUrlsBtn = document.getElementById('parseManualUrlsBtn');
+const clearManualUrlsBtn = document.getElementById('clearManualUrlsBtn');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const progressSection = document.getElementById('progressSection');
@@ -98,9 +102,80 @@ const batchAutoSubmit = document.getElementById('batchAutoSubmit');
 // ==================== 批量任务设置存储键 ====================
 const BATCH_SETTINGS_KEY = 'batch_task_settings';
 const BATCH_URLS_KEY = 'batch_task_urls';
+const BATCH_SITES_CONFIG_STORAGE_KEY = 'promotion_sites_config';
+
+// 批次启动时锁定推广网站快照，防止运行过程中切换设置导致同一批次混用网站资料。
+let availablePromotionSites = [];
+let batchPromotionSite = null;
 
 // 全局勾选框设置的 storage.sync 键
 const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
+const batchPromotionSiteSelect = document.getElementById('batchPromotionSiteSelect');
+
+/**
+ * 规范化批量任务使用的网站快照，仅保留生成评论和填写表单需要的字段。
+ */
+function normalizeBatchPromotionSite(site) {
+  return {
+    id: String(site && site.id || '').trim(),
+    name: String(site && site.name || '').trim(),
+    url: String(site && site.url || '').trim(),
+    content: String(site && site.content || '').trim(),
+    anchors: Array.isArray(site && site.anchors)
+      ? site.anchors.map((anchor) => ({
+        id: String(anchor && anchor.id || '').trim(),
+        text: String(anchor && anchor.text || '').trim(),
+        enabled: anchor && anchor.enabled === false ? false : true
+      })).filter((anchor) => anchor.text)
+      : []
+  };
+}
+
+/**
+ * 从网站管理配置中加载可用站点，并默认选中网站管理里标记的当前站点。
+ */
+async function loadBatchPromotionSites(preferredSiteId) {
+  const data = await new Promise((resolve) => {
+    chrome.storage.local.get([BATCH_SITES_CONFIG_STORAGE_KEY], resolve);
+  });
+  const config = data && data[BATCH_SITES_CONFIG_STORAGE_KEY];
+  availablePromotionSites = Array.isArray(config && config.sites)
+    ? config.sites.map(normalizeBatchPromotionSite).filter((site) => site.id && site.url && site.content)
+    : [];
+
+  if (!batchPromotionSiteSelect) return;
+  const requestedId = preferredSiteId || (config && config.activeSiteId) || '';
+  const selectedSite = availablePromotionSites.find((site) => site.id === requestedId)
+    || availablePromotionSites[0]
+    || null;
+
+  batchPromotionSiteSelect.innerHTML = '';
+  if (availablePromotionSites.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '请先在网站管理中配置网站';
+    batchPromotionSiteSelect.appendChild(option);
+    batchPromotionSiteSelect.disabled = true;
+    batchPromotionSite = null;
+    return;
+  }
+
+  availablePromotionSites.forEach((site) => {
+    const option = document.createElement('option');
+    option.value = site.id;
+    option.textContent = `${site.name || site.url} (${site.url})`;
+    batchPromotionSiteSelect.appendChild(option);
+  });
+  batchPromotionSiteSelect.disabled = false;
+  batchPromotionSiteSelect.value = selectedSite.id;
+  batchPromotionSite = normalizeBatchPromotionSite(selectedSite);
+}
+
+function getSelectedBatchPromotionSite() {
+  if (!batchPromotionSiteSelect) return batchPromotionSite;
+  const selected = availablePromotionSites.find((site) => site.id === batchPromotionSiteSelect.value);
+  return selected ? normalizeBatchPromotionSite(selected) : null;
+}
 
 // 加载全局勾选框设置
 async function loadBatchCheckboxSettings() {
@@ -139,6 +214,7 @@ document.addEventListener('DOMContentLoaded', init);
 async function init() {
   await loadTimeoutSetting();
   await loadBatchCheckboxSettings(); // 全局记忆的勾选框设置
+  await loadBatchPromotionSites();
   bindEvents();
 
   updateUI();
@@ -178,6 +254,27 @@ function bindEvents() {
   // 文件信息
   fileRemove.addEventListener('click', resetFile);
 
+  // 手动 URL 输入：一行一个 URL，也兼容空格、逗号、制表符分隔。
+  if (manualUrlsInput) {
+    manualUrlsInput.addEventListener('input', scheduleManualUrlParse);
+  }
+  if (parseManualUrlsBtn) {
+    parseManualUrlsBtn.addEventListener('click', parseManualUrlsFromInput);
+  }
+  if (clearManualUrlsBtn) {
+    clearManualUrlsBtn.addEventListener('click', () => {
+      manualUrlsInput.value = '';
+      resetFile();
+    });
+  }
+
+  if (batchPromotionSiteSelect) {
+    batchPromotionSiteSelect.addEventListener('change', () => {
+      batchPromotionSite = getSelectedBatchPromotionSite();
+      console.log('[batch] 已选择本批次推广网站:', batchPromotionSite && batchPromotionSite.name);
+    });
+  }
+
   // 操作按钮
   startBtn.addEventListener('click', () => {
     if (status === 'terminated') {
@@ -213,6 +310,18 @@ function bindEvents() {
   filterTimeRange.addEventListener('change', renderStats);
   filterKeyword.addEventListener('input', debounce(renderStats, 300));
 }
+
+// 网站管理更新当前站点后，同步刷新尚未启动批次的网站选择器。
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (
+    areaName !== 'local'
+    || !changes[BATCH_SITES_CONFIG_STORAGE_KEY]
+    || status === 'running'
+    || status === 'terminated'
+  ) return;
+  const nextConfig = changes[BATCH_SITES_CONFIG_STORAGE_KEY].newValue;
+  loadBatchPromotionSites(nextConfig && nextConfig.activeSiteId);
+});
 
 // ==================== CSV 解析 ====================
 function handleFileDrop(e) {
@@ -329,11 +438,8 @@ function parseCSV(raw, fileNameParam) {
     return;
   }
 
-  let validCount = 0;
+  const items = [];
   let invalidCount = 0;
-  let illegalCount = 0;
-  parsedUrls = [];
-  urlPreviewBody.innerHTML = '';
 
   for (let i = 1; i < lines.length; i++) {
     const row = parseCSVLine(lines[i]);
@@ -354,31 +460,52 @@ function parseCSV(raw, fileNameParam) {
       continue;
     }
 
-    const illegalCheck = evaluateIllegalSiteForBatchItem(url, sourceDomain);
-    if (illegalCheck.blocked) {
-      illegalCount++;
-    }
+    items.push({
+      url,
+      sourceDomain,
+      originalRow: row  // 保存原始行数据，用于导出时保持格式
+    });
+  }
+
+  applyParsedUrlItems(items, {
+    sourceName: fileNameParam || '已上传文件',
+    invalidCount,
+    sourceType: 'csv'
+  });
+}
+
+// 将不同输入来源解析出的 URL 统一写入批量队列，并渲染预览表格。
+function applyParsedUrlItems(items, options = {}) {
+  const sourceName = options.sourceName || '已输入 URL';
+  const invalidCount = Number(options.invalidCount || 0);
+  let illegalCount = 0;
+
+  parsedUrls = [];
+  urlPreviewBody.innerHTML = '';
+
+  items.forEach((item) => {
+    const illegalCheck = evaluateIllegalSiteForBatchItem(item.url, item.sourceDomain);
+    if (illegalCheck.blocked) illegalCount++;
 
     parsedUrls.push({
       originalIndex: parsedUrls.length,
-      url,
-      sourceDomain,
+      url: item.url,
+      sourceDomain: item.sourceDomain || '',
       illegalCheck: illegalCheck.blocked ? illegalCheck : null,
-      originalRow: row  // 保存原始行数据，用于导出时保持格式
+      originalRow: item.originalRow || buildManualOriginalRow(item.url, item.sourceDomain)
     });
-    validCount++;
 
     const tr = document.createElement('tr');
-    tr.dataset.url = url;
+    tr.dataset.url = item.url;
     if (illegalCheck.blocked) {
       tr.classList.add('illegal');
       tr.title = getIllegalSiteBlockMessage(illegalCheck);
     }
-    tr.innerHTML = `<td>${parsedUrls.length}</td><td>${escapeHtml(sourceDomain || url)}</td><td>${escapeHtml(url)}</td>`;
+    tr.innerHTML = `<td>${parsedUrls.length}</td><td>${escapeHtml(item.sourceDomain || item.url)}</td><td>${escapeHtml(item.url)}</td>`;
     urlPreviewBody.appendChild(tr);
-  }
+  });
 
-  // 检测重复
+  // 检测重复 URL：不主动删除，避免用户误以为源数据被自动改写。
   const seenUrls = new Set();
   let duplicateCount = 0;
   urlPreviewBody.querySelectorAll('tr').forEach((tr) => {
@@ -390,19 +517,77 @@ function parseCSV(raw, fileNameParam) {
     seenUrls.add(url);
   });
 
-  urlPreview.classList.add('visible');
-  fileName.textContent = fileNameParam || '已上传文件';
-  fileInfo.classList.add('visible');
-  uploadZone.classList.add('has-file');
+  const validCount = parsedUrls.length;
+  urlPreview.classList.toggle('visible', validCount > 0);
+  fileName.textContent = sourceName;
+  fileInfo.classList.toggle('visible', validCount > 0 || invalidCount > 0);
+  uploadZone.classList.toggle('has-file', validCount > 0 && options.sourceType === 'csv');
   fileCount.textContent = `共 ${validCount} 条 URL`;
   if (invalidCount > 0) fileCount.textContent += `（跳过 ${invalidCount} 条无效）`;
   if (illegalCount > 0) fileCount.textContent += `（非法拦截 ${illegalCount} 条）`;
+  document.getElementById('duplicateCount').textContent = '';
   if (duplicateCount > 0) {
     fileCount.textContent += `（发现 ${duplicateCount} 条重复）`;
     document.getElementById('duplicateCount').textContent = `⚠️ ${duplicateCount} 条重复`;
   }
   updateCostHint(Math.max(0, validCount - illegalCount));
   startBtn.disabled = validCount === 0;
+}
+
+function buildManualOriginalRow(url, sourceDomain) {
+  return [
+    '',
+    url,
+    sourceDomain || extractDomain(url),
+    '',
+    'manual',
+    '',
+    ''
+  ];
+}
+
+function scheduleManualUrlParse() {
+  if (manualUrlParseTimer) clearTimeout(manualUrlParseTimer);
+  manualUrlParseTimer = setTimeout(parseManualUrlsFromInput, 450);
+}
+
+function parseManualUrlsFromInput() {
+  if (!manualUrlsInput) return;
+  const rawText = manualUrlsInput.value.trim();
+  if (!rawText) {
+    resetFile();
+    return;
+  }
+
+  const tokens = rawText
+    .split(/[\n\r,，\t ]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const items = [];
+  let invalidCount = 0;
+
+  tokens.forEach((token) => {
+    let url = token;
+    if (!/^https?:\/\//i.test(url)) {
+      url = 'https://' + url;
+    }
+    if (!isValidUrl(url)) {
+      invalidCount++;
+      return;
+    }
+    const sourceDomain = extractDomain(url);
+    items.push({
+      url,
+      sourceDomain,
+      originalRow: buildManualOriginalRow(url, sourceDomain)
+    });
+  });
+
+  applyParsedUrlItems(items, {
+    sourceName: '手动粘贴 URL',
+    invalidCount,
+    sourceType: 'manual'
+  });
 }
 
 function parseCSVLine(line) {
@@ -432,6 +617,10 @@ function parseCSVLine(line) {
 
 function resetFile() {
   fileInput.value = '';
+  if (manualUrlParseTimer) {
+    clearTimeout(manualUrlParseTimer);
+    manualUrlParseTimer = null;
+  }
   fileInfo.classList.remove('visible');
   uploadZone.classList.remove('has-file');
   urlPreview.classList.remove('visible');
@@ -454,7 +643,13 @@ function updateCostHint(count) {
 // ==================== 批量处理核心 ====================
 async function startBatch() {
   if (parsedUrls.length === 0) {
-    alert('请先上传有效的 CSV 文件');
+    alert('请先上传有效的 CSV 文件，或粘贴至少一个有效 URL');
+    return;
+  }
+
+  batchPromotionSite = getSelectedBatchPromotionSite();
+  if (!batchPromotionSite || !batchPromotionSite.url || !batchPromotionSite.content) {
+    alert('请先选择一个配置完整的推广网站');
     return;
   }
 
@@ -493,6 +688,7 @@ async function saveBatchTaskSettings() {
       autoOpenPanel: batchAutoOpenPanel.checked,
       autoGenerate: batchAutoGenerate.checked,
       autoSubmit: batchAutoSubmit.checked,
+      promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
       savedAt: Date.now()
     };
     const urls = parsedUrls.map(item => item.url);
@@ -719,7 +915,8 @@ async function openNextTab() {
             type: 'BATCH_HANDLE',
             batchId,
             urlIndex,
-            url
+            url,
+            promotionSite: normalizeBatchPromotionSite(batchPromotionSite)
           }).then((response) => {
             console.log('[batch] 收到 content.js 响应:', response, 'tabId:', tab.id, 'tabsPendingConfirm:', [...tabsPendingConfirm.keys()], 'time:', new Date().toISOString());
             if (response && response.ok) {
@@ -1062,6 +1259,9 @@ function updateUI() {
 
   exportBtn.disabled = localResults.length === 0;
   clearBtn.disabled = isRunning;
+  if (batchPromotionSiteSelect) {
+    batchPromotionSiteSelect.disabled = availablePromotionSites.length === 0 || isRunning || isTerminated;
+  }
 
   // 进度、实时日志、底部操作：终止状态保持显示
   progressSection.style.display = (isIdle) ? 'none' : 'block';
