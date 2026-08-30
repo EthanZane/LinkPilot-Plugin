@@ -4,10 +4,15 @@
   "description": "个人本地版 Chrome 自动评论插件",
   "type": "module",
   "scripts": {
+    "db:migrate": "PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5499} PGDATABASE=${PGDATABASE:-bi} psql -v ON_ERROR_STOP=1 -f server/migrations/001_init.sql -f server/migrations/002_add_execution_timestamps.sql",
+    "server:start": "node server/index.js",
     "validate": "node scripts/validate-extension.js",
     "test": "pnpm validate"
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
   }
 }

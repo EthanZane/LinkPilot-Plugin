@@ -8,6 +8,11 @@
 const POLL_INTERVAL = 3000;
 const TIMEOUT_CHECK_INTERVAL = 5000;
 const TIMEOUT_STORAGE_KEY = 'batch_timeout_seconds';
+const LOCAL_DATABASE_API_BASE = 'http://127.0.0.1:17321';
+const LOCAL_DATABASE_REQUEST_TIMEOUT_MS = 1500;
+const LOCAL_DATABASE_SYNC_TIMEOUT_MS = 30000;
+const BATCH_HISTORY_STORAGE_KEY = 'auto_comment_batch_history_v1';
+const MAX_SYNCED_BATCH_HISTORY = 200;
 
 // ==================== 状态 ====================
 let batchId = null;
@@ -28,6 +33,13 @@ let pendingCount = 0;
 
 // 本地结果存储
 let localResults = [];              // [{originalIndex, url, result, aiContent, errorMessage, timestamp}]
+let batchSourceName = '';
+let batchSourceType = '';
+let databaseFailedItemIndexes = new Set();
+let batchStartedAt = null;
+let batchCompletedAt = null;
+let batchHistory = [];
+let batchHistoryWriteChain = Promise.resolve();
 
 // 轮询定时器
 let pollTimer = null;
@@ -101,11 +113,57 @@ const statsCountLabel = document.getElementById('statsCountLabel');
 const batchSiteSummaryName = document.getElementById('batchSiteSummaryName');
 const batchSiteSummaryUrl = document.getElementById('batchSiteSummaryUrl');
 const batchSiteSummary = document.getElementById('batchSiteSummary');
+const databasePersistence = document.getElementById('databasePersistence');
+const databasePersistenceMessage = document.getElementById('databasePersistenceMessage');
+const retryDatabaseBtn = document.getElementById('retryDatabaseBtn');
+const importResultCsvBtn = document.getElementById('importResultCsvBtn');
+const resultCsvInput = document.getElementById('resultCsvInput');
+const batchHistoryEmpty = document.getElementById('batchHistoryEmpty');
+const batchHistoryWrap = document.getElementById('batchHistoryWrap');
+const batchHistoryBody = document.getElementById('batchHistoryBody');
 
 // 批量任务设置勾选框
 const batchAutoOpenPanel = document.getElementById('batchAutoOpenPanel');
 const batchAutoGenerate = document.getElementById('batchAutoGenerate');
 const batchAutoSubmit = document.getElementById('batchAutoSubmit');
+const batchDebugMode = document.getElementById('batchDebugMode');
+const batchDebugOptions = document.getElementById('batchDebugOptions');
+const batchDebugCommentSelect = document.getElementById('batchDebugCommentSelect');
+const batchDebugCustomComment = document.getElementById('batchDebugCustomComment');
+
+const DEFAULT_DEBUG_PRESET_COMMENTS = [
+  "Great article! Thank you for sharing these helpful insights.",
+  "Very informative post, really appreciate the detailed breakdown!",
+  "Awesome tips! Thanks for putting this together, very useful read.",
+  "Thanks for sharing this great resource, found it very helpful!",
+  "Excellent summary, thanks for taking the time to share this!"
+];
+
+function resolveDebugCommentText(site) {
+  const commentType = batchDebugCommentSelect ? batchDebugCommentSelect.value : 'random';
+  let text = '';
+  if (commentType === 'custom') {
+    text = (batchDebugCustomComment ? batchDebugCustomComment.value : '').trim() || DEFAULT_DEBUG_PRESET_COMMENTS[0];
+  } else if (commentType === 'preset_1') {
+    text = DEFAULT_DEBUG_PRESET_COMMENTS[0];
+  } else if (commentType === 'preset_2') {
+    text = DEFAULT_DEBUG_PRESET_COMMENTS[1];
+  } else if (commentType === 'preset_3') {
+    text = DEFAULT_DEBUG_PRESET_COMMENTS[2];
+  } else if (commentType === 'preset_4') {
+    text = DEFAULT_DEBUG_PRESET_COMMENTS[3];
+  } else {
+    // random
+    const idx = Math.floor(Math.random() * DEFAULT_DEBUG_PRESET_COMMENTS.length);
+    text = DEFAULT_DEBUG_PRESET_COMMENTS[idx];
+  }
+
+  // 支持 {url}, {name} 变量替换
+  const siteUrl = site && site.url ? site.url : '';
+  const siteName = site && site.name ? site.name : '';
+  text = text.replace(/\{url\}/gi, siteUrl).replace(/\{name\}/gi, siteName);
+  return text;
+}
 
 // ==================== 批量任务设置存储键 ====================
 const BATCH_SETTINGS_KEY = 'batch_task_settings';
@@ -117,7 +175,7 @@ const BATCH_USER_NAME_STORAGE_KEY = 'auto_fill_user_name';
 const BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
 const BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY = 'auto_comment_batch_selected_promotion_site_id';
 
-// 批次启动时锁定推广网站快照，防止运行过程中切换设置导致同一批次混用网站资料。
+// 批次启动时锁定目标 URL 快照，防止运行过程中切换设置导致同一批次混用目标资料。
 let availablePromotionSites = [];
 let batchPromotionSite = null;
 let batchPromotionSiteUserSelected = false;
@@ -149,15 +207,15 @@ function normalizeBatchPromotionSite(site) {
 }
 
 /**
- * 生成批量页下拉框文案，选择只作用于本批次，不回写网站管理配置。
+ * 生成批量页下拉框文案，选择只作用于本批次，不回写目标 URL 管理配置。
  */
 function formatBatchPromotionSiteOption(site) {
-  const name = site.name || site.url || '未命名网站';
+  const name = site.name || site.url || '未命名目标';
   return `${name} - ${site.url || '未填写 URL'}`;
 }
 
 /**
- * 从配置对象提取网站列表。批量页允许展示已配置但内容不完整的网站，开始执行时再做完整性校验。
+ * 从配置对象提取目标 URL 列表。批量页允许展示已配置但内容不完整的目标，开始执行时再做完整性校验。
  */
 function getBatchPromotionSitesFromConfig(config) {
   if (!config || !Array.isArray(config.sites)) return [];
@@ -167,7 +225,7 @@ function getBatchPromotionSitesFromConfig(config) {
 }
 
 /**
- * 设置批量推广网站下拉框的临时状态，避免初始化期间出现空白选择框。
+ * 设置批量目标 URL 下拉框的临时状态，避免初始化期间出现空白选择框。
  */
 function setBatchPromotionSiteSelectMessage(text, disabled = false) {
   if (!batchPromotionSiteSelect) return;
@@ -182,7 +240,7 @@ function setBatchPromotionSiteSelectMessage(text, disabled = false) {
 }
 
 /**
- * 渲染批量页网站下拉框，默认选中上次选择的网站；没有历史选择时使用第一个网站。
+ * 渲染批量页目标 URL 下拉框，默认选中上次选择的目标；没有历史选择时使用第一个目标。
  */
 function renderBatchPromotionSiteSelect(preferredSiteId) {
   if (!batchPromotionSiteSelect) return;
@@ -193,7 +251,7 @@ function renderBatchPromotionSiteSelect(preferredSiteId) {
 
   batchPromotionSiteSelect.innerHTML = '';
   if (availablePromotionSites.length === 0) {
-    setBatchPromotionSiteSelectMessage('未读取到网站，请先保存网站管理', false);
+    setBatchPromotionSiteSelectMessage('未读取到目标 URL，请先保存目标 URL 管理', false);
     batchPromotionSite = null;
     updateBatchPromotionSiteSummary();
     updateUI();
@@ -225,7 +283,7 @@ function renderBatchPromotionSiteSelect(preferredSiteId) {
 }
 
 /**
- * 应用网站管理页广播出的最新配置，让批量页能看到尚未写入 storage 的当前页面配置快照。
+ * 应用目标 URL 管理页广播出的最新配置，让批量页能看到尚未写入 storage 的当前页面配置快照。
  */
 function applyBatchSitesConfig(config, preferredSiteId) {
   if (!config || !Array.isArray(config.sites)) return false;
@@ -234,7 +292,7 @@ function applyBatchSitesConfig(config, preferredSiteId) {
   return availablePromotionSites.length > 0;
 }
 
-// 暴露给 options.js 直接调用，避免同页脚本初始化时序导致批量下拉框错过网站管理数据。
+// 暴露给 options.js 直接调用，避免同页脚本初始化时序导致批量下拉框错过目标 URL 管理数据。
 window.AutoCommentApplyBatchSitesConfig = (config, preferredSiteId) => {
   return applyBatchSitesConfig(config, preferredSiteId);
 };
@@ -244,7 +302,7 @@ if (window.AutoCommentSitesConfig) {
 }
 
 /**
- * 从旧版提示词字段里按关键词提取网站资料，兼容早期单网站配置备份。
+ * 从旧版提示词字段里按关键词提取目标资料，兼容早期单目标配置备份。
  */
 function pickLegacyBatchPromptValue(values, keywords) {
   if (!values || typeof values !== 'object') return '';
@@ -258,12 +316,13 @@ function pickLegacyBatchPromptValue(values, keywords) {
 }
 
 /**
- * 构造旧版单网站配置，确保批量页和实际内容脚本读取当前网站时行为一致。
+ * 构造旧版单目标配置，确保批量页和实际内容脚本读取当前目标 URL 时行为一致。
  */
 function buildLegacyBatchPromotionSite(syncData) {
   const legacyUrl = String(syncData && syncData[BATCH_WEBSITE_URL_STORAGE_KEY] || '').trim()
     || pickLegacyBatchPromptValue(syncData && syncData[BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY], [
-      '网站链接',
+      '目标 URL',
+      '目标URL',
       '网址',
       'website link',
       'website url',
@@ -271,8 +330,8 @@ function buildLegacyBatchPromotionSite(syncData) {
     ]);
   const legacyContent = String(syncData && syncData[BATCH_WEBSITE_CONTENT_STORAGE_KEY] || '').trim()
     || pickLegacyBatchPromptValue(syncData && syncData[BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY], [
-      '网站内容',
-      '网站介绍',
+      '目标 URL 内容',
+      '目标URL内容',
       'website content',
       'site content',
       'description'
@@ -280,7 +339,7 @@ function buildLegacyBatchPromotionSite(syncData) {
   const legacyName = String(syncData && syncData[BATCH_USER_NAME_STORAGE_KEY] || '').trim();
   return normalizeBatchPromotionSite({
     id: 'default_site',
-    name: legacyName || legacyUrl || '默认网站',
+    name: legacyName || legacyUrl || '默认目标',
     url: legacyUrl,
     content: legacyContent,
     anchors: []
@@ -288,11 +347,11 @@ function buildLegacyBatchPromotionSite(syncData) {
 }
 
 /**
- * 从网站管理配置中加载可用站点，并默认选中上次用于批量任务的网站。
- * 读取顺序与 content.js 保持一致：local 多站点配置 > sync 多站点配置 > 旧版当前网站字段。
+ * 从目标 URL 管理配置中加载可用目标，并默认选中上次用于批量任务的目标。
+ * 读取顺序与 content.js 保持一致：local 多目标配置 > sync 多目标配置 > 旧版当前目标字段。
  */
 async function loadBatchPromotionSites(preferredSiteId) {
-  setBatchPromotionSiteSelectMessage('正在加载网站...', true);
+  setBatchPromotionSiteSelectMessage('正在加载目标 URL...', true);
   const runtimeConfig = window.AutoCommentSitesConfig;
   if (applyBatchSitesConfig(runtimeConfig, preferredSiteId)) {
     return;
@@ -342,11 +401,27 @@ function getSelectedBatchPromotionSite() {
 function updateBatchPromotionSiteSummary() {
   if (!batchSiteSummaryName || !batchSiteSummaryUrl) return;
   const site = batchPromotionSite;
-  batchSiteSummaryName.textContent = site ? (site.name || '未命名网站') : '未选择网站';
+  batchSiteSummaryName.textContent = site ? (site.name || '未命名目标') : '未选择目标 URL';
   batchSiteSummaryUrl.textContent = site && site.url ? site.url : '—';
   if (batchSiteSummary) {
     const label = batchSiteSummary.querySelector('strong');
     if (label) label.textContent = status === 'idle' ? '即将使用' : '本批次使用';
+  }
+}
+
+// 更新 Debug 模式 UI 交互
+function updateDebugModeUI() {
+  if (!batchDebugMode) return;
+  const isDebug = batchDebugMode.checked;
+  if (batchDebugOptions) {
+    batchDebugOptions.style.display = isDebug ? 'block' : 'none';
+  }
+  if (batchDebugCustomComment && batchDebugCommentSelect) {
+    batchDebugCustomComment.style.display = (isDebug && batchDebugCommentSelect.value === 'custom') ? 'block' : 'none';
+  }
+  if (batchAutoGenerate && batchAutoGenerate.parentElement) {
+    batchAutoGenerate.disabled = isDebug;
+    batchAutoGenerate.parentElement.style.opacity = isDebug ? '0.5' : '1';
   }
 }
 
@@ -355,9 +430,19 @@ async function loadBatchCheckboxSettings() {
   return new Promise((resolve) => {
     chrome.storage.sync.get([BATCH_CHECKBOX_SETTINGS_KEY], (data) => {
       const saved = data[BATCH_CHECKBOX_SETTINGS_KEY] || {};
-      batchAutoOpenPanel.checked = saved.autoOpenPanel !== false;
-      batchAutoGenerate.checked = saved.autoGenerate !== false;
-      batchAutoSubmit.checked = saved.autoSubmit !== false;
+      if (batchAutoOpenPanel) batchAutoOpenPanel.checked = saved.autoOpenPanel !== false;
+      if (batchAutoGenerate) batchAutoGenerate.checked = saved.autoGenerate !== false;
+      if (batchAutoSubmit) batchAutoSubmit.checked = saved.autoSubmit !== false;
+      if (batchDebugMode) {
+        batchDebugMode.checked = Boolean(saved.debugMode);
+        if (batchDebugCommentSelect && saved.debugCommentType) {
+          batchDebugCommentSelect.value = saved.debugCommentType;
+        }
+        if (batchDebugCustomComment && saved.debugCustomComment) {
+          batchDebugCustomComment.value = saved.debugCustomComment;
+        }
+        updateDebugModeUI();
+      }
       console.log('[batch] 已加载全局勾选框设置:', saved);
       resolve();
     });
@@ -367,10 +452,15 @@ async function loadBatchCheckboxSettings() {
 // 保存全局勾选框设置
 async function saveBatchCheckboxSettings() {
   return new Promise((resolve) => {
+    const isDebug = batchDebugMode ? batchDebugMode.checked : false;
+    updateDebugModeUI();
     const settings = {
-      autoOpenPanel: batchAutoOpenPanel.checked,
-      autoGenerate: batchAutoGenerate.checked,
-      autoSubmit: batchAutoSubmit.checked
+      autoOpenPanel: batchAutoOpenPanel ? batchAutoOpenPanel.checked : true,
+      autoGenerate: batchAutoGenerate ? batchAutoGenerate.checked : true,
+      autoSubmit: batchAutoSubmit ? batchAutoSubmit.checked : true,
+      debugMode: isDebug,
+      debugCommentType: batchDebugCommentSelect ? batchDebugCommentSelect.value : 'random',
+      debugCustomComment: batchDebugCustomComment ? batchDebugCustomComment.value : ''
     };
     chrome.storage.sync.set({
       [BATCH_CHECKBOX_SETTINGS_KEY]: settings
@@ -389,8 +479,264 @@ async function init() {
   await loadBatchCheckboxSettings(); // 全局记忆的勾选框设置
   await loadBatchPromotionSites();
   bindEvents();
+  await loadBatchHistory();
+  const restored = await restoreLastBatchResults();
+  if (!restored) updateUI();
+}
 
+/**
+ * 恢复最近一次批次结果，支持扩展刷新后继续补写数据库，避免为了修复落库而重复发表评论。
+ */
+async function restoreLastBatchResults() {
+  const saved = batchHistory.find((record) => record.databaseStatus !== 'synced' && Array.isArray(record.results) && record.results.length > 0);
+  if (!saved) return false;
+  applyBatchHistoryRecord(saved);
+
+  if (!batchPromotionSite.url) {
+    setDatabasePersistenceState('failed', '已恢复最近批次，但缺少目标 URL 快照，无法重新写入数据库。');
+    return true;
+  }
+
+  try {
+    const persistedItems = await requestLocalDatabase(`/api/runs/${batchId}/items`, undefined, { method: 'GET' });
+    const persistedCount = Array.isArray(persistedItems) ? persistedItems.length : 0;
+    setDatabasePersistenceState('failed', `已恢复未确认同步的批次 ${localResults.length} 条结果，数据库当前有 ${persistedCount} 条。请重新同步以校验明细和最终状态。`);
+  } catch (error) {
+    setDatabasePersistenceState('failed', `已恢复最近批次 ${localResults.length} 条结果，但无法核对数据库：${formatDatabaseError(error)} 可在服务恢复后重新写入。`);
+  }
+  return true;
+}
+
+/**
+ * 从扩展本地存储加载批次历史，并把旧版单批次缓存迁移到历史结构中。
+ */
+async function loadBatchHistory() {
+  const data = await new Promise((resolve) => {
+    chrome.storage.local.get([BATCH_HISTORY_STORAGE_KEY, 'batchLocalResults'], resolve);
+  });
+  batchHistory = Array.isArray(data && data[BATCH_HISTORY_STORAGE_KEY])
+    ? data[BATCH_HISTORY_STORAGE_KEY].filter((record) => record && record.id)
+    : [];
+
+  const legacy = data && data.batchLocalResults;
+  if (legacy && legacy.batchId && Array.isArray(legacy.results) && legacy.results.length > 0
+    && !batchHistory.some((record) => record.id === legacy.batchId)) {
+    const firstResult = legacy.results.find((item) => item && item.promotionSiteUrl) || {};
+    batchHistory.push({
+      id: String(legacy.batchId),
+      totalCount: Number(legacy.totalCount) || legacy.results.length,
+      status: legacy.results.length >= Number(legacy.totalCount) ? 'completed' : 'interrupted',
+      databaseStatus: 'pending',
+      sourceName: legacy.sourceName || '旧版缓存恢复',
+      sourceType: legacy.sourceType || 'recovered',
+      targetUrl: legacy.targetUrl || firstResult.promotionSiteUrl || '',
+      targetName: legacy.targetName || firstResult.promotionSiteName || '',
+      startedAt: legacy.results[0] && legacy.results[0].timestamp || Date.now(),
+      completedAt: legacy.results[legacy.results.length - 1] && legacy.results[legacy.results.length - 1].timestamp || Date.now(),
+      summary: summarizeBatchResults(legacy.results),
+      results: legacy.results
+    });
+    await persistBatchHistory();
+    chrome.storage.local.remove(['batchLocalResults']);
+  }
+  if (legacy && legacy.batchId && batchHistory.some((record) => record.id === legacy.batchId)) {
+    chrome.storage.local.remove(['batchLocalResults']);
+  }
+  sortBatchHistory();
+  renderBatchHistory();
+}
+
+/**
+ * 统计批次结果摘要。同步成功后删除明细，但保留这些计数供日志查看。
+ */
+function summarizeBatchResults(results) {
+  const list = Array.isArray(results) ? results : [];
+  return {
+    processed: list.length,
+    success: list.filter((item) => item.result === 'success').length,
+    skipped: list.filter((item) => item.result === 'skipped').length,
+    manualRequired: list.filter((item) => item.result === 'manual_required').length,
+    noCommentBox: list.filter((item) => item.result === 'no_comment_box').length,
+    blockedIllegal: list.filter((item) => item.result === 'blocked_illegal').length,
+    fail: list.filter((item) => item.result === 'fail').length
+  };
+}
+
+function sortBatchHistory() {
+  batchHistory.sort((left, right) => Number(right.startedAt || 0) - Number(left.startedAt || 0));
+}
+
+/**
+ * 串行写入批次历史，避免多条结果快速完成时后发的旧快照覆盖新快照。
+ * 未同步记录不做数量淘汰；只限制已同步摘要的保留数量。
+ */
+function persistBatchHistory() {
+  sortBatchHistory();
+  const unsynced = batchHistory.filter((record) => record.databaseStatus !== 'synced');
+  const synced = batchHistory.filter((record) => record.databaseStatus === 'synced').slice(0, MAX_SYNCED_BATCH_HISTORY);
+  batchHistory = [...unsynced, ...synced];
+  sortBatchHistory();
+  const snapshot = JSON.parse(JSON.stringify(batchHistory));
+  batchHistoryWriteChain = batchHistoryWriteChain.then(() => new Promise((resolve) => {
+    chrome.storage.local.set({ [BATCH_HISTORY_STORAGE_KEY]: snapshot }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('[batch] 本地批次历史写入失败:', chrome.runtime.lastError.message);
+        setDatabasePersistenceState('warning', `本地批次日志保存失败：${chrome.runtime.lastError.message}`);
+      }
+      resolve();
+    });
+  }));
+  return batchHistoryWriteChain;
+}
+
+/**
+ * 保存当前批次快照。未同步时保留全部明细；同步成功后只保留摘要，释放本地空间。
+ */
+async function saveCurrentBatchHistory(databaseStatus = 'pending') {
+  if (!batchId) return;
+  const existingIndex = batchHistory.findIndex((record) => record.id === batchId);
+  const existing = existingIndex >= 0 ? batchHistory[existingIndex] : {};
+  const record = {
+    ...existing,
+    id: batchId,
+    totalCount,
+    status: status === 'running' ? 'running' : status,
+    databaseStatus,
+    sourceName: batchSourceName || existing.sourceName || '',
+    sourceType: batchSourceType || existing.sourceType || '',
+    targetUrl: batchPromotionSite && batchPromotionSite.url || existing.targetUrl || '',
+    targetName: batchPromotionSite && batchPromotionSite.name || existing.targetName || '',
+    startedAt: batchStartedAt || existing.startedAt || Date.now(),
+    completedAt: batchCompletedAt || existing.completedAt || null,
+    summary: summarizeBatchResults(localResults)
+  };
+  if (databaseStatus === 'synced') {
+    delete record.results;
+  } else {
+    record.results = localResults;
+  }
+
+  if (existingIndex >= 0) batchHistory[existingIndex] = record;
+  else batchHistory.push(record);
+  await persistBatchHistory();
+  if (databaseStatus === 'synced') chrome.storage.local.remove(['batchLocalResults']);
+  renderBatchHistory();
+}
+
+/**
+ * 将历史批次恢复到当前结果面板，之后可以导出或重新同步数据库。
+ */
+function applyBatchHistoryRecord(record) {
+  if (!record || !Array.isArray(record.results) || record.results.length === 0) return false;
+  batchId = String(record.id);
+  totalCount = Number(record.totalCount) || record.results.length;
+  localResults = record.results;
+  batchSourceName = String(record.sourceName || '本地批次恢复');
+  batchSourceType = String(record.sourceType || 'recovered');
+  batchStartedAt = Number(record.startedAt) || null;
+  batchCompletedAt = Number(record.completedAt) || null;
+  parsedUrls = [];
+
+  const firstResult = localResults.find((item) => item && item.promotionSiteUrl) || {};
+  const targetUrl = String(record.targetUrl || firstResult.promotionSiteUrl || '').trim();
+  const configuredSite = availablePromotionSites.find((site) => site.url === targetUrl);
+  batchPromotionSite = configuredSite
+    ? normalizeBatchPromotionSite(configuredSite)
+    : normalizeBatchPromotionSite({
+      id: firstResult.promotionSiteId || targetUrl || 'recovered_target',
+      name: record.targetName || firstResult.promotionSiteName || '已恢复目标',
+      url: targetUrl,
+      content: ''
+    });
+
+  const summary = summarizeBatchResults(localResults);
+  successCount = summary.success;
+  failCount = summary.fail;
+  skippedCount = summary.skipped;
+  noCommentBoxCount = summary.noCommentBox;
+  manualRequiredCount = summary.manualRequired;
+  blockedIllegalCount = summary.blockedIllegal;
+  pendingCount = Math.max(0, totalCount - summary.processed);
+  isTerminated = true;
+  setStatus(record.status === 'completed' ? 'completed' : 'terminated');
+  updateStatsUI();
   updateUI();
+  return true;
+}
+
+function getBatchStatusText(value) {
+  return {
+    running: '运行中断',
+    interrupted: '运行中断',
+    completed: '已完成',
+    terminated: '已终止'
+  }[value] || value || '未知';
+}
+
+function getDatabaseStatusText(value) {
+  return {
+    pending: '待同步',
+    failed: '同步失败',
+    synced: '已同步'
+  }[value] || '待同步';
+}
+
+/**
+ * 渲染批次日志。只有仍保留明细的批次才能恢复或直接同步。
+ */
+function renderBatchHistory() {
+  if (!batchHistoryBody || !batchHistoryEmpty || !batchHistoryWrap) return;
+  batchHistoryBody.innerHTML = '';
+  batchHistoryEmpty.style.display = batchHistory.length === 0 ? 'block' : 'none';
+  batchHistoryWrap.style.display = batchHistory.length === 0 ? 'none' : 'block';
+
+  batchHistory.forEach((record) => {
+    const hasDetails = Array.isArray(record.results) && record.results.length > 0;
+    const summary = record.summary || {};
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(formatDateTime(new Date(Number(record.startedAt) || Date.now())))}</td>
+      <td title="${escapeHtml(record.id)}">${escapeHtml(String(record.id).slice(0, 8))}…</td>
+      <td class="batch-history-target" title="${escapeHtml(record.targetUrl || '')}">${escapeHtml(record.targetUrl || '—')}</td>
+      <td>${Number(summary.processed || 0)} / ${Number(record.totalCount || 0)}</td>
+      <td>${escapeHtml(getBatchStatusText(record.status))}</td>
+      <td><span class="batch-sync-badge ${escapeHtml(record.databaseStatus || 'pending')}">${escapeHtml(getDatabaseStatusText(record.databaseStatus))}</span></td>
+    `;
+    const actionCell = document.createElement('td');
+    const buttons = document.createElement('div');
+    buttons.className = 'batch-history-buttons';
+    if (hasDetails) {
+      const restoreButton = document.createElement('button');
+      restoreButton.type = 'button';
+      restoreButton.className = 'btn btn-secondary';
+      restoreButton.textContent = '恢复';
+      restoreButton.addEventListener('click', () => {
+        if (status === 'running') return alert('当前批次正在运行，不能恢复其他批次。');
+        applyBatchHistoryRecord(record);
+        setDatabasePersistenceState('failed', `已恢复批次 ${record.id}，可重新同步数据库。`);
+      });
+      buttons.appendChild(restoreButton);
+
+      const syncButton = document.createElement('button');
+      syncButton.type = 'button';
+      syncButton.className = 'btn btn-secondary';
+      syncButton.textContent = '同步';
+      syncButton.addEventListener('click', async () => {
+        if (status === 'running') return alert('当前批次正在运行，不能同步其他批次。');
+        applyBatchHistoryRecord(record);
+        await syncLocalDatabaseRunResults(record.status === 'completed' ? 'completed' : 'terminated');
+      });
+      buttons.appendChild(syncButton);
+    } else {
+      const detailNote = document.createElement('span');
+      detailNote.textContent = '仅保留摘要';
+      detailNote.style.color = '#9ca3af';
+      buttons.appendChild(detailNote);
+    }
+    actionCell.appendChild(buttons);
+    tr.appendChild(actionCell);
+    batchHistoryBody.appendChild(tr);
+  });
 }
 
 async function loadTimeoutSetting() {
@@ -448,7 +794,7 @@ function bindEvents() {
       batchPromotionSite = getSelectedBatchPromotionSite();
       chrome.storage.local.set({ [BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY]: batchPromotionSiteSelect.value }, () => {});
       updateBatchPromotionSiteSummary();
-      console.log('[batch] 已选择本批次推广网站:', batchPromotionSite && batchPromotionSite.name);
+      console.log('[batch] 已选择本批次目标 URL:', batchPromotionSite && batchPromotionSite.name);
     });
   }
 
@@ -463,14 +809,34 @@ function bindEvents() {
   stopBtn.addEventListener('click', stopBatch);
   exportBtn.addEventListener('click', exportResults);
   clearBtn.addEventListener('click', clearBatch);
+  if (retryDatabaseBtn) retryDatabaseBtn.addEventListener('click', retryDatabasePersistence);
+  if (importResultCsvBtn && resultCsvInput) {
+    importResultCsvBtn.addEventListener('click', () => resultCsvInput.click());
+    resultCsvInput.addEventListener('change', handleResultCsvImport);
+  }
 
   // 设置
   timeoutInput.addEventListener('change', saveTimeoutSetting);
 
   // 勾选框设置（全局记忆）
-  batchAutoOpenPanel.addEventListener('change', saveBatchCheckboxSettings);
-  batchAutoGenerate.addEventListener('change', saveBatchCheckboxSettings);
-  batchAutoSubmit.addEventListener('change', saveBatchCheckboxSettings);
+  if (batchAutoOpenPanel) batchAutoOpenPanel.addEventListener('change', saveBatchCheckboxSettings);
+  if (batchAutoGenerate) batchAutoGenerate.addEventListener('change', saveBatchCheckboxSettings);
+  if (batchAutoSubmit) batchAutoSubmit.addEventListener('change', saveBatchCheckboxSettings);
+  if (batchDebugMode) {
+    batchDebugMode.addEventListener('change', () => {
+      updateDebugModeUI();
+      saveBatchCheckboxSettings();
+    });
+  }
+  if (batchDebugCommentSelect) {
+    batchDebugCommentSelect.addEventListener('change', () => {
+      updateDebugModeUI();
+      saveBatchCheckboxSettings();
+    });
+  }
+  if (batchDebugCustomComment) {
+    batchDebugCustomComment.addEventListener('input', debounce(saveBatchCheckboxSettings, 500));
+  }
 
   // 监听 background 消息（结果回调）
   chrome.runtime.onMessage.addListener((message) => {
@@ -494,7 +860,7 @@ function bindEvents() {
   filterKeyword.addEventListener('input', debounce(renderStats, 300));
 }
 
-// 网站管理更新网站列表后，同步刷新尚未启动批次的网站选择器。
+// 目标 URL 管理更新目标列表后，同步刷新尚未启动批次的目标选择器。
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (
     areaName !== 'local'
@@ -508,7 +874,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   loadBatchPromotionSites(preferredSiteId);
 });
 
-// 设置页的网站管理数据加载或编辑后会广播当前配置，批量页据此立即刷新下拉框。
+// 设置页的目标 URL 管理数据加载或编辑后会广播当前配置，批量页据此立即刷新下拉框。
 window.addEventListener('autoCommentSitesConfigChanged', (event) => {
   if (status === 'running' || status === 'terminated') return;
   const preferredSiteId = batchPromotionSiteUserSelected && batchPromotionSiteSelect && batchPromotionSiteSelect.value
@@ -612,6 +978,156 @@ function normalizeEncoding(arrayBuffer) {
   return utf8Text;
 }
 
+/**
+ * 读取用户之前导出的结果 CSV，并恢复成可展示、可幂等同步的完整批次。
+ */
+function handleResultCsvImport(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  if (status === 'running') {
+    resultCsvInput.value = '';
+    alert('当前批次正在运行，暂时不能导入结果 CSV。');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = async (loadEvent) => {
+    try {
+      await importResultCsv(normalizeEncoding(loadEvent.target.result), file.name);
+    } catch (error) {
+      console.error('[batch] 导入结果 CSV 失败:', error);
+      alert(`导入结果 CSV 失败：${error.message || String(error)}`);
+    } finally {
+      resultCsvInput.value = '';
+    }
+  };
+  reader.onerror = () => {
+    resultCsvInput.value = '';
+    alert('结果 CSV 文件读取失败');
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function resultTextToCode(value, runResult) {
+  const text = String(value || '').trim();
+  const resultMap = {
+    '成功': 'success',
+    '已存在': 'skipped',
+    '需手动处理': 'manual_required',
+    '无评论框': 'no_comment_box',
+    '非法拦截': 'blocked_illegal',
+    '失败': 'fail'
+  };
+  return resultMap[text] || (String(runResult || '').trim() === '1' ? 'success' : 'fail');
+}
+
+function parseImportedTimestamp(value) {
+  const text = String(value || '').trim();
+  if (!text) return Date.now();
+  const timestamp = new Date(text.replace(' ', 'T')).getTime();
+  return Number.isFinite(timestamp) ? timestamp : Date.now();
+}
+
+/**
+ * 解析本插件导出的结果 CSV。使用 PapaParse 兼容 AI 内容中的逗号、引号和换行。
+ */
+async function importResultCsv(text, sourceFileName) {
+  if (!window.Papa || typeof window.Papa.parse !== 'function') {
+    throw new Error('CSV 解析组件未加载');
+  }
+  const parsed = window.Papa.parse(String(text || '').replace(/^\uFEFF/, ''), { skipEmptyLines: true });
+  if (parsed.errors && parsed.errors.length > 0) {
+    throw new Error(parsed.errors[0].message || 'CSV 格式错误');
+  }
+  const rows = Array.isArray(parsed.data) ? parsed.data : [];
+  if (rows.length < 2) throw new Error('CSV 文件没有结果数据');
+
+  const headers = rows[0].map((value) => String(value || '').trim());
+  const findColumn = (...names) => headers.findIndex((header) => names.includes(header));
+  const urlColumn = findColumn('引荐URL', '引荐 URL', '原URL', 'URL');
+  const sourceDomainColumn = findColumn('引荐域名', 'URL对应域名', '来源域名');
+  const targetUrlColumn = findColumn('目标URL', '目标 URL', '网站URL');
+  const resultColumn = findColumn('结果');
+  const resultMessageColumn = findColumn('结果信息', '错误信息');
+  const aiContentColumn = findColumn('AI生成内容', 'AI 生成内容');
+  const elapsedColumn = findColumn('耗时(秒)', '耗时');
+  const timestampColumn = findColumn('执行时间');
+  const runResultColumn = findColumn('运行结果');
+  const documentHeightColumn = findColumn('页面总高度(px)');
+  const viewportHeightColumn = findColumn('视口高度(px)');
+  const pageDepthColumn = findColumn('页面总深度(屏)');
+
+  if (urlColumn < 0 || targetUrlColumn < 0 || resultColumn < 0) {
+    throw new Error('请选择插件导出的结果 CSV，文件必须包含“引荐URL、目标URL、结果”列');
+  }
+
+  const results = [];
+  const targetUrls = new Set();
+  rows.slice(1).forEach((row) => {
+    const referralUrl = String(row[urlColumn] || '').trim();
+    const targetUrl = String(row[targetUrlColumn] || '').trim();
+    if (!referralUrl || !targetUrl) return;
+    targetUrls.add(targetUrl);
+    const timestamp = parseImportedTimestamp(timestampColumn >= 0 ? row[timestampColumn] : '');
+    results.push({
+      originalIndex: results.length,
+      url: referralUrl,
+      sourceDomain: sourceDomainColumn >= 0 ? normalizeDomainForStats(row[sourceDomainColumn]) : extractDomain(referralUrl),
+      result: resultTextToCode(row[resultColumn], runResultColumn >= 0 ? row[runResultColumn] : ''),
+      aiContent: aiContentColumn >= 0 ? String(row[aiContentColumn] || '') || null : null,
+      errorMessage: resultMessageColumn >= 0 ? String(row[resultMessageColumn] || '') || null : null,
+      promotionSiteId: targetUrl,
+      promotionSiteName: targetUrl,
+      promotionSiteUrl: targetUrl,
+      pageMetrics: {
+        documentHeightPx: numberOrEmpty(documentHeightColumn >= 0 ? row[documentHeightColumn] : null),
+        viewportHeightPx: numberOrEmpty(viewportHeightColumn >= 0 ? row[viewportHeightColumn] : null),
+        pageDepthScreens: numberOrEmpty(pageDepthColumn >= 0 ? row[pageDepthColumn] : null)
+      },
+      timestamp,
+      elapsed: numberOrEmpty(elapsedColumn >= 0 ? row[elapsedColumn] : null),
+      originalRow: row.slice(0, targetUrlColumn)
+    });
+  });
+
+  if (results.length === 0) throw new Error('CSV 中没有可导入的结果行');
+  if (targetUrls.size !== 1) throw new Error('一个批次只能包含一个目标 URL，当前 CSV 中检测到多个目标 URL');
+
+  const fileBatchId = String(sourceFileName || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+  const importedBatchId = fileBatchId ? fileBatchId[0].toLowerCase() : generateUUID();
+  const existingIndex = batchHistory.findIndex((record) => record.id === importedBatchId);
+  if (existingIndex >= 0 && !confirm(`批次 ${importedBatchId} 已存在，是否用导入的 CSV 结果覆盖本地批次记录？`)) return;
+
+  const timestamps = results.map((item) => item.timestamp).filter(Number.isFinite);
+  const targetUrl = [...targetUrls][0];
+  const record = {
+    id: importedBatchId,
+    totalCount: results.length,
+    status: 'completed',
+    databaseStatus: 'pending',
+    sourceName: sourceFileName || '导入结果 CSV',
+    sourceType: 'result_csv_import',
+    targetUrl,
+    targetName: targetUrl,
+    startedAt: timestamps.length > 0 ? Math.min(...timestamps) : Date.now(),
+    completedAt: timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
+    summary: summarizeBatchResults(results),
+    results
+  };
+  if (existingIndex >= 0) batchHistory[existingIndex] = record;
+  else batchHistory.push(record);
+  await persistBatchHistory();
+  renderBatchHistory();
+  applyBatchHistoryRecord(record);
+  setDatabasePersistenceState('failed', `已从 CSV 恢复批次 ${importedBatchId}，共 ${results.length} 条结果，可点击“重新写入数据库”。`);
+  alert(`结果 CSV 导入成功：已恢复 ${results.length} 条结果。`);
+}
+
+function numberOrEmpty(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function parseCSV(raw, fileNameParam) {
   const text = normalizeEncoding(raw);
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
@@ -623,11 +1139,11 @@ function parseCSV(raw, fileNameParam) {
   // 去除 UTF-8 BOM（常见于从 Windows Excel 保存的文件）
   const headerRaw = lines[0];
   const header = parseCSVLine(headerRaw);
-  const colUrl = header.findIndex((h) => h === '原URL' || h === 'URL' || h === 'url' || h === 'Url');
-  const colDomain = header.findIndex((h) => h === 'URL对应域名' || h === '来源域名' || h === 'sourceDomain');
+  const colUrl = header.findIndex((h) => h === '引荐URL' || h === '引荐 URL' || h === 'URL' || h === 'url' || h === 'Url');
+  const colDomain = header.findIndex((h) => h === '引荐域名' || h === 'sourceDomain');
 
   if (colUrl === -1) {
-    alert('CSV 文件缺少"原URL"列，请确认文件格式正确。\n\n标准格式应为：\n页面AS, 原URL, URL对应域名, 目标域名, 类型, 外部链接数量, 自动评论运行结果');
+    alert('CSV 文件缺少"引荐URL"列，请确认文件格式正确。\n\n标准格式应为：\n页面AS, 引荐URL, 引荐域名, 目标域名, 类型, 引荐页外链数量, 自动评论运行结果');
     resetFile();
     return;
   }
@@ -638,7 +1154,7 @@ function parseCSV(raw, fileNameParam) {
   for (let i = 1; i < lines.length; i++) {
     const row = parseCSVLine(lines[i]);
     let url = (row[colUrl] || '').trim();
-    let sourceDomain = colDomain >= 0 ? (row[colDomain] || '').trim() : '';
+    let sourceDomain = colDomain >= 0 ? normalizeDomainForStats(row[colDomain]) : '';
 
     if (!url) {
       invalidCount++;
@@ -654,10 +1170,12 @@ function parseCSV(raw, fileNameParam) {
       continue;
     }
 
+    sourceDomain = sourceDomain || extractDomain(url);
+
     items.push({
       url,
       sourceDomain,
-      originalRow: row  // 保存原始行数据，用于导出时保持格式
+      originalRow: normalizeReferralOriginalRow(row)  // 保存规范化后的源行数据，用于导出时保持格式
     });
   }
 
@@ -671,9 +1189,12 @@ function parseCSV(raw, fileNameParam) {
 // 将不同输入来源解析出的 URL 统一写入批量队列，并渲染预览表格。
 function applyParsedUrlItems(items, options = {}) {
   const sourceName = options.sourceName || '已输入 URL';
+  const sourceType = options.sourceType || 'manual';
   const invalidCount = Number(options.invalidCount || 0);
   let illegalCount = 0;
 
+  batchSourceName = sourceName;
+  batchSourceType = sourceType;
   parsedUrls = [];
   urlPreviewBody.innerHTML = '';
 
@@ -715,7 +1236,7 @@ function applyParsedUrlItems(items, options = {}) {
   urlPreview.classList.toggle('visible', validCount > 0);
   fileName.textContent = sourceName;
   fileInfo.classList.toggle('visible', validCount > 0 || invalidCount > 0);
-  uploadZone.classList.toggle('has-file', validCount > 0 && options.sourceType === 'csv');
+  uploadZone.classList.toggle('has-file', validCount > 0 && sourceType === 'csv');
   fileCount.textContent = `共 ${validCount} 条 URL`;
   if (invalidCount > 0) fileCount.textContent += `（跳过 ${invalidCount} 条无效）`;
   if (illegalCount > 0) fileCount.textContent += `（非法拦截 ${illegalCount} 条）`;
@@ -732,12 +1253,20 @@ function buildManualOriginalRow(url, sourceDomain) {
   return [
     '',
     url,
-    sourceDomain || extractDomain(url),
+    normalizeDomainForStats(sourceDomain || extractDomain(url)),
     '',
     'manual',
     '',
     ''
   ];
+}
+
+function normalizeReferralOriginalRow(row) {
+  const normalized = Array.isArray(row) ? [...row] : [];
+  // 标准 CSV 的第 3、4 列分别是引荐域名和目标域名，入队时统一去掉 www. 前缀。
+  if (normalized.length > 2) normalized[2] = normalizeDomainForStats(normalized[2]);
+  if (normalized.length > 3) normalized[3] = normalizeDomainForStats(normalized[3]);
+  return normalized;
 }
 
 function scheduleManualUrlParse() {
@@ -834,6 +1363,196 @@ function updateCostHint(count) {
   }
 }
 
+/**
+ * 调用本机 PostgreSQL 采集服务。单条请求使用短超时，最终批量同步使用更长超时。
+ */
+async function requestLocalDatabase(path, payload, options = {}) {
+  const controller = new AbortController();
+  const timeoutMs = Number(options.timeoutMs) || LOCAL_DATABASE_REQUEST_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${LOCAL_DATABASE_API_BASE}${path}`, {
+      method: options.method || 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload ? JSON.stringify(payload) : undefined,
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data.data || null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 批次启动前检查本地服务和 PostgreSQL。检查失败只让用户选择是否继续，不替自动化做强制拦截。
+ */
+async function confirmDatabaseAvailabilityBeforeStart() {
+  try {
+    await requestLocalDatabase('/health', undefined, { method: 'GET', timeoutMs: 2500 });
+    return true;
+  } catch (error) {
+    const message = formatDatabaseError(error);
+    setDatabasePersistenceState('warning', `启动前数据库检查未通过：${message}`);
+    const continueAutomation = confirm(
+      `本地数据库当前不可用：\n${message}\n\n点击“确定”继续自动化，结果会保存在扩展本地，稍后可重新同步。\n点击“取消”先启动本地服务。`
+    );
+    if (!continueAutomation) {
+      alert('请在项目目录执行 pnpm server:start，服务启动后再点击“开始批量处理”。');
+    }
+    return continueAutomation;
+  }
+}
+
+/**
+ * 更新数据库落库提示。失败态必须保留重试按钮，直到本批次完整写入成功或被清空。
+ */
+function setDatabasePersistenceState(state, message) {
+  if (!databasePersistence || !databasePersistenceMessage) return;
+  databasePersistence.className = `database-persistence visible ${state}`;
+  databasePersistenceMessage.textContent = message;
+  if (retryDatabaseBtn) {
+    retryDatabaseBtn.style.display = state === 'failed' ? 'inline-flex' : 'none';
+    retryDatabaseBtn.disabled = state === 'saving';
+  }
+}
+
+/**
+ * 把底层网络错误转换成可操作的中文提示，优先告诉用户如何恢复本地数据库服务。
+ */
+function formatDatabaseError(error) {
+  if (error && error.name === 'AbortError') return '数据库请求超时，请检查本地服务和 PostgreSQL 是否正常。';
+  const message = String(error && error.message || error || '未知错误');
+  if (/failed to fetch|fetch failed|networkerror/i.test(message)) {
+    return '无法连接本地数据库服务，请先在项目目录执行 pnpm server:start。';
+  }
+  return message;
+}
+
+/**
+ * 构造批次主记录，自动写入和手动重试共用同一份数据，避免两条链路字段不一致。
+ */
+function buildLocalDatabaseRunPayload(nextStatus) {
+  const targetUrl = batchPromotionSite && batchPromotionSite.url || '';
+  return {
+    id: batchId,
+    targetUrl,
+    targetDomain: extractDomain(targetUrl),
+    targetName: batchPromotionSite && batchPromotionSite.name || '',
+    totalCount,
+    status: nextStatus,
+    sourceType: batchSourceType || '',
+    sourceName: batchSourceName || '',
+    startedAt: batchStartedAt ? new Date(batchStartedAt).toISOString() : null,
+    completedAt: batchCompletedAt ? new Date(batchCompletedAt).toISOString() : null,
+    rawConfig: {
+      autoOpenPanel: batchAutoOpenPanel.checked,
+      autoGenerate: batchAutoGenerate.checked,
+      autoSubmit: batchAutoSubmit.checked
+    }
+  };
+}
+
+/**
+ * 构造数据库明细。urlIndex 是源数据中的稳定行号，也是服务端幂等唯一键的一部分。
+ */
+function buildLocalDatabaseRunItemPayload(resultEntry) {
+  const targetUrl = resultEntry.promotionSiteUrl || (batchPromotionSite && batchPromotionSite.url) || '';
+  return {
+    runId: batchId,
+    urlIndex: resultEntry.originalIndex,
+    referralUrl: resultEntry.url,
+    referralDomain: resultEntry.sourceDomain || extractDomain(resultEntry.url),
+    targetUrl,
+    targetDomain: extractDomain(targetUrl),
+    result: resultEntry.result,
+    resultMessage: resultEntry.errorMessage || '',
+    aiContent: resultEntry.aiContent || null,
+    elapsedSeconds: resultEntry.elapsed,
+    executedAt: resultEntry.timestamp ? new Date(resultEntry.timestamp).toISOString() : new Date().toISOString(),
+    pageMetrics: resultEntry.pageMetrics || {},
+    originalRow: resultEntry.originalRow || []
+  };
+}
+
+/**
+ * 将批次信息写入本地数据库。目标 URL 由批量启动时锁定，避免运行中切换配置造成混乱。
+ */
+async function persistLocalDatabaseRunStart() {
+  if (!batchId || !batchPromotionSite || !batchPromotionSite.url) return;
+  try {
+    setDatabasePersistenceState('saving', '数据库批次已开始创建，执行结果将持续写入。');
+    await requestLocalDatabase('/api/runs', buildLocalDatabaseRunPayload('running'));
+    console.log('[batch] 本地数据库批次已创建:', batchId);
+  } catch (error) {
+    const message = formatDatabaseError(error);
+    setDatabasePersistenceState('warning', `${message} 本批次会继续执行，结束后将再次整体写入。`);
+    saveCurrentBatchHistory('failed');
+    console.warn('[batch] 本地数据库批次创建失败，批量任务继续执行:', message);
+  }
+}
+
+/**
+ * 将单条引荐 URL 的执行结果写入本地数据库。使用批次 ID 和行号做幂等更新。
+ */
+async function persistLocalDatabaseRunItem(resultEntry) {
+  if (!batchId || !resultEntry || !resultEntry.url) return;
+  const targetUrl = resultEntry.promotionSiteUrl || (batchPromotionSite && batchPromotionSite.url) || '';
+  if (!targetUrl) return;
+  try {
+    await requestLocalDatabase('/api/run-items', buildLocalDatabaseRunItemPayload(resultEntry));
+    databaseFailedItemIndexes.delete(resultEntry.originalIndex);
+    console.log('[batch] 本地数据库明细已写入:', { batchId, urlIndex: resultEntry.originalIndex, result: resultEntry.result });
+  } catch (error) {
+    databaseFailedItemIndexes.add(resultEntry.originalIndex);
+    const message = formatDatabaseError(error);
+    setDatabasePersistenceState('warning', `已有 ${databaseFailedItemIndexes.size} 条结果暂未写入数据库；批次结束后会自动整体补写。${message}`);
+    saveCurrentBatchHistory('failed');
+    console.warn('[batch] 本地数据库明细写入失败，批量任务继续执行:', message);
+  }
+}
+
+/**
+ * 事务性同步整个批次。服务端会校验完整批次的条数，并以 run_id + url_index 幂等更新。
+ */
+async function syncLocalDatabaseRunResults(nextStatus) {
+  if (!batchId || !batchPromotionSite || !batchPromotionSite.url) return false;
+  setDatabasePersistenceState('saving', `正在将 ${localResults.length} 条执行结果写入数据库，请稍候…`);
+  await saveCurrentBatchHistory('pending');
+  try {
+    const result = await requestLocalDatabase('/api/runs/sync-results', {
+      run: buildLocalDatabaseRunPayload(nextStatus),
+      items: localResults.map(buildLocalDatabaseRunItemPayload),
+      status: nextStatus
+    }, { timeoutMs: LOCAL_DATABASE_SYNC_TIMEOUT_MS });
+    databaseFailedItemIndexes.clear();
+    const persistedCount = Number(result && result.persistedCount);
+    setDatabasePersistenceState('success', `数据库写入成功，已保存 ${persistedCount} 条执行结果。重复写入不会产生重复记录。`);
+    await saveCurrentBatchHistory('synced');
+    console.log('[batch] 本地数据库批次同步完成:', { batchId, status: nextStatus, persistedCount });
+    return true;
+  } catch (error) {
+    const message = formatDatabaseError(error);
+    setDatabasePersistenceState('failed', `数据库写入失败：${message} 执行结果仍保留在当前页面，可点击“重新写入数据库”。`);
+    await saveCurrentBatchHistory('failed');
+    console.error('[batch] 本地数据库批次同步失败:', message);
+    return false;
+  }
+}
+
+/**
+ * 用户手动重试时复用原批次 ID 和全部结果，服务端唯一约束保证重复点击仍为幂等写入。
+ */
+async function retryDatabasePersistence() {
+  if (retryDatabaseBtn) retryDatabaseBtn.disabled = true;
+  const finalStatus = status === 'terminated' ? 'terminated' : 'completed';
+  await syncLocalDatabaseRunResults(finalStatus);
+  if (retryDatabaseBtn) retryDatabaseBtn.disabled = false;
+}
+
 // ==================== 批量处理核心 ====================
 async function startBatch() {
   if (parsedUrls.length === 0) {
@@ -843,9 +1562,12 @@ async function startBatch() {
 
   batchPromotionSite = getSelectedBatchPromotionSite();
   if (!batchPromotionSite || !batchPromotionSite.url || !batchPromotionSite.content) {
-    alert('请先选择一个配置完整的推广网站');
+    alert('请先选择一个配置完整的目标 URL');
     return;
   }
+
+  const shouldContinue = await confirmDatabaseAvailabilityBeforeStart();
+  if (!shouldContinue) return;
 
   await new Promise((resolve) => {
     chrome.storage.local.remove(['batchCtx', 'batchSubmitCtx'], resolve);
@@ -865,11 +1587,17 @@ async function startBatch() {
   pendingCount = totalCount;
   currentIndex = 0;
   localResults = [];
+  databaseFailedItemIndexes.clear();
+  batchStartedAt = Date.now();
+  batchCompletedAt = null;
   status = 'running';
 
   setStatus('running');
   updateUI();
   updateStatsUI();
+  await saveCurrentBatchHistory('pending');
+  // 数据库写入属于旁路持久化，失败只更新提示，绝不延迟或中断自动化标签页调度。
+  persistLocalDatabaseRunStart();
 
   // 打开第一个标签页
   openNextTabSync();
@@ -878,10 +1606,13 @@ async function startBatch() {
 // 保存批量任务设置到 storage.local
 async function saveBatchTaskSettings() {
   return new Promise((resolve) => {
+    const isDebug = batchDebugMode ? batchDebugMode.checked : false;
     const settings = {
-      autoOpenPanel: batchAutoOpenPanel.checked,
-      autoGenerate: batchAutoGenerate.checked,
-      autoSubmit: batchAutoSubmit.checked,
+      autoOpenPanel: batchAutoOpenPanel ? batchAutoOpenPanel.checked : true,
+      autoGenerate: isDebug ? false : (batchAutoGenerate ? batchAutoGenerate.checked : true),
+      autoSubmit: batchAutoSubmit ? batchAutoSubmit.checked : true,
+      debugMode: isDebug,
+      debugComment: isDebug ? resolveDebugCommentText(batchPromotionSite) : '',
       promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
       savedAt: Date.now()
     };
@@ -952,6 +1683,9 @@ async function stopBatch() {
 
   // 显示终止提示
   console.log(`[batch] 已手动终止。共保留 ${localResults.length} 条结果（成功 ${successCount}，失败 ${failCount}），跳过 ${terminatedCount} 条未处理`);
+  batchCompletedAt = Date.now();
+  await saveCurrentBatchHistory('pending');
+  await syncLocalDatabaseRunResults('terminated');
 }
 
 // 恢复处理（从终止状态继续）
@@ -962,6 +1696,9 @@ async function resumeBatch() {
     console.log('[resumeBatch] 状态不是 terminated，不执行');
     return;
   }
+
+  const shouldContinue = await confirmDatabaseAvailabilityBeforeStart();
+  if (!shouldContinue) return;
 
   // 重置终止状态
   isTerminated = false;
@@ -985,6 +1722,7 @@ async function resumeBatch() {
 
   setStatus('running');
   updateUI();
+  await saveCurrentBatchHistory('pending');
 
   // 从断点继续打开标签页（固定为1）
   console.log('[resumeBatch] 将打开 1 个标签页');
@@ -1067,27 +1805,48 @@ async function openNextTab() {
 
           console.log('[batch] 标签页关闭:', { tabId, urlIndex, activeTabCount, status });
 
-          // 检查是否已有结果（content.js 主动上报或超时处理过了），没有则记为手动关闭失败
-          if (!localResults.some((r) => r.originalIndex === urlIndex)) {
-            console.log('[batch] 标签关闭但无结果，记为失败:', urlIndex);
-            const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : null;
-            handleTabResult(urlIndex, 'fail', null, '用户手动关闭', elapsed);
-          } else {
-            console.log('[batch] 标签关闭已有结果:', urlIndex);
-            clearPreviewRow(urlIndex);
-          }
+          // 检查是否已有结果（content.js 主动上报或超时处理过了）
+          const checkAndRecord = async () => {
+            if (!localResults.some((r) => r.originalIndex === urlIndex)) {
+              // 延迟 400ms 并读取 storage，防止页面跳转关闭时上报还在途中
+              await new Promise(r => setTimeout(r, 400));
+              if (localResults.some((r) => r.originalIndex === urlIndex)) {
+                clearPreviewRow(urlIndex);
+                updateStatsUI();
+                return;
+              }
+              const stored = await new Promise(resolve => {
+                chrome.storage.local.get(['batchResults'], (d) => resolve(d && d.batchResults));
+              });
+              const match = Array.isArray(stored) && stored.find(item => item.batchId === batchId && item.urlIndex === urlIndex);
+              if (match) {
+                console.log('[batch] 标签关闭后从 storage 恢复匹配结果:', match);
+                handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
+                clearPreviewRow(urlIndex);
+                updateStatsUI();
+                return;
+              }
+              console.log('[batch] 标签关闭但无结果，记为失败:', urlIndex);
+              const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : null;
+              handleTabResult(urlIndex, 'fail', null, '用户手动关闭', elapsed);
+            } else {
+              console.log('[batch] 标签关闭已有结果:', urlIndex);
+              clearPreviewRow(urlIndex);
+            }
+            updateStatsUI();
+          };
 
-          updateStatsUI();
-
-          // 标签关闭后补充新标签
-          if (status === 'running' && currentIndex < totalCount) {
-            openNextTabSync();
-          } else if (status === 'running' && activeTabCount === 0) {
-            // 所有标签页都已关闭，检查是否全部完成
-            const processedCount = getProcessedCount();
-            console.log('[batch] 所有标签关闭，检查完成状态:', { processedCount, totalCount, activeTabCount });
-            checkAllCompleted();
-          }
+          checkAndRecord().finally(() => {
+            // 标签关闭后补充新标签
+            if (status === 'running' && currentIndex < totalCount) {
+              openNextTabSync();
+            } else if (status === 'running' && activeTabCount === 0) {
+              // 所有标签页都已关闭，检查是否全部完成
+              const processedCount = getProcessedCount();
+              console.log('[batch] 所有标签关闭，检查完成状态:', { processedCount, totalCount, activeTabCount });
+              checkAllCompleted();
+            }
+          });
         }
       };
       chrome.tabs.onRemoved.addListener(listener);
@@ -1098,20 +1857,28 @@ async function openNextTab() {
           console.log('[batch] sendWhenReady 停止重试：任务已停止或标签页不再活跃', { tabId, status, isTerminated });
           return;
         }
-        if (retries > 20) {
+        if (retries > 60) {
           console.warn('[batch] content.js 就绪超时，放弃发送, tabId:', tabId);
+          handleTabResult(urlIndex, 'fail', null, '页面脚本注入就绪超时');
+          try {
+            chrome.tabs.remove(tabId, () => {});
+          } catch (_) {}
           return;
         }
-        chrome.tabs.sendMessage(tabId, { type: 'PING' }).then(() => {
-          // content.js 已就绪，发送正式任务
-          console.log('[batch] content.js 已就绪，发送 BATCH_HANDLE → tabId:', tab.id, { batchId, urlIndex, url, time: new Date().toISOString() });
+        chrome.tabs.sendMessage(tabId, { type: 'PING' }, { frameId: 0 }).then(() => {
+          const isDebug = batchDebugMode ? batchDebugMode.checked : false;
+          const presetComment = isDebug ? resolveDebugCommentText(batchPromotionSite) : '';
+
+          console.log('[batch] content.js 已就绪，发送 BATCH_HANDLE → tabId:', tab.id, { batchId, urlIndex, url, isDebug, time: new Date().toISOString() });
           chrome.tabs.sendMessage(tab.id, {
             type: 'BATCH_HANDLE',
             batchId,
             urlIndex,
             url,
-            promotionSite: normalizeBatchPromotionSite(batchPromotionSite)
-          }).then((response) => {
+            promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
+            debugMode: isDebug,
+            presetComment: presetComment
+          }, { frameId: 0 }).then((response) => {
             console.log('[batch] 收到 content.js 响应:', response, 'tabId:', tab.id, 'tabsPendingConfirm:', [...tabsPendingConfirm.keys()], 'time:', new Date().toISOString());
             if (response && response.ok) {
               if (localResults.some((r) => r.originalIndex === urlIndex) || !activeTabs.has(tab.id)) {
@@ -1124,11 +1891,22 @@ async function openNextTab() {
             } else {
               console.warn('[batch] content.js 响应 ok=false 或无响应:', response);
             }
-          }).catch((err) => {
+          }).catch(async (err) => {
             console.warn('[batch] sendMessage BATCH_HANDLE 发送失败:', err.message || err, 'tabId:', tab.id);
-            // 发送失败时，如果尚未记录结果，则记为失败
+            // 表单提交后页面跳转/关闭会导致消息通道断开，先从 storage 检索已落盘结果
+            await new Promise(r => setTimeout(r, 800));
             if (!localResults.some((r) => r.originalIndex === urlIndex)) {
-              console.log('[batch] sendMessage 失败但无结果记录，记为失败');
+              const stored = await new Promise(resolve => {
+                chrome.storage.local.get(['batchResults'], (d) => resolve(d && d.batchResults));
+              });
+              const match = Array.isArray(stored) && stored.find(item => item.batchId === batchId && item.urlIndex === urlIndex);
+              if (match) {
+                console.log('[batch] catch 中从 storage 恢复匹配结果:', match);
+                handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
+                try { chrome.tabs.remove(tab.id, () => {}); } catch (_) {}
+                return;
+              }
+              console.log('[batch] sendMessage 失败且无结果记录，记为失败');
               handleTabResult(urlIndex, 'fail', null, '消息发送失败：' + (err.message || '标签页可能已关闭'));
             }
           });
@@ -1217,6 +1995,7 @@ function handleTabResult(urlIndex, result, aiContent, errorMessage, forcedElapse
 
   // 保存到本地存储
   saveLocalResults();
+  persistLocalDatabaseRunItem(resultEntry);
 
   // 检查是否全部完成（成功 + 失败 + 已跳过 + 无评论框 >= 总数）
   const processedCount = getProcessedCount();
@@ -1350,13 +2129,8 @@ function checkAllCompleted(options = {}) {
 
 // 保存结果到本地存储
 function saveLocalResults() {
-  chrome.storage.local.set({
-    batchLocalResults: {
-      batchId,
-      totalCount,
-      results: localResults.slice(-100) // 只保留最近100条
-    }
-  });
+  // 每条结果完成后都更新本地批次历史；数据库不可用也不会丢失可恢复的明细。
+  saveCurrentBatchHistory(databaseFailedItemIndexes.size > 0 ? 'failed' : 'pending');
 }
 
 // 全部完成
@@ -1383,6 +2157,9 @@ async function onAllCompleted() {
 
   updateStatsUI();
   updateUI();
+  batchCompletedAt = Date.now();
+  await saveCurrentBatchHistory('pending');
+  await syncLocalDatabaseRunResults('completed');
 }
 
 // 超时检测
@@ -1457,8 +2234,10 @@ function updateUI() {
 
   exportBtn.disabled = localResults.length === 0;
   clearBtn.disabled = isRunning;
+  if (importResultCsvBtn) importResultCsvBtn.disabled = isRunning;
   if (batchPromotionSiteSelect) {
-    batchPromotionSiteSelect.disabled = isRunning || isTerminated;
+    // 批次有结果时锁定目标 URL，避免手动重试把历史结果写到另一个目标下。
+    batchPromotionSiteSelect.disabled = isRunning || isTerminated || isCompleted;
   }
   updateBatchPromotionSiteSummary();
 
@@ -1515,15 +2294,16 @@ function exportResults() {
   const originalHeaders = [];
   for (let i = 0; i < originalRowLen; i++) {
     if (i === 0) originalHeaders.push('页面AS');
-    else if (i === 1) originalHeaders.push('原URL');
-    else if (i === 2) originalHeaders.push('URL对应域名');
+    else if (i === 1) originalHeaders.push('引荐URL');
+    else if (i === 2) originalHeaders.push('引荐域名');
     else if (i === 3) originalHeaders.push('目标域名');
     else if (i === 4) originalHeaders.push('类型');
-    else if (i === 5) originalHeaders.push('外部链接数量');
+    else if (i === 5) originalHeaders.push('引荐页外链数量');
     else originalHeaders.push(`列${i + 1}`);
   }
   const resultHeaders = [
-    '网站URL',
+    '目标URL',
+    '目标域名',
     '页面总高度(px)',
     '视口高度(px)',
     '页面总深度(屏)',
@@ -1546,15 +2326,18 @@ function exportResults() {
   };
 
   const rows = localResults.map((r) => {
-    // 基础列：页面AS=原序号-1，其他列从原始数据中取
+    // 基础列：从原始输入中取值，同时规范化引荐域名和目标域名。
     const baseCols = [];
     for (let i = 0; i < originalRowLen; i++) {
-      baseCols.push(escape(r.originalRow[i] || ''));
+      const value = (i === 2 || i === 3) ? normalizeDomainForStats(r.originalRow[i]) : (r.originalRow[i] || '');
+      baseCols.push(escape(value));
     }
     const metrics = r.pageMetrics || {};
     const runResult = getExportRunResult(r.result);
+    const targetDomain = extractDomain(r.promotionSiteUrl || '');
     const resultCols = [
       escape(r.promotionSiteUrl || ''),
+      escape(targetDomain),
       escape(metrics.documentHeightPx || ''),
       escape(metrics.viewportHeightPx || ''),
       escape(metrics.pageDepthScreens || ''),
@@ -1587,6 +2370,15 @@ function getExportSourceColumnCount(originalRow) {
   const lastValue = String(originalRow[len - 1] || '').trim();
   const knownResultValues = new Set(['1', '0', '√', '×', '需手动处理', '成功', '失败', '非法站点，已拦截']);
   if (knownResultValues.has(lastValue)) {
+    const hasCurrentGeneratedResult = len >= 17
+      && /^https?:\/\//i.test(String(originalRow[len - 11] || '').trim())
+      && normalizeDomainForStats(originalRow[len - 10])
+      && Number.isFinite(Number(originalRow[len - 9]))
+      && Number.isFinite(Number(originalRow[len - 8]))
+      && Number.isFinite(Number(originalRow[len - 7]));
+    if (hasCurrentGeneratedResult) return len - 11;
+
+    // 兼容上一版包含目标 URL 但尚未单独导出目标域名的结果格式。
     const hasCompleteGeneratedResult = len >= 16
       && /^https?:\/\//i.test(String(originalRow[len - 10] || '').trim())
       && Number.isFinite(Number(originalRow[len - 9]))
@@ -1620,6 +2412,11 @@ function clearBatch() {
   totalCount = successCount = failCount = skippedCount = noCommentBoxCount = manualRequiredCount = blockedIllegalCount = pendingCount = 0;
   currentIndex = 0;
   localResults = [];
+  batchSourceName = '';
+  batchSourceType = '';
+  databaseFailedItemIndexes.clear();
+  batchStartedAt = null;
+  batchCompletedAt = null;
   activeTabs.clear();
   activeTabsByIndex.clear();
   tabsPendingConfirm.clear();
@@ -1635,6 +2432,14 @@ function clearBatch() {
   statsFail.textContent = '0';
   statsRate.textContent = '—';
   statsPanel.classList.remove('visible');
+  if (databasePersistence) {
+    databasePersistence.className = 'database-persistence';
+    if (databasePersistenceMessage) databasePersistenceMessage.textContent = '';
+  }
+  if (retryDatabaseBtn) {
+    retryDatabaseBtn.style.display = 'none';
+    retryDatabaseBtn.disabled = false;
+  }
   filterDomain.innerHTML = '<option value="all">全部域名</option>';
   filterResult.value = 'all';
   filterTimeRange.value = 'all';
@@ -1692,7 +2497,7 @@ function buildDomainOptions() {
 
 function extractDomain(url) {
   try {
-    return new URL(url).hostname;
+    return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
   } catch {
     return '';
   }
@@ -1803,7 +2608,7 @@ function renderStats() {
       <td title="${escapeHtml(r.url)}">
         <div class="target-url-cell">
           <span class="target-url-text">${escapeHtml(shortUrl)}</span>
-          <button type="button" class="open-url-btn" title="在新标签页打开目标页面" aria-label="在新标签页打开目标页面">↗</button>
+          <button type="button" class="open-url-btn" title="在新标签页打开引荐 URL" aria-label="在新标签页打开引荐 URL">↗</button>
         </div>
       </td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(promotionSiteUrl)}">${escapeHtml(shortPromotionSiteUrl)}</td>

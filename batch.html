@@ -744,6 +744,46 @@
         color: #2563eb;
         font-size: 14px;
       }
+
+      /* 数据库落库状态必须对用户可见，不能只把失败信息留在开发者控制台。 */
+      .database-persistence {
+        display: none;
+        align-items: center;
+        gap: 10px;
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        background: #eff6ff;
+        color: #1e40af;
+        font-size: 12px;
+      }
+
+      .database-persistence.visible { display: flex; }
+      .database-persistence.success { border-color: #a7f3d0; background: #ecfdf5; color: #065f46; }
+      .database-persistence.warning { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+      .database-persistence.failed { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+      .database-persistence-message { flex: 1; line-height: 1.5; word-break: break-word; }
+      .database-persistence .btn { flex: 0 0 auto; padding: 6px 12px; }
+
+      /* 批次历史只展示摘要；未同步批次的完整明细保存在扩展本地存储中。 */
+      .batch-history-card { margin-top: 16px; }
+      .batch-history-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .batch-history-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .batch-history-empty { padding: 14px 0; color: #9ca3af; font-size: 12px; text-align: center; }
+      .batch-history-wrap { overflow-x: auto; }
+      .batch-history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .batch-history-table th,
+      .batch-history-table td { padding: 8px 10px; border-top: 1px solid #f3f4f6; text-align: left; white-space: nowrap; }
+      .batch-history-table th { color: #6b7280; background: #f9fafb; font-weight: 600; }
+      .batch-history-table td { color: #374151; }
+      .batch-history-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+      .batch-history-buttons { display: flex; gap: 6px; }
+      .batch-history-buttons .btn { padding: 5px 10px; font-size: 11px; }
+      .batch-sync-badge { display: inline-flex; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+      .batch-sync-badge.pending { color: #92400e; background: #fef3c7; }
+      .batch-sync-badge.failed { color: #991b1b; background: #fee2e2; }
+      .batch-sync-badge.synced { color: #065f46; background: #d1fae5; }
     </style>
   </head>
   <body>
@@ -751,16 +791,16 @@
 
       <!-- 标题区 -->
       <h1>批量外链评论</h1>
-      <div class="subtitle">上传 CSV 文件，批量打开目标页面，自动发送评论并记录结果</div>
+      <div class="subtitle">上传 CSV 文件，批量打开引荐 URL，自动发送评论并记录结果</div>
 
 
       <div class="card">
-        <div class="card-title">本批次推广网站</div>
+        <div class="card-title">本批次目标 URL</div>
         <div class="promotion-site-field">
-          <label for="batchPromotionSiteSelect">推广网站</label>
+          <label for="batchPromotionSiteSelect">目标 URL</label>
           <select id="batchPromotionSiteSelect"></select>
         </div>
-        <div class="hint" style="margin-top: 8px;">开始处理时会锁定这里选择的网站；AI 文案、链接、锚文本和评论表单名称都会使用该网站的配置。</div>
+        <div class="hint" style="margin-top: 8px;">开始处理时会锁定这里选择的目标 URL；AI 文案、链接、锚文本和评论表单名称都会使用该目标 URL 的配置。</div>
       </div>
 
 
@@ -781,10 +821,10 @@
         </div>
 
         <div class="manual-url-block">
-          <label for="manualUrlsInput">直接粘贴 URL</label>
+          <label for="manualUrlsInput">直接粘贴引荐 URL</label>
           <textarea id="manualUrlsInput" class="manual-url-textarea" rows="7" placeholder="一行一个 URL，例如：&#10;https://example.com/post-a&#10;https://example.com/post-b"></textarea>
           <div class="manual-url-tools">
-            <button class="btn btn-secondary" id="parseManualUrlsBtn" type="button">解析粘贴 URL</button>
+            <button class="btn btn-secondary" id="parseManualUrlsBtn" type="button">解析引荐 URL</button>
             <button class="btn btn-secondary" id="clearManualUrlsBtn" type="button">清空粘贴内容</button>
           </div>
           <div class="hint">支持一行一个 URL；也兼容用空格、逗号分隔。未写协议时会自动补全为 https://。</div>
@@ -792,15 +832,15 @@
 
         <div class="url-preview" id="urlPreview">
           <div class="url-preview-header">
-            <span>待处理 URL 列表</span>
+            <span>待处理引荐 URL 列表</span>
             <span id="duplicateCount"></span>
           </div>
           <table>
             <thead>
               <tr>
                 <th>#</th>
-                <th>来源域名</th>
-                <th>目标页面</th>
+                <th>引荐域名</th>
+                <th>引荐 URL</th>
               </tr>
             </thead>
             <tbody id="urlPreviewBody"></tbody>
@@ -808,8 +848,8 @@
         </div>
 
         <div class="hint" style="margin-top:10px">
-          CSV 文件需包含"原URL"列，标准格式为：<br/>
-          页面AS, 原URL, URL对应域名, 目标域名, 类型, 外部链接数量, 自动评论运行结果
+          CSV 文件需包含"引荐URL"列，标准格式为：<br/>
+          页面AS, 引荐URL, 引荐域名, 目标域名, 类型, 引荐页外链数量, 自动评论运行结果
         </div>
       </div>
 
@@ -836,7 +876,7 @@
           </div>
         </div>
 
-        <div>
+        <div style="margin-bottom: 10px;">
           <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13px;cursor:pointer;">
             <input type="checkbox" id="batchAutoSubmit" />
             <span>AI 生成文案后自动提交评论</span>
@@ -844,6 +884,30 @@
           <div class="hint" style="margin-left: 22px; margin-top: 4px;">
             勾选后，生成文案并填入评论框后，将自动点击"发送评论"按钮。
           </div>
+        </div>
+
+        <div>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="batchDebugMode" />
+            <span>Debug 探测模式（免 AI 真实提交）</span>
+            <span style="background:#fef3c7;color:#92400e;font-size:11px;padding:1px 5px;border-radius:4px;font-weight:600;">PROBE</span>
+          </label>
+          <div class="hint" style="margin-left: 22px; margin-top: 4px;">
+            跳过 AI 生成调用（零 Token 消耗、极速执行），使用内置预设评论条进行真实表单填充与提交，用于批量探测可提交 URL。
+          </div>
+        </div>
+
+        <div id="batchDebugOptions" style="display: none; margin-top: 12px; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+          <label for="batchDebugCommentSelect" style="display: block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 6px;">探测预设评论文案：</label>
+          <select id="batchDebugCommentSelect" style="width: 100%; font-size: 12px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 8px;">
+            <option value="random">🎲 随机轮播内置好评条目</option>
+            <option value="preset_1">Great article! Thank you for sharing these helpful insights.</option>
+            <option value="preset_2">Very informative post, really appreciate the detailed breakdown!</option>
+            <option value="preset_3">Awesome tips! Thanks for putting this together, very useful read.</option>
+            <option value="preset_4">Thanks for sharing this great resource, found it very helpful!</option>
+            <option value="custom">✏️ 自定义探测文案...</option>
+          </select>
+          <textarea id="batchDebugCustomComment" placeholder="输入自定义探测评论内容（支持变量：{url} 目标网址, {name} 目标网站名）" style="display: none; width: 100%; height: 60px; font-size: 12px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; resize: vertical;"></textarea>
         </div>
 
         <div class="card-title" style="margin-top: 16px;">超时配置</div>
@@ -918,6 +982,41 @@
         </div>
       </div>
 
+      <!-- 数据库同步状态：失败时提供可幂等重试的显式入口。 -->
+      <div class="database-persistence" id="databasePersistence" role="status" aria-live="polite">
+        <span class="database-persistence-message" id="databasePersistenceMessage"></span>
+        <button class="btn btn-secondary" id="retryDatabaseBtn" type="button" style="display:none;">重新写入数据库</button>
+      </div>
+
+      <!-- 本地批次日志：未同步批次保留完整明细，同步成功后仅保留摘要。 -->
+      <div class="card batch-history-card">
+        <div class="batch-history-header">
+          <div class="card-title" style="margin-bottom:0;">本地批次日志</div>
+          <div class="batch-history-actions">
+            <button class="btn btn-secondary" id="importResultCsvBtn" type="button">导入结果 CSV</button>
+            <input type="file" id="resultCsvInput" accept=".csv,text/csv" />
+          </div>
+        </div>
+        <div class="hint" style="margin:8px 0 10px;">未同步批次会保留全部结果，数据库同步成功后只保留批次摘要。</div>
+        <div class="batch-history-empty" id="batchHistoryEmpty">暂无批次记录</div>
+        <div class="batch-history-wrap" id="batchHistoryWrap" style="display:none;">
+          <table class="batch-history-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>批次 ID</th>
+                <th>目标 URL</th>
+                <th>结果数</th>
+                <th>批次状态</th>
+                <th>数据库</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="batchHistoryBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- 结果统计面板 -->
       <div class="card stats-panel" id="statsPanel">
         <div class="card-title">执行结果统计</div>
@@ -989,8 +1088,8 @@
             <thead>
               <tr>
                 <th>#</th>
-                <th>目标页面</th>
-                <th>网站 URL</th>
+                <th>引荐 URL</th>
+                <th>目标 URL</th>
                 <th>页面深度</th>
                 <th>结果</th>
                 <th>错误信息</th>

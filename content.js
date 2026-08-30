@@ -356,6 +356,483 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  // ====== Frame 环境判定与 Blogger 跨域评论适配 ======
+  const isTopFrame = window === window.top;
+  const isBloggerCommentFrame = !isTopFrame && (
+    (window.location.hostname || '').includes('blogger.com') ||
+    (window.location.pathname || '').includes('/comment/frame') ||
+    window.name === 'comment-editor'
+  );
+
+  function initBloggerCommentIframeHandler() {
+    console.log('[AutoComment iframe] Blogger 评论 iframe 脚本已初始化:', window.location.href);
+
+    // 持续广播就绪状态，直到父窗口发送第一条指令
+    let readyTimer = setInterval(() => {
+      try {
+        window.parent.postMessage({ type: 'AUTO_COMMENT_BLOGGER_READY' }, '*');
+      } catch (_) {}
+    }, 300);
+
+    try {
+      window.parent.postMessage({ type: 'AUTO_COMMENT_BLOGGER_READY' }, '*');
+    } catch (_) {}
+
+    window.addEventListener('message', async (event) => {
+      const data = event.data;
+      if (!data) return;
+
+      if (data.type === 'AUTO_COMMENT_BLOGGER_PING') {
+        try {
+          window.parent.postMessage({ type: 'AUTO_COMMENT_BLOGGER_PONG' }, '*');
+        } catch (_) {}
+        return;
+      }
+
+      if (data.type === 'AUTO_COMMENT_BLOGGER_COMMAND') {
+        if (readyTimer) {
+          clearInterval(readyTimer);
+          readyTimer = null;
+        }
+
+        const { messageId, payload } = data;
+        console.log('[AutoComment iframe] 收到父窗口指令:', messageId, payload);
+
+        // 立即发送 ACK 确认收到
+        try {
+          window.parent.postMessage({
+            type: 'AUTO_COMMENT_BLOGGER_ACK',
+            messageId
+          }, '*');
+        } catch (_) {}
+
+        try {
+          const result = await handleBloggerIframeAction(payload);
+          console.log('[AutoComment iframe] 指令执行结果:', result);
+          window.parent.postMessage({
+            type: 'AUTO_COMMENT_BLOGGER_RESPONSE',
+            messageId,
+            response: result
+          }, '*');
+        } catch (err) {
+          console.error('[AutoComment iframe] 指令执行异常:', err);
+          window.parent.postMessage({
+            type: 'AUTO_COMMENT_BLOGGER_RESPONSE',
+            messageId,
+            response: { success: false, error: err.message || String(err) }
+          }, '*');
+        }
+      }
+    });
+  }
+
+  async function handleBloggerIframeAction(payload) {
+    const { text, userProfile, websiteUrl, autoSubmit } = payload || {};
+    console.log('[AutoComment iframe] handleBloggerIframeAction 开始执行, autoSubmit:', autoSubmit, { userProfile, websiteUrl });
+
+    // 1. 查找评论文本框（兼容经典 Blogger 与现代 Wiz 架构）
+    const textareaSelectors = [
+      'textarea.KHxj8b',
+      'textarea[aria-label*="Comment" i]',
+      'textarea[aria-label*="评论" i]',
+      'textarea[jsname="YPqjbf"]',
+      '#commentBodyField',
+      'textarea[name="commentBody"]',
+      'textarea#commentBodyField',
+      'textarea'
+    ];
+
+    let textarea = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      for (const sel of textareaSelectors) {
+        const el = document.querySelector(sel);
+        if (el && el.tagName === 'TEXTAREA') {
+          textarea = el;
+          break;
+        }
+      }
+      if (textarea) break;
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    // 检查是否需要登录 Google 账号
+    const isSignInRequired = (
+      document.querySelector('a[href*="ServiceLogin"], a[href*="AccountChooser"], #googleLogin') ||
+      (document.body && (
+        document.body.innerText.includes('Sign in to comment') ||
+        document.body.innerText.includes('登录 Google 账号')
+      ))
+    );
+
+    if (!textarea) {
+      if (isSignInRequired) {
+        return {
+          success: false,
+          result: 'manual_required',
+          error: 'Blogger 评论需要先登录 Google 账号'
+        };
+      }
+      return {
+        success: false,
+        error: '未在 Blogger 评论 iframe 中找到输入框'
+      };
+    }
+
+    // 2. 填充评论正文并触发完整的 Wiz 合成事件链
+    if (text) {
+      try {
+        textarea.scrollIntoView({ behavior: 'auto', block: 'center' });
+        textarea.focus();
+        textarea.value = text;
+        textarea.dispatchEvent(new Event('focus', { bubbles: true, composed: true }));
+        textarea.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        if (typeof InputEvent !== 'undefined') {
+          try {
+            textarea.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: text, inputType: 'insertText' }));
+          } catch (_) {}
+        }
+        try {
+          textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ' }));
+          textarea.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ' }));
+        } catch (_) {}
+        setValueRobust(textarea, text);
+        console.log('[AutoComment iframe] 评论正文已填入, 长度:', text.length);
+      } catch (err) {
+        console.warn('[AutoComment iframe] 填入正文异常:', err);
+      }
+    }
+
+    // 等待 300ms 观察 Wiz 模型更新
+    await new Promise(r => setTimeout(r, 300));
+
+    // 3. 处理身份选择器（支持现代 Wiz 自定义 listbox 和经典 select）
+    const customListbox = document.querySelector('[role="listbox"][aria-label*="Comment as" i], [role="listbox"], .jgvuAb');
+    const nameUrlOption = document.querySelector('[data-value="name_url"], [data-value="NAMEURL"], [data-value*="name" i]');
+
+    if (customListbox && nameUrlOption) {
+      console.log('[AutoComment iframe] 找到 Wiz 身份下拉选项:', nameUrlOption.getAttribute('data-value'));
+      const isSelected = nameUrlOption.getAttribute('aria-selected') === 'true' || nameUrlOption.classList.contains('KKjvXb');
+      if (!isSelected) {
+        try {
+          const listboxToggle = customListbox.querySelector('[jsname="LgbsSe"], .CeEBt, .ry3kXd') || customListbox;
+          listboxToggle.click();
+          await new Promise(r => setTimeout(r, 200));
+          nameUrlOption.click();
+          await new Promise(r => setTimeout(r, 400));
+        } catch (e) {
+          console.warn('[AutoComment iframe] 切换 Wiz 身份失败:', e);
+        }
+      }
+    } else {
+      // 经典 Blogger 下拉菜单
+      const identitySelect = document.querySelector(
+        '#identityHolder, ' +
+        'select[name="identityHolder"], ' +
+        'select[name="identityMenu"], ' +
+        'select[id*="identity" i]'
+      );
+      if (identitySelect) {
+        console.log('[AutoComment iframe] 找到经典身份下拉框');
+        const opt = Array.from(identitySelect.options).find(o => {
+          const val = (o.value || '').toUpperCase();
+          const txt = (o.text || '').toLowerCase();
+          return val.includes('NAMEURL') || txt.includes('name/url') || txt.includes('名称/网址') || txt.includes('name / url');
+        });
+        if (opt && identitySelect.value !== opt.value) {
+          identitySelect.value = opt.value;
+          identitySelect.dispatchEvent(new Event('change', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 400));
+        }
+      }
+    }
+
+    // 4. 填充 Name 和 Website / URL 输入框（若可见）
+    const nameInputSelectors = [
+      'input#nameField',
+      'input[name="nameField"]',
+      'input[name="identityName"]',
+      'input#identityName',
+      'input[aria-label*="Name" i]',
+      'input[placeholder*="Name" i]',
+      'input[aria-label*="姓名" i]',
+      'input[placeholder*="姓名" i]'
+    ];
+    const urlInputSelectors = [
+      'input#urlField',
+      'input[name="urlField"]',
+      'input[name="identityUrl"]',
+      'input#identityUrl',
+      'input[aria-label*="URL" i]',
+      'input[aria-label*="Website" i]',
+      'input[placeholder*="URL" i]',
+      'input[placeholder*="Website" i]',
+      'input[aria-label*="网址" i]',
+      'input[placeholder*="网址" i]'
+    ];
+
+    let nameInput = null;
+    let urlInput = null;
+    for (const sel of nameInputSelectors) {
+      const el = document.querySelector(sel);
+      if (el) { nameInput = el; break; }
+    }
+    for (const sel of urlInputSelectors) {
+      const el = document.querySelector(sel);
+      if (el) { urlInput = el; break; }
+    }
+
+    if (nameInput && userProfile && userProfile.name) {
+      setValueRobust(nameInput, userProfile.name);
+      console.log('[AutoComment iframe] 姓名已填入:', userProfile.name);
+    }
+    if (urlInput && websiteUrl) {
+      setValueRobust(urlInput, websiteUrl);
+      console.log('[AutoComment iframe] 网址已填入:', websiteUrl);
+    }
+
+    if (!autoSubmit) {
+      return { success: true, filled: true };
+    }
+
+    // 6. 点击提交/发布按钮（兼容现代 Wiz role="button" 与经典 input/button）
+    const submitBtnSelectors = [
+      '[role="button"][aria-label="Publish"]',
+      '[role="button"][aria-label*="Publish" i]',
+      '[role="button"][aria-label*="Post" i]',
+      '[role="button"][aria-label*="发布" i]',
+      '[jsname="M2UYVd"]',
+      '#postCommentSubmit',
+      'input[type="button"]#postCommentSubmit',
+      'input[type="button"][value*="Publish" i]',
+      'input[type="button"][value*="发布" i]',
+      'input[type="button"][value*="Post" i]',
+      'button[id*="submit" i]',
+      'button[type="submit"]',
+      'input[type="submit"]'
+    ];
+
+    let submitBtn = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      for (const sel of submitBtnSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          submitBtn = el;
+          break;
+        }
+      }
+      if (submitBtn) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    if (!submitBtn) {
+      return {
+        success: false,
+        error: '未在 Blogger iframe 中找到发布按钮'
+      };
+    }
+
+    console.log('[AutoComment iframe] 点击发布按钮:', submitBtn.tagName, submitBtn.getAttribute('aria-label') || submitBtn.value || submitBtn.id);
+    try {
+      submitBtn.removeAttribute('aria-disabled');
+      submitBtn.classList.remove('RDPZE');
+      submitBtn.scrollIntoView({ behavior: 'auto', block: 'center' });
+      await new Promise(r => setTimeout(r, 100));
+
+      if (typeof PointerEvent !== 'undefined') {
+        submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+      }
+      submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      if (typeof PointerEvent !== 'undefined') {
+        submitBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
+      }
+      submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      submitBtn.click();
+    } catch (err) {
+      console.warn('[AutoComment iframe] 点击发布按钮异常:', err);
+    }
+
+    // 等待 2 秒观察提交响应与验证码拦截
+    await new Promise(r => setTimeout(r, 2000));
+
+    const postSubmitCaptcha = document.querySelector(
+      'iframe[title*="recaptcha challenge" i], ' +
+      'iframe[src*="bframe"], ' +
+      '.rc-imageselect, ' +
+      '#recaptcha-challenge, ' +
+      '.g-recaptcha-bubble-arrow'
+    );
+    if (postSubmitCaptcha) {
+      return {
+        success: false,
+        result: 'manual_required',
+        error: '提交后出现验证码，请手动完成验证'
+      };
+    }
+
+    const errorEl = document.querySelector('#comment-error, .comment-error, [class*="error"]');
+    if (errorEl && errorEl.textContent && errorEl.textContent.trim().length > 0 && window.getComputedStyle(errorEl).display !== 'none') {
+      return {
+        success: false,
+        error: 'Blogger 返回错误: ' + errorEl.textContent.trim()
+      };
+    }
+
+    return { success: true, submitResult: 'blogger_submitted' };
+  }
+
+  // 非顶层窗口处理：如果是 Blogger iframe 则运行 iframe 处理器，否则直接退出
+  if (!isTopFrame) {
+    if (isBloggerCommentFrame) {
+      initBloggerCommentIframeHandler();
+    }
+    return;
+  }
+
+  // ====== 顶层窗口：Blogger 跨域 iframe 检测与指令桥梁 ======
+  function getBloggerIframeElement() {
+    return document.querySelector(
+      'iframe#comment-editor, ' +
+      'iframe.blogger-iframe-colorize, ' +
+      'iframe[src*="blogger.com/comment/frame"], ' +
+      'iframe[name="comment-editor"], ' +
+      'iframe.blogger-comment-from-post'
+    );
+  }
+
+  function hasBloggerCommentSystem() {
+    return !!(
+      getBloggerIframeElement() ||
+      document.getElementById('comment-editor-src') ||
+      document.querySelector('a[href*="blogger.com/comment/frame"]')
+    );
+  }
+
+  async function ensureBloggerIframeLoaded(timeoutMs = 6000) {
+    let iframe = getBloggerIframeElement();
+    if (!iframe) {
+      const srcLink = document.getElementById('comment-editor-src') || document.querySelector('a[href*="blogger.com/comment/frame"]');
+      if (srcLink && srcLink.href) {
+        if (typeof window.BLOG_CMT_createIframe === 'function') {
+          try {
+            window.BLOG_CMT_createIframe('https://www.blogger.com/rpc_relay.html');
+          } catch (_) {}
+        }
+        iframe = getBloggerIframeElement();
+      }
+    }
+
+    if (iframe && (!iframe.src || iframe.src === 'about:blank')) {
+      const srcLink = document.getElementById('comment-editor-src') || document.querySelector('a[href*="blogger.com/comment/frame"]');
+      if (srcLink && srcLink.href) {
+        iframe.src = srcLink.href;
+      }
+    }
+
+    if (!iframe) return null;
+
+    try {
+      iframe.scrollIntoView({ behavior: 'auto', block: 'center' });
+    } catch (_) {}
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        if (iframe.contentWindow) {
+          iframe.contentWindow.postMessage({ type: 'AUTO_COMMENT_BLOGGER_PING' }, '*');
+        }
+      } catch (_) {}
+      await new Promise(r => setTimeout(r, 250));
+      if (iframe.getAttribute('data-blogger-ready') === 'true') {
+        return iframe;
+      }
+      if (Date.now() - start > 1500 && iframe.src && iframe.src.includes('blogger.com')) {
+        return iframe;
+      }
+    }
+    return iframe;
+  }
+
+  // 顶层窗口监听 iframe 就绪通知
+  window.addEventListener('message', (event) => {
+    if (event.data && (event.data.type === 'AUTO_COMMENT_BLOGGER_READY' || event.data.type === 'AUTO_COMMENT_BLOGGER_PONG')) {
+      const iframe = getBloggerIframeElement();
+      if (iframe) {
+        iframe.setAttribute('data-blogger-ready', 'true');
+      }
+    }
+  });
+
+  async function sendCommandToBloggerIframe(actionPayload, timeoutMs = 8000) {
+    console.log('[AutoComment] 开始向 Blogger iframe 发送指令:', actionPayload);
+    const iframe = await ensureBloggerIframeLoaded(4000);
+    if (!iframe || !iframe.contentWindow) {
+      console.warn('[AutoComment] Blogger 评论 iframe 未找到或尚未加载完成');
+      return { success: false, error: 'Blogger 评论 iframe 未找到或尚未加载完成' };
+    }
+
+    const userProfile = await getUserProfile();
+    const websiteUrl = await getWebsiteUrl();
+    const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      let ackReceived = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          clearInterval(retryInterval);
+          window.removeEventListener('message', onMessageResponse);
+          console.warn('[AutoComment] 等待 Blogger iframe 响应超时');
+          resolve({ success: false, error: 'Blogger 评论 iframe 响应超时' });
+        }
+      }, timeoutMs);
+
+      function onMessageResponse(event) {
+        if (!event.data) return;
+        if (event.data.type === 'AUTO_COMMENT_BLOGGER_ACK' && event.data.messageId === messageId) {
+          ackReceived = true;
+          console.log('[AutoComment] 收到 Blogger iframe 确认接收指令 (ACK)');
+        }
+        if (event.data.type === 'AUTO_COMMENT_BLOGGER_RESPONSE' && event.data.messageId === messageId) {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            clearInterval(retryInterval);
+            window.removeEventListener('message', onMessageResponse);
+            console.log('[AutoComment] 收到 Blogger iframe 响应:', event.data.response);
+            resolve(event.data.response || { success: true });
+          }
+        }
+      }
+
+      window.addEventListener('message', onMessageResponse);
+
+      function postCmd() {
+        if (resolved || ackReceived) return;
+        try {
+          iframe.contentWindow.postMessage({
+            type: 'AUTO_COMMENT_BLOGGER_COMMAND',
+            messageId,
+            payload: {
+              ...actionPayload,
+              userProfile,
+              websiteUrl
+            }
+          }, '*');
+        } catch (err) {
+          console.warn('[AutoComment] postMessage 异常:', err);
+        }
+      }
+
+      // 立即发送并在未收到 ACK 前每 300ms 重试发送
+      postCmd();
+      const retryInterval = setInterval(postCmd, 300);
+    });
+  }
+
   // ====== AI 生成配置 ======
   const WEBSITE_URL_STORAGE_KEY = 'promotion_website_url';
   const WEBSITE_CONTENT_STORAGE_KEY = 'promotion_website_content';
@@ -364,6 +841,8 @@
   const USER_EMAIL_STORAGE_KEY = 'auto_fill_user_email';
   const USER_PASSWORD_STORAGE_KEY = 'auto_fill_user_password';
   const PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
+  const SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY = 'show_page_floating_buttons';
+  // 兼容旧版本仅控制“导出外链”按钮的设置；新设置未保存时沿用旧值。
   const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
   const SELECTED_PROMOTION_SITE_STORAGE_KEY = 'auto_comment_selected_promotion_site_id';
 
@@ -381,10 +860,10 @@
   function extractDomain(url) {
     try {
       const urlObj = new URL(url);
-      return urlObj.hostname;
+      return urlObj.hostname.replace(/^www\./i, '').toLowerCase();
     } catch (e) {
       const match = url.match(/^https?:\/\/([^/]+)/);
-      return match ? match[1] : url;
+      return (match ? match[1] : url).replace(/^www\./i, '').toLowerCase();
     }
   }
 
@@ -423,7 +902,7 @@
   }
 
   function formatPromotionSiteOption(site) {
-    const name = site.name || site.url || '未命名网站';
+    const name = site.name || site.url || '未命名目标';
     return `${name} - ${site.url || '未填写 URL'}`;
   }
 
@@ -438,24 +917,25 @@
     const legacyUrl = data && typeof data[WEBSITE_URL_STORAGE_KEY] === 'string'
       ? data[WEBSITE_URL_STORAGE_KEY].trim()
       : pickLegacyPromptValue(data && data[PROMPT_FIELD_VALUES_STORAGE_KEY], [
-        '网站链接',
+        '目标 URL',
+        '目标URL',
         '网址',
-        'website link',
+      'website link',
         'website url',
         'url'
       ]);
     const legacyContent = data && typeof data[WEBSITE_CONTENT_STORAGE_KEY] === 'string'
       ? data[WEBSITE_CONTENT_STORAGE_KEY].trim()
       : pickLegacyPromptValue(data && data[PROMPT_FIELD_VALUES_STORAGE_KEY], [
-        '网站内容',
-        '网站介绍',
+        '目标 URL 内容',
+        '目标URL内容',
         'website content',
         'site content',
         'description'
       ]);
     return normalizePromotionSite({
       id: 'legacy_site',
-      name: legacyUrl || '默认网站',
+      name: legacyUrl || '默认目标',
       url: legacyUrl,
       content: legacyContent,
       anchors: []
@@ -494,7 +974,7 @@
             return;
           }
         } else {
-          console.error('读取本地推广网站列表失败：', chrome.runtime.lastError);
+          console.error('读取本地目标 URL 列表失败：', chrome.runtime.lastError);
         }
 
         chrome.storage.sync.get(
@@ -506,7 +986,7 @@
           ],
           (syncResult) => {
             if (chrome.runtime && chrome.runtime.lastError) {
-              console.error('读取推广网站兼容配置失败：', chrome.runtime.lastError);
+              console.error('读取目标 URL 兼容配置失败：', chrome.runtime.lastError);
               resolve({ sites: [], selectedSiteId });
               return;
             }
@@ -569,31 +1049,31 @@
   }
 
   function buildQwenSkillTemplate(activeSite, anchorText) {
-    const targetWebsiteUrl = activeSite && activeSite.url ? activeSite.url : '未配置网站链接';
-    const targetWebsiteContent = activeSite && activeSite.content ? activeSite.content : '未配置网站内容';
+    const targetWebsiteUrl = activeSite && activeSite.url ? activeSite.url : '未配置目标 URL';
+    const targetWebsiteContent = activeSite && activeSite.content ? activeSite.content : '未配置目标 URL 内容';
     const anchorInstruction = anchorText
       ? [
         `本次锚文本：${anchorText}`,
-        '本次评论必须包含一个指向"网站链接"的 HTML 链接，链接的可点击文本必须完全等于上面的"本次锚文本"。'
+        '本次评论必须包含一个指向"目标 URL"的 HTML 链接，链接的可点击文本必须完全等于上面的"本次锚文本"。'
       ]
       : [
-        '所选网站未配置启用的锚文本；如果输出 HTML 链接，请根据页面上下文自然生成锚文本。'
+        '所选目标 URL 未配置启用的锚文本；如果输出 HTML 链接，请根据页面上下文自然生成锚文本。'
       ];
 
     return [
-      '你是一个合规的网站营销与评论文案助手，为网站撰写自然、真实的评论文案。',
-      '请根据我提供的"当前网站内容"进行分析和创作',
+      '你是一个合规的目标 URL 营销与评论文案助手，为目标 URL 撰写自然、真实的评论文案。',
+      '请根据我提供的"当前引荐页面内容"进行分析和创作',
       '',
-      '【我的网站信息】',
-      `网站链接：${targetWebsiteUrl}`,
-      `网站内容：${targetWebsiteContent}`,
+      '【目标 URL 信息】',
+      `目标 URL：${targetWebsiteUrl}`,
+      `目标 URL 内容：${targetWebsiteContent}`,
       ...anchorInstruction,
       '',
       '',
       '【输出要求】',
-      '1. 我需要在当前网站发表评论，评论需要自然关联到上面的"我的网站信息"，并吸引用户访问我的网站。',
+      '1. 我需要在当前引荐页面发表评论，评论需要自然关联到上面的"目标 URL 信息"，并吸引用户访问目标 URL。',
       '2. 语气可以专业但要自然、真实。',
-      '3. 使用当前网站内容的主要语言作为输出语言，尽量不要使用中文，字数建议控制在 100 词左右。',
+      '3. 使用当前引荐页面内容的主要语言作为输出语言，尽量不要使用中文，字数建议控制在 100 词左右。',
       '4. 直接给出推广文案，不要有多余的输出；只输出最终评论内容，不要输出标题、字段名、解释说明或多余格式；',
       '5.【链接格式要求】',
       'If you output any HTML link, the href attribute value MUST contain a real line break immediately before the closing double quote.',
@@ -641,7 +1121,7 @@
     });
   }
 
-  // 从 chrome.storage.sync 中异步获取推广网站地址
+  // 从 chrome.storage.sync 中异步获取目标 URL
   async function getWebsiteUrl() {
     const site = await getActivePromotionSite();
     return site.url || '';
@@ -652,7 +1132,7 @@
     return site.content || '';
   }
 
-  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 使用所选网站名称，邮箱和密码仍为全局配置。
+  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 使用所选目标名称，邮箱和密码仍为全局配置。
   async function getUserProfile() {
     const activeSite = await getActivePromotionSite();
     const siteName = String(activeSite && activeSite.name || '').trim();
@@ -687,20 +1167,30 @@
     });
   }
 
-  function getShowExportOutlinksFloatingButtonSetting() {
+  function getShowPageFloatingButtonsSetting() {
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
         resolve(true);
         return;
       }
-      chrome.storage.sync.get([SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY], (result) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          console.error('读取导出外链浮动按钮设置失败：', chrome.runtime.lastError);
-          resolve(true);
-          return;
+      chrome.storage.sync.get(
+        [
+          SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY,
+          SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
+        ],
+        (result) => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            console.error('读取页面悬浮按钮设置失败：', chrome.runtime.lastError);
+            resolve(true);
+            return;
+          }
+          if (typeof result?.[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY] === 'boolean') {
+            resolve(result[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]);
+            return;
+          }
+          resolve(result?.[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false);
         }
-        resolve(!result || result[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false);
-      });
+      );
     });
   }
 
@@ -972,6 +1462,11 @@
       url,
       promotionSite: promotionSite ? normalizePromotionSite(promotionSite) : null
     };
+
+    // 面板可能已由页面初始化流程创建；批次上下文到达后必须立即覆盖显示，避免界面与实际生成网站不一致。
+    if (qwenPanelEl && typeof qwenPanelEl._qwenApplyBatchPromotionSite === 'function') {
+      qwenPanelEl._qwenApplyBatchPromotionSite(_batchCtx.promotionSite);
+    }
   }
 
   function getBatchPromotionSiteMetadata(site) {
@@ -1331,6 +1826,12 @@
    * 组合滚动 + 点击回复链接 + 等待表单加载
    */
   async function triggerCommentFormFlow() {
+    if (hasBloggerCommentSystem()) {
+      console.log('[AutoComment] 检测到 Blogger 评论系统，确保 iframe 加载完成');
+      await ensureBloggerIframeLoaded(6000);
+      return true;
+    }
+
     // 步骤1: 先尝试直接找评论表单
     let form = findCommentForm();
     let ta = findLikelyCommentTextarea({ allowGenericFallback: false });
@@ -1357,7 +1858,7 @@
     // 步骤4: 再滚动一次并等待
     await scrollToTriggerCommentLoading();
 
-    return !!findLikelyCommentTextarea({ allowGenericFallback: false });
+    return !!findLikelyCommentTextarea({ allowGenericFallback: false }) || hasBloggerCommentSystem();
   }
 
   async function initOnPageReady() {
@@ -1365,24 +1866,11 @@
     // 只恢复提交后的补确认上下文；正式批处理执行只由 BATCH_HANDLE 触发。
     await restoreBatchContext();
 
-    fillInputs();
+    // 普通页面初始化时只建立监听，不主动改写任何表单；填表仅由用户操作或自动提交任务显式触发。
     setupFormSubmitListener();
-    injectPromoteFloatingButton();
-    applyOutlinkFloatingButtonVisibility();
+    applyPageFloatingButtonsVisibility();
 
-    getAutoOpenQwenPanelSetting().then((shouldOpen) => {
-      if (shouldOpen) {
-        createOrToggleQwenPanel();
-      }
-    });
-
-    getAutoGenerateQwenOnPageLoadSetting().then((shouldAutoGenerate) => {
-      if (shouldAutoGenerate) {
-        triggerCommentFormFlow().then(() => {
-          autoGeneratePromotionOnPageLoad();
-        });
-      }
-    });
+    // 批量面板只能在收到 BATCH_HANDLE 并锁定目标 URL 后打开，防止先读取手动模式目标并提前生成错误文案。
 
     observeDynamicElements();
   }
@@ -1395,7 +1883,7 @@
     setTimeout(() => {
       if (!hasCheckedInitialCommentBox) {
         hasCheckedInitialCommentBox = true;
-        const hasCommentBox = !!findLikelyCommentTextarea({ allowGenericFallback: false });
+        const hasCommentBox = !!findLikelyCommentTextarea({ allowGenericFallback: false }) || hasBloggerCommentSystem();
         console.log('[AutoComment] 初始检查 hasCommentBox:', hasCommentBox, 'hasNotifiedCommentBox:', hasNotifiedCommentBox);
         if (hasCommentBox && !hasNotifiedCommentBox) {
           hasNotifiedCommentBox = true;
@@ -1412,14 +1900,15 @@
     const observer = new MutationObserver((mutations) => {
       let shouldTriggerFlow = false;
 
-      // 检查是否有新的 textarea 或评论区域出现
+      // 检查是否有新的 textarea、Blogger iframe 或评论区域出现
       const newTextareas = document.querySelectorAll('textarea');
-      if (newTextareas.length > 0 && !hasNotifiedCommentBox) {
-        const hasCommentBox = !!findLikelyCommentTextarea({ allowGenericFallback: false });
+      const hasBloggerIframe = hasBloggerCommentSystem();
+      if ((newTextareas.length > 0 || hasBloggerIframe) && !hasNotifiedCommentBox) {
+        const hasCommentBox = !!findLikelyCommentTextarea({ allowGenericFallback: false }) || hasBloggerIframe;
         if (hasCommentBox) {
           shouldTriggerFlow = true;
           hasNotifiedCommentBox = true;
-          console.log('[AutoComment] MutationObserver 检测到评论 textarea 出现');
+          console.log('[AutoComment] MutationObserver 检测到评论 textarea 或 Blogger iframe 出现');
           getAutoGenerateQwenOnPageLoadSetting().then((shouldAutoGenerate) => {
             console.log('[AutoComment] shouldAutoGenerate:', shouldAutoGenerate, 'autoGeneratedOnce:', autoGeneratedOnce);
             if (shouldAutoGenerate && !autoGeneratedOnce) {
@@ -1523,6 +2012,23 @@
 
   function findLikelyCommentTextarea(options) {
     const allowGenericFallback = options && options.allowGenericFallback;
+
+    // Blogger 跨域 iframe 适配
+    if (hasBloggerCommentSystem()) {
+      const bloggerIframe = getBloggerIframeElement();
+      console.log('[AutoComment] 命中 Blogger 跨域评论系统 iframe');
+      return {
+        _isBloggerIframe: true,
+        _iframeElement: bloggerIframe,
+        get value() { return ''; },
+        set value(v) { /* filled via postMessage */ },
+        form: bloggerIframe ? (bloggerIframe.closest('.comment-form, #comments, body') || document.body) : document.body,
+        closest: (s) => (bloggerIframe && bloggerIframe.closest ? bloggerIframe.closest(s) : null),
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+    }
+
     const allTextareas = Array.from(document.querySelectorAll('textarea'));
     if (allTextareas.length === 0) return null;
 
@@ -1933,6 +2439,31 @@
    * 输出: { form, button } 与当前评论框同一表单的提交控件，避免与页面上其它表单的 submit 混淆
    */
   function resolveCommentFormAndSubmitButton() {
+    if (hasBloggerCommentSystem()) {
+      const bloggerIframe = getBloggerIframeElement();
+      const bloggerBtn = {
+        _isBloggerSubmit: true,
+        tagName: 'BUTTON',
+        type: 'submit',
+        id: 'postCommentSubmit',
+        className: 'blogger-submit-proxy',
+        disabled: false,
+        textContent: 'Publish',
+        value: 'Publish',
+        scrollIntoView: () => {
+          if (bloggerIframe) {
+            bloggerIframe.scrollIntoView({ behavior: 'auto', block: 'center' });
+          }
+        },
+        getBoundingClientRect: () => {
+          if (bloggerIframe) return bloggerIframe.getBoundingClientRect();
+          return { top: 0, left: 0, width: 100, height: 40, bottom: 40, right: 100 };
+        },
+        getAttribute: (attr) => (attr === 'aria-disabled' ? 'false' : null)
+      };
+      return { form: bloggerIframe ? (bloggerIframe.closest('.comment-form, #comments, body') || document.body) : document.body, button: bloggerBtn };
+    }
+
     const ta = findLikelyCommentTextarea({ allowGenericFallback: true });
     if (ta) {
       const form = ta.form || (ta.closest && ta.closest('form'));
@@ -2012,6 +2543,17 @@
 
   // 查找评论表单
   function findCommentForm() {
+    if (hasBloggerCommentSystem()) {
+      const bloggerIframe = getBloggerIframeElement();
+      const container = bloggerIframe
+        ? (bloggerIframe.closest('.comment-form, #comments, .comments, #comment-holder, body') || bloggerIframe)
+        : document.querySelector('.comment-form, #comments, .comments, #comment-holder');
+      if (container) {
+        console.log('[AutoComment] 通过 Blogger 评论容器匹配表单');
+        return container;
+      }
+    }
+
     // ── 方案A：直接用 WordPress 标准 form 选择器 ─────────────
     const formSelectors = [
       '#commentform',
@@ -2369,6 +2911,7 @@
   // 检查按钮是否可见且可点击
   function isButtonClickable(button) {
     if (!button) return false;
+    if (button._isBloggerSubmit) return true;
 
     // 检查 disabled 状态
     if (button.disabled) {
@@ -2610,6 +3153,19 @@
 
   // 执行点击操作
   async function performClick(button) {
+    if (button && button._isBloggerSubmit) {
+      console.log('[AutoComment] 准备通过跨 Frame 指令在 Blogger iframe 中点击提交...');
+      const res = await sendCommandToBloggerIframe({ autoSubmit: true });
+      console.log('[AutoComment] Blogger iframe 提交结果:', res);
+      if (res && res.result === 'manual_required') {
+        return { success: false, result: 'manual_required', error: res.error || '需要手动完成验证' };
+      }
+      if (res && res.success) {
+        return { success: true, button: button, submitResult: 'blogger_submitted' };
+      }
+      return { success: false, error: (res && res.error) || 'Blogger iframe 提交失败' };
+    }
+
     console.log('[AutoComment] 找到提交按钮:', {
       tagName: button.tagName,
       type: button.type,
@@ -2797,6 +3353,14 @@
       return false;
     }
 
+    if (hasBloggerCommentSystem()) {
+      console.log('[AutoComment] 向 Blogger iframe 发送文案填充指令...');
+      sendCommandToBloggerIframe({ text: promotionText, autoSubmit: false }).then((res) => {
+        console.log('[AutoComment] Blogger iframe 文案填充响应:', res);
+      });
+      return true;
+    }
+
     const targetTextarea = findLikelyCommentTextarea({ allowGenericFallback: true });
     if (!targetTextarea) {
       console.log('[AutoComment] 未找到评论文本框，无法填充文案');
@@ -2865,6 +3429,19 @@
   }
 
   function focusCommentTextareaWithPromotion(promotionText) {
+    if (hasBloggerCommentSystem()) {
+      const iframe = getBloggerIframeElement();
+      if (iframe) {
+        try {
+          iframe.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (_) {}
+      }
+      if (promotionText) {
+        sendCommandToBloggerIframe({ text: promotionText, autoSubmit: false });
+      }
+      return;
+    }
+
     const targetTextarea = findLikelyCommentTextarea({ allowGenericFallback: true });
     if (!targetTextarea) {
       console.log('[AutoComment] 未找到评论文本框，无法聚焦');
@@ -2901,18 +3478,32 @@
     const EMAIL = userProfile.email || '';
 
     console.log('[AutoComment] ===== ensureAllCommentFormFieldsFilled 开始 =====');
-    console.log('[AutoComment] 将填入 - Name(所选网站名称):', USERNAME, '| Email:', EMAIL, '| Website:', WEBSITE, '| skipComment:', skipCommentValidation);
+    console.log('[AutoComment] 将填入 - Name(所选目标名称):', USERNAME, '| Email:', EMAIL, '| Website:', WEBSITE, '| skipComment:', skipCommentValidation);
 
     // ── 前置检查：配置缺失则直接报错，不静默失败 ─────────────────
     if (!USERNAME || !EMAIL) {
       const missing = [];
-      if (!USERNAME) missing.push('所选网站名称（Name）');
+      if (!USERNAME) missing.push('所选目标名称（Name）');
       if (!EMAIL) missing.push('邮箱（Email）');
       const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
       console.error('[AutoComment] ' + msg);
       // 通过 status 提示用户
       setStatus(msg, '#f97373');
       return { success: false, missingFields: ['name config missing', 'email config missing'] };
+    }
+
+    if (hasBloggerCommentSystem()) {
+      console.log('[AutoComment] Blogger 跨域评论系统：执行字段校验与下发...');
+      if (!skipCommentValidation && commentText) {
+        const res = await sendCommandToBloggerIframe({ text: commentText, autoSubmit: false });
+        if (res && res.result === 'manual_required') {
+          return { success: false, result: 'manual_required', missingFields: [res.error || '需要手动完成验证'] };
+        }
+        if (!res || !res.success) {
+          console.warn('[AutoComment] Blogger iframe 填充未确认成功:', res);
+        }
+      }
+      return { success: true, missingFields: [] };
     }
 
     // ── 步骤1：找到表单 ──────────────────────────────────────
@@ -3244,7 +3835,7 @@
 
   function buildAiUserPrompt({ websiteUrl, title, description, bodyText }) {
     return [
-      '下面是当前网站的内容，请根据系统提示为该页面生成一条适合评论区发布的自然评论：',
+      '下面是当前引荐页面的内容，请根据系统提示为该页面生成一条适合评论区发布的自然评论：',
       '',
       `【当前页面标题】${title || '(无标题)'}`,
       `【当前页面 URL】${websiteUrl || '(无URL)'}`,
@@ -3294,6 +3885,15 @@
 
     (document.body || document.documentElement).appendChild(btn);
     console.log('[AutoComment] AI 评论浮动按钮已注入');
+  }
+
+  // 关闭页面入口时只移除悬浮按钮，已打开的操作面板保持不变，避免打断正在进行的生成任务。
+  function removePromoteFloatingButton() {
+    const existingBtn = document.getElementById('auto-comment-promote-floating-btn');
+    if (existingBtn) {
+      existingBtn.remove();
+      console.log('[AutoComment] AI 评论浮动按钮已移除');
+    }
   }
 
   function createOrToggleQwenPanel() {
@@ -3369,7 +3969,7 @@
     siteField.style.gap = '4px';
     siteField.style.color = '#cbd5e1';
     siteField.style.fontSize = '11px';
-    siteField.textContent = '推广网站';
+    siteField.textContent = '目标 URL';
 
     const siteSelect = document.createElement('select');
     siteSelect.style.width = '100%';
@@ -3418,6 +4018,17 @@
     copyBtn.disabled = true;
     copyBtn.style.opacity = '0.55';
 
+    const fillFormBtn = document.createElement('button');
+    fillFormBtn.textContent = '手动填充';
+    fillFormBtn.title = '使用插件设置中的资料填充当前页面表单';
+    fillFormBtn.style.border = '1px solid rgba(148,163,184,0.6)';
+    fillFormBtn.style.borderRadius = '999px';
+    fillFormBtn.style.padding = '7px 10px';
+    fillFormBtn.style.fontSize = '12px';
+    fillFormBtn.style.cursor = 'pointer';
+    fillFormBtn.style.background = 'rgba(15,23,42,0.8)';
+    fillFormBtn.style.color = '#e5e7eb';
+
     const statusEl = document.createElement('div');
     statusEl.style.minHeight = '16px';
     statusEl.style.fontSize = '11px';
@@ -3440,6 +4051,7 @@
     textarea.style.resize = 'vertical';
 
     btnRow.appendChild(generateBtn);
+    btnRow.appendChild(fillFormBtn);
     btnRow.appendChild(copyBtn);
 
     body.appendChild(hint);
@@ -3499,8 +4111,36 @@
       }
     }
 
+    /**
+     * 批量模式只展示任务启动时锁定的网站快照，并禁用切换，保证界面、AI Prompt 与表单填充值完全一致。
+     */
+    function renderBatchPromotionSiteSelect(site) {
+      const batchSite = normalizePromotionSite(site || (_batchCtx && _batchCtx.promotionSite));
+      if (!batchSite.id && !batchSite.name && !batchSite.url) return false;
+
+      siteSelect.innerHTML = '';
+      const option = document.createElement('option');
+      option.value = batchSite.id || batchSite.url || 'batch_site';
+      option.textContent = formatPromotionSiteOption(batchSite);
+      siteSelect.appendChild(option);
+      siteSelect.value = option.value;
+      siteSelect.disabled = true;
+      siteSelect.title = '批量运行期间使用本批次锁定的网站';
+      promotionSiteSelectReady = true;
+      setGenerateLoading(false);
+      setStatus(`批量模式已锁定：${batchSite.name || batchSite.url}`, '#60a5fa');
+      return true;
+    }
+
+    qwenPanelEl._qwenApplyBatchPromotionSite = renderBatchPromotionSiteSelect;
+
     async function populatePromotionSiteSelect() {
+      if (renderBatchPromotionSiteSelect()) return;
+
       const { sites, selectedSiteId } = await loadPromotionSiteSelectionContext();
+      // storage 读取期间可能收到 BATCH_HANDLE；再次检查，避免异步结果覆盖刚锁定的批次网站。
+      if (renderBatchPromotionSiteSelect()) return;
+
       siteSelect.innerHTML = '';
       if (sites.length === 0) {
         const option = document.createElement('option');
@@ -3510,7 +4150,7 @@
         siteSelect.disabled = true;
         promotionSiteSelectReady = false;
         setGenerateLoading(false);
-        setStatus('请先在扩展设置页添加至少一个推广网站。', '#f59e0b');
+        setStatus('请先在扩展设置页添加至少一个目标 URL。', '#f59e0b');
         return;
       }
 
@@ -3531,11 +4171,15 @@
     }
 
     siteSelect.addEventListener('change', async () => {
+      if (_batchCtx && _batchCtx.promotionSite) {
+        renderBatchPromotionSiteSelect(_batchCtx.promotionSite);
+        return;
+      }
       await saveSelectedPromotionSiteId(siteSelect.value);
       lastGeneratedPromotionCopy = '';
       textarea.value = '';
       setCopyEnabled(false);
-      setStatus('已切换推广网站，下次生成会使用该网站配置。', '#9ca3af');
+      setStatus('已切换目标 URL，下次生成会使用该目标 URL 配置。', '#9ca3af');
     });
 
     populatePromotionSiteSelect();
@@ -3575,7 +4219,7 @@
         console.log('[AutoComment] >>>[4] 检查用户配置是否完整...');
         if (!userProfile.name || !userProfile.email) {
           const missing = [];
-          if (!userProfile.name) missing.push('所选网站名称（Name）');
+          if (!userProfile.name) missing.push('所选目标名称（Name）');
           if (!userProfile.email) missing.push('邮箱（Email）');
           const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
           setStatus(msg, '#f97373');
@@ -3661,6 +4305,23 @@
         setStatus(msg, '#f97373');
         setCopyEnabled(false);
         setGenerateLoading(false);
+      }
+    });
+
+    // 用户明确点击后才执行通用填表，避免插件在浏览普通注册页或登录页时擅自改写字段。
+    fillFormBtn.addEventListener('click', async () => {
+      fillFormBtn.disabled = true;
+      fillFormBtn.style.opacity = '0.55';
+      setStatus('正在填充当前页面表单…', '#9ca3af');
+      try {
+        await fillInputs();
+        setStatus('已按插件设置填充当前页面表单。', '#22c55e');
+      } catch (error) {
+        console.error('[AutoComment] 手动填充当前页面表单失败：', error);
+        setStatus('表单填充失败，请检查页面或插件设置。', '#f97373');
+      } finally {
+        fillFormBtn.disabled = false;
+        fillFormBtn.style.opacity = '1';
       }
     });
 
@@ -3982,13 +4643,15 @@
     }
   }
 
-  async function applyOutlinkFloatingButtonVisibility(shouldShow) {
+  async function applyPageFloatingButtonsVisibility(shouldShow) {
     const visible = typeof shouldShow === 'boolean'
       ? shouldShow
-      : await getShowExportOutlinksFloatingButtonSetting();
+      : await getShowPageFloatingButtonsSetting();
     if (visible) {
+      injectPromoteFloatingButton();
       ensureOutlinkFloatingButton();
     } else {
+      removePromoteFloatingButton();
       removeOutlinkFloatingButton();
     }
   }
@@ -4040,10 +4703,17 @@
 
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'sync' || !changes[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY]) {
+      if (
+        areaName !== 'sync'
+        || (
+          !changes[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]
+          && !changes[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY]
+        )
+      ) {
         return;
       }
-      applyOutlinkFloatingButtonVisibility(changes[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY].newValue !== false);
+      // 重新读取设置以正确处理新版总开关与旧版兼容键的优先级。
+      applyPageFloatingButtonsVisibility();
     });
   }
 
@@ -4068,7 +4738,22 @@
           return;
         }
         setBatchContext(message.batchId, message.urlIndex, message.url, message.promotionSite);
-        handleBatchTask(message.batchId, message.urlIndex, message.url)
+        Promise.resolve()
+          .then(async () => {
+            const shouldOpenPanel = await getAutoOpenQwenPanelSetting();
+            if (shouldOpenPanel && (!qwenPanelEl || !qwenPanelEl.parentNode)) {
+              createOrToggleQwenPanel();
+            }
+            if (qwenPanelEl && typeof qwenPanelEl._qwenApplyBatchPromotionSite === 'function') {
+              qwenPanelEl._qwenApplyBatchPromotionSite(_batchCtx.promotionSite);
+            }
+            // 自动提交任务显式触发基础字段填充，普通页面初始化不会再调用该流程。
+            await fillInputs();
+            return handleBatchTask(message.batchId, message.urlIndex, message.url, undefined, {
+              debugMode: message.debugMode,
+              presetComment: message.presetComment
+            });
+          })
           .then(() => {
             console.log('[content] BATCH_HANDLE 处理完成, 发送响应 {ok:true}');
             _sendResponse({ ok: true, urlIndex: message.urlIndex });
@@ -4140,8 +4825,8 @@
     }, 700);
   }
 
-  async function handleBatchTask(batchId, urlIndex, url, originalIndex) {
-    console.log('[content] handleBatchTask 开始 >>>', { batchId, urlIndex, url, time: new Date().toISOString() });
+  async function handleBatchTask(batchId, urlIndex, url, originalIndex, options = {}) {
+    console.log('[content] handleBatchTask 开始 >>>', { batchId, urlIndex, url, debugMode: options.debugMode, time: new Date().toISOString() });
     let aiGenerated = false; // 标记AI是否已生成（用于失败时补偿）
     const taskKey = getBatchTaskKey(batchId, urlIndex);
     if (runningBatchTaskKey === taskKey) {
@@ -4220,17 +4905,23 @@
         await reportManualRequiredAndClose(batchId, urlIndex, url, null);
         return;
       }
-      console.log('[content] 4/6 生成AI文案...');
-      aiGenerated = true; // AI即将生成，标记用于失败时补偿
-      const aiContent = await generatePromotionCopyWithQwen();
-      if (!aiContent) {
-        aiGenerated = false;
-        console.log('[content] AI 文案命中黑名单，跳过当前 URL');
-        await writePendingResult(batchId, urlIndex, url, 'skipped', null, 'blocked_keyword');
-        await reportBatchResult(batchId, urlIndex, 'skipped', null, 'blocked_keyword', url);
-        return;
+      console.log('[content] 4/6 生成或获取评论文案...');
+      let aiContent = '';
+      if (options && options.debugMode) {
+        aiContent = options.presetComment || 'Great article! Thank you for sharing these helpful insights.';
+        console.log('[content] [Debug 探测模式] 跳过 AI 生成，使用内置预设评论文案:', aiContent);
+      } else {
+        aiGenerated = true; // AI即将生成，标记用于失败时补偿
+        aiContent = await generatePromotionCopyWithQwen();
+        if (!aiContent) {
+          aiGenerated = false;
+          console.log('[content] AI 文案命中黑名单，跳过当前 URL');
+          await writePendingResult(batchId, urlIndex, url, 'skipped', null, 'blocked_keyword');
+          await reportBatchResult(batchId, urlIndex, 'skipped', null, 'blocked_keyword', url);
+          return;
+        }
       }
-      console.log('[content] AI文案生成完成，长度:', aiContent ? aiContent.length : 0, aiContent ? aiContent.substring(0, 80) + '...' : 'null');
+      console.log('[content] 评论文案准备完成，长度:', aiContent ? aiContent.length : 0, aiContent ? aiContent.substring(0, 80) + '...' : 'null');
       console.log('[content] 5/6 填充表单字段...');
       const manualFillResult = tryFillCommentTextareaWithPromotion(aiContent);
       console.log('[content] BATCH_HANDLE 手动按钮同款填充结果:', manualFillResult);
@@ -4257,10 +4948,18 @@
       // 预检查只验证姓名/邮箱/网站字段是否存在，不验证comment（尚未生成）
       const fillResult = await ensureAllCommentFormFieldsFilled('', true);
       if (!fillResult.success) {
+        if (fillResult.result === 'manual_required') {
+          await reportManualRequiredAndClose(batchId, urlIndex, url, null);
+          return;
+        }
         throw new Error('表单字段缺失: ' + (fillResult.missingFields || []).join(', '));
       }
       const refillResult = await ensureAllCommentFormFieldsFilled(aiContent);
       if (!refillResult.success) {
+        if (refillResult.result === 'manual_required') {
+          await reportManualRequiredAndClose(batchId, urlIndex, url, aiContent);
+          return;
+        }
         throw new Error('表单填充失败: ' + (refillResult.missingFields || []).join(', '));
       }
 
@@ -4282,6 +4981,10 @@
       console.log('[content] 7/7 点击提交按钮...');
       const clickResult = await clickCommentSubmitButton();
       console.log('[content] 点击结果:', clickResult);
+      if (clickResult.result === 'manual_required') {
+        await reportManualRequiredAndClose(batchId, urlIndex, url, aiContent);
+        return;
+      }
       if (!clickResult.success) {
         throw new Error(clickResult.error || '提交按钮点击失败');
       }
@@ -4328,6 +5031,13 @@
       }
       clearBatchSubmitContext();
       console.log('[content] handleBatchTask 完成 <<<', { batchId, urlIndex });
+
+      // 提交成功后延迟 1.5 秒自动关闭当前标签页，保证 background/batch 已完成结果确认
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch (_) {}
+      }, 1500);
     } catch (err) {
       console.warn('[content] handleBatchTask 捕获错误:', err.message);
       clearBatchSubmitContext();
@@ -4372,7 +5082,27 @@
       
       await writePendingResult(batchId, urlIndex, url, 'fail', null, err.message || String(err));
       await reportBatchResult(batchId, urlIndex, 'fail', null, err.message || String(err), url);
-      // 不主动关闭窗口，等待超时自动关闭
+
+      // 上报失败后主动关闭标签页，避免外层 60 秒超时覆盖真实错误信息
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          await new Promise((resolve) => {
+            chrome.runtime.sendMessage({
+              type: 'BATCH_HANDLE_CONFIRM',
+              batchId,
+              urlIndex,
+              url: url || '',
+              aiContent: '',
+              result: 'fail',
+              errorMessage: err.message || String(err),
+              ...getBatchPromotionSiteMetadata()
+            }).then(resolve).catch(resolve);
+          });
+        } catch (_) {}
+      }
+      setTimeout(() => {
+        window.close();
+      }, 1200);
     } finally {
       if (runningBatchTaskKey === taskKey) {
         runningBatchTaskKey = null;
@@ -4392,6 +5122,15 @@
         if (Date.now() - start > maxWait) {
           console.log('[content] waitForPageReady 超时，继续执行');
           resolve(); // 超时也继续
+          return;
+        }
+
+        // 检测 Blogger 评论系统
+        if (hasBloggerCommentSystem()) {
+          console.log('[content] waitForPageReady 检测到 Blogger 评论系统，等待 iframe 渲染');
+          ensureBloggerIframeLoaded(5000).then(() => {
+            setTimeout(resolve, 1500);
+          });
           return;
         }
         // 检查是否有评论相关元素（包括 textarea、#respond、评论区域等）
@@ -4439,14 +5178,14 @@
   }
 
   /**
-   * 统一推广网站 URL 的比较格式，避免末尾斜杠差异导致同一网站无法识别。
+   * 统一目标 URL 的比较格式，避免末尾斜杠差异导致同一目标无法识别。
    */
   function normalizePromotionSiteUrlForComparison(value) {
     return String(value || '').trim().toLowerCase().replace(/\/+$/, '');
   }
 
   /**
-   * 判断历史结果是否属于当前推广网站。新版结果直接使用站点标识；旧结果仅在评论正文中能确认链接时兼容匹配。
+   * 判断历史结果是否属于当前目标 URL。新版结果直接使用目标标识；旧结果仅在评论正文中能确认链接时兼容匹配。
    */
   function isBatchResultForPromotionSite(result, activeSite) {
     const activeSiteId = String(activeSite && activeSite.id || '').trim();
@@ -4458,20 +5197,20 @@
     if (resultSiteUrl && activeSiteUrl && resultSiteUrl === activeSiteUrl) return true;
     if (resultSiteId || resultSiteUrl || !activeSiteUrl) return false;
 
-    // 旧版记录没有站点元数据，只在历史 AI 文案明确包含当前网站链接时才视为同站点记录。
+    // 旧版记录没有目标元数据，只在历史 AI 文案明确包含当前目标 URL 时才视为同目标记录。
     const compactAiContent = String(result && result.aiContent || '').toLowerCase().replace(/\s+/g, '');
     return compactAiContent.includes(activeSiteUrl.replace(/\s+/g, ''));
   }
 
   /**
-   * 检查“目标页面 URL + 当前推广网站”是否已经成功处理过。
+   * 检查“引荐 URL + 当前目标 URL”是否已经成功处理过。
    */
   async function checkExistingBatchResult(batchId, url, urlIndex) {
     const activeSite = await getActivePromotionSite();
     return new Promise((resolve) => {
       chrome.storage.local.get(['batchResults'], (data) => {
         const results = data.batchResults || [];
-        // 历史去重不限制批次，但必须同时属于当前批次锁定的推广网站。
+        // 历史去重不限制批次，但必须同时属于当前批次锁定的目标 URL。
         const match = results.find((result) => (
           result.url === url
           && result.result === 'success'
@@ -4542,6 +5281,9 @@
   ];
 
   function detectManualRequiredChallenge(form) {
+    if (hasBloggerCommentSystem()) {
+      return { found: false };
+    }
     const targetForm = form || findCommentForm();
     if (!targetForm) return { found: false };
 

@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Auto Register Filler",
-  "version": "1.5.2",
-  "description": "自动填充注册表单，并为当前网站生成推广文案。",
+  "version": "1.5.4",
+  "description": "按需填充评论表单，并为当前引荐页面生成目标 URL 推广文案。",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://*/*",
@@ -18,14 +19,15 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Auto Register Filler - 网站自动填表与推广文案助手"
+    "default_title": "Auto Register Filler - 网站按需填表与推广文案助手"
   },
   "options_page": "options.html",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["illegal-site-filter.js", "content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_end",
+      "all_frames": true
     }
   ]
 }

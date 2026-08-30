@@ -6,12 +6,14 @@ const USER_EMAIL_STORAGE_KEY = 'auto_fill_user_email';
 const USER_PASSWORD_STORAGE_KEY = 'auto_fill_user_password';
 const LEGACY_SKILL_TEMPLATE_STORAGE_KEY = 'qwen_skill_template';
 const LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY = 'auto_fill_prompt_field_values';
+const SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY = 'show_page_floating_buttons';
+// 仅用于读取旧版本配置；新版使用一个总开关统一控制两个页面悬浮按钮。
 const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
 const AI_CONFIG_STORAGE_KEY = 'auto_comment_ai_config';
 const TIMEOUT_STORAGE_KEY = 'batch_timeout_seconds';
 const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
 
-const CONFIG_VERSION = 5;
+const CONFIG_VERSION = 6;
 
 const ACTIVE_STORAGE_KEYS = [
   WEBSITE_URL_STORAGE_KEY,
@@ -19,7 +21,7 @@ const ACTIVE_STORAGE_KEYS = [
   USER_NAME_STORAGE_KEY,
   USER_EMAIL_STORAGE_KEY,
   USER_PASSWORD_STORAGE_KEY,
-  SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
+  SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY
 ];
 
 // 配置备份只导出可复用设置，不导出批次结果、当前任务 URL 和冷却记录等运行态数据。
@@ -38,7 +40,8 @@ const LOCAL_CONFIG_STORAGE_KEYS = [
 
 const IMPORT_COMPAT_STORAGE_KEYS = [
   ...SYNC_CONFIG_STORAGE_KEYS,
-  ...LOCAL_CONFIG_STORAGE_KEYS
+  ...LOCAL_CONFIG_STORAGE_KEYS,
+  SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
 ];
 
 /**
@@ -122,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const importConfigBtn = document.getElementById('importConfigBtn');
   const importConfigFileInput = document.getElementById('importConfigFileInput');
   const importExportStatus = document.getElementById('importExportStatus');
-  const toggleExportOutlinksFloatingBtn = document.getElementById('toggleExportOutlinksFloatingBtn');
+  const togglePageFloatingButtonsBtn = document.getElementById('togglePageFloatingButtonsBtn');
 
   const providerSelect = document.getElementById('providerSelect');
   const providerNameInput = document.getElementById('providerName');
@@ -144,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return;
   }
 
-  let showExportOutlinksFloatingButton = true;
+  let showPageFloatingButtons = true;
   let aiConfig = clone(DEFAULT_AI_CONFIG);
   let editingProviderId = DEFAULT_AI_CONFIG.activeProviderId;
   let sitesConfig = { activeSiteId: '', sites: [] };
@@ -225,7 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getDomainFromUrl(url) {
     try {
-      return new URL(url).hostname.replace(/^www\./i, '');
+      return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
     } catch (_) {
       return '';
     }
@@ -270,14 +273,14 @@ document.addEventListener('DOMContentLoaded', () => {
       || null;
   }
 
-  function renderExportOutlinksFloatingToggle() {
-    if (!toggleExportOutlinksFloatingBtn) return;
-    toggleExportOutlinksFloatingBtn.textContent = showExportOutlinksFloatingButton ? '隐藏导出外链按钮' : '显示导出外链按钮';
-    toggleExportOutlinksFloatingBtn.classList.toggle('btn-primary', !showExportOutlinksFloatingButton);
-    toggleExportOutlinksFloatingBtn.classList.toggle('btn-secondary', showExportOutlinksFloatingButton);
-    toggleExportOutlinksFloatingBtn.title = showExportOutlinksFloatingButton
-      ? '点击后页面不再显示“导出外链”浮动按钮'
-      : '点击后页面显示“导出外链”浮动按钮';
+  function renderPageFloatingButtonsToggle() {
+    if (!togglePageFloatingButtonsBtn) return;
+    togglePageFloatingButtonsBtn.textContent = showPageFloatingButtons ? '隐藏页面悬浮按钮' : '显示页面悬浮按钮';
+    togglePageFloatingButtonsBtn.classList.toggle('btn-primary', !showPageFloatingButtons);
+    togglePageFloatingButtonsBtn.classList.toggle('btn-secondary', showPageFloatingButtons);
+    togglePageFloatingButtonsBtn.title = showPageFloatingButtons
+      ? '点击后页面不再显示“AI 评论”和“导出外链”按钮'
+      : '点击后页面显示“AI 评论”和“导出外链”按钮';
   }
 
   function renderProviderSelect() {
@@ -341,7 +344,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getLegacyWebsiteUrl(data) {
     return pickLegacyPromptValue(data[LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY], [
-      '网站链接',
+      '目标 URL',
+      '目标URL',
       '网址',
       'website link',
       'website url',
@@ -351,15 +355,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function getLegacyWebsiteContent(data) {
     return pickLegacyPromptValue(data[LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY], [
-      '网站内容',
-      '网站介绍',
+      '目标 URL 内容',
+      '目标URL内容',
       'website content',
       'site content',
       'description'
     ]);
   }
 
-  // 站点配置采用结构化数据，便于后续按站点扩展锚文本权重、使用次数和阶段状态。
+  // 目标 URL 配置采用结构化数据，便于后续按目标扩展锚文本权重、使用次数和阶段状态。
   function normalizeAnchor(anchor) {
     if (typeof anchor === 'string') {
       const text = normalizeText(anchor);
@@ -377,7 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function normalizeSite(site) {
     const url = normalizeText(site && site.url);
     const content = normalizeText(site && site.content);
-    const name = normalizeText(site && site.name) || getDomainFromUrl(url) || '未命名网站';
+    const name = normalizeText(site && site.name) || getDomainFromUrl(url) || '未命名目标';
     const anchors = Array.isArray(site && site.anchors)
       ? site.anchors.map(normalizeAnchor).filter(Boolean)
       : [];
@@ -390,7 +394,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  // 兼容旧版本的单网站配置：首次打开新版设置页时会自动构造一个默认站点。
+  // 兼容旧版本的单目标配置：首次打开新版设置页时会自动构造一个默认目标。
   function buildLegacySite(data) {
     const legacyUrl = typeof data[WEBSITE_URL_STORAGE_KEY] === 'string'
       ? data[WEBSITE_URL_STORAGE_KEY].trim()
@@ -400,7 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
       : getLegacyWebsiteContent(data);
     return normalizeSite({
       id: 'default_site',
-      name: getDomainFromUrl(legacyUrl) || '默认网站',
+      name: getDomainFromUrl(legacyUrl) || '默认目标',
       url: legacyUrl,
       content: legacyContent,
       anchors: []
@@ -460,7 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
       button.dataset.siteId = site.id;
       button.innerHTML = `
         <div class="site-item-name">
-          <span>${escapeHtml(site.name || '未命名网站')}</span>
+          <span>${escapeHtml(site.name || '未命名目标')}</span>
         </div>
         <div class="site-item-url">${escapeHtml(site.url || '未填写 URL')}</div>
       `;
@@ -512,7 +516,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function saveEditingSiteDraft() {
     const site = getEditingSite();
     if (!site) return null;
-    site.name = normalizeText(siteNameInput.value) || getDomainFromUrl(websiteUrlInput.value) || site.name || '未命名网站';
+    site.name = normalizeText(siteNameInput.value) || getDomainFromUrl(websiteUrlInput.value) || site.name || '未命名目标';
     site.url = normalizeText(websiteUrlInput.value);
     site.content = normalizeText(websiteContentInput.value);
     return site;
@@ -522,9 +526,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const existing = saveEditingSiteDraft();
     if (!existing) throw new Error('当前没有可保存的网站');
     const site = normalizeSite(existing);
-    if (!site.name) throw new Error('请填写网站名称');
-    if (!site.url) throw new Error('请填写网站链接');
-    if (!site.content) throw new Error('请填写网站内容');
+    if (!site.name) throw new Error('请填写目标名称');
+    if (!site.url) throw new Error('请填写目标 URL');
+    if (!site.content) throw new Error('请填写目标 URL 内容');
     return site;
   }
 
@@ -545,7 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set(localPayload, () => {
       if (chrome.runtime.lastError) {
         const message = chrome.runtime.lastError.message || String(chrome.runtime.lastError);
-        console.error('保存网站管理配置到本地失败：', chrome.runtime.lastError);
+        console.error('保存目标 URL 管理配置到本地失败：', chrome.runtime.lastError);
         showStatus(settingsStatusEl, `保存失败：${message}`, 5000);
         if (callback) callback(new Error(message));
         return;
@@ -555,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.storage.sync.set(syncPayload, () => {
         if (chrome.runtime.lastError) {
           const message = chrome.runtime.lastError.message || String(chrome.runtime.lastError);
-          console.error('保存网站管理兼容配置失败：', chrome.runtime.lastError);
+          console.error('保存目标 URL 管理兼容配置失败：', chrome.runtime.lastError);
           showStatus(settingsStatusEl, `保存失败：${message}`, 5000);
           if (callback) callback(new Error(message));
           return;
@@ -574,7 +578,7 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/'/g, '&#39;');
   }
 
-  // 将网站管理列表快照广播给批量页。批量页只读取这份快照，不会反向修改网站管理配置。
+  // 将目标 URL 管理列表快照广播给批量页。批量页只读取这份快照，不会反向修改目标 URL 管理配置。
   function publishSitesConfigForBatch() {
     if (!sitesConfig || !Array.isArray(sitesConfig.sites)) return;
     saveEditingSiteDraft();
@@ -596,8 +600,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = syncResult || {};
       userEmailInput.value = typeof data[USER_EMAIL_STORAGE_KEY] === 'string' ? data[USER_EMAIL_STORAGE_KEY] : '';
       userPasswordInput.value = typeof data[USER_PASSWORD_STORAGE_KEY] === 'string' ? data[USER_PASSWORD_STORAGE_KEY] : '';
-      showExportOutlinksFloatingButton = data[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false;
-      renderExportOutlinksFloatingToggle();
+      showPageFloatingButtons = typeof data[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY] === 'boolean'
+        ? data[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]
+        : data[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false;
+      renderPageFloatingButtonsToggle();
 
       chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY], (localResult) => {
         if (chrome.runtime.lastError) {
@@ -608,7 +614,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         editingSiteId = sitesConfig.sites[0] ? sitesConfig.sites[0].id : sitesConfig.activeSiteId;
         fillSiteForm(getEditingSite());
-        // 将旧版字段或导入数据规范化后写回本地存储，保证批量页和内容脚本都能读取同一份网站列表。
+        // 将旧版字段或导入数据规范化后写回本地存储，保证批量页和内容脚本都能读取同一份目标 URL 列表。
         chrome.storage.local.set({ [SITES_CONFIG_STORAGE_KEY]: sitesConfig }, () => {});
         publishSitesConfigForBatch();
       });
@@ -628,9 +634,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const requiredSettingsFields = [
-    { el: siteNameInput, label: '网站名称' },
-    { el: websiteUrlInput, label: '当前网站链接' },
-    { el: websiteContentInput, label: '当前网站内容' }
+    { el: siteNameInput, label: '目标名称' },
+    { el: websiteUrlInput, label: '目标 URL' },
+    { el: websiteContentInput, label: '目标 URL 内容' }
   ];
 
   function validateRequiredSettings() {
@@ -694,12 +700,12 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       button.disabled = false;
       button.textContent = originalText;
-      showStatus(statusEl, error.message || '站点配置无效', 3000);
+      showStatus(statusEl, error.message || '目标 URL 配置无效', 3000);
     }
   }
 
   saveSettingsBtn.addEventListener('click', () => {
-    saveWebsiteSettings(saveSettingsBtn, settingsStatusEl, '站点已保存，刷新后仍会保留');
+    saveWebsiteSettings(saveSettingsBtn, settingsStatusEl, '目标 URL 已保存，刷新后仍会保留');
   });
 
   if (saveProfileSettingsBtn) {
@@ -938,21 +944,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  if (toggleExportOutlinksFloatingBtn) {
-    renderExportOutlinksFloatingToggle();
-    toggleExportOutlinksFloatingBtn.addEventListener('click', () => {
-      const nextValue = !showExportOutlinksFloatingButton;
+  if (togglePageFloatingButtonsBtn) {
+    renderPageFloatingButtonsToggle();
+    togglePageFloatingButtonsBtn.addEventListener('click', () => {
+      const nextValue = !showPageFloatingButtons;
       chrome.storage.sync.set(
-        { [SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY]: nextValue },
+        { [SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]: nextValue },
         () => {
           if (chrome.runtime.lastError) {
-            console.error('保存导出外链浮动按钮设置失败：', chrome.runtime.lastError);
+            console.error('保存页面悬浮按钮设置失败：', chrome.runtime.lastError);
             showStatus(settingsStatusEl, '保存失败', 2000);
             return;
           }
-          showExportOutlinksFloatingButton = nextValue;
-          renderExportOutlinksFloatingToggle();
-          showStatus(settingsStatusEl, nextValue ? '已显示导出外链按钮' : '已隐藏导出外链按钮');
+          showPageFloatingButtons = nextValue;
+          renderPageFloatingButtonsToggle();
+          showStatus(settingsStatusEl, nextValue ? '已显示页面悬浮按钮' : '已隐藏页面悬浮按钮');
         }
       );
     });
@@ -1010,7 +1016,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const config = {
             _version: CONFIG_VERSION,
             _exportTime: new Date().toISOString(),
-            _note: '此配置备份包含 AI API Key、网站资料、表单基础信息和批量设置，请只在可信环境保存和导入。',
+            _note: '此配置备份包含 AI API Key、目标 URL 资料、表单基础信息和批量设置，请只在可信环境保存和导入。',
             data: mergedData
           };
 
@@ -1059,6 +1065,13 @@ document.addEventListener('DOMContentLoaded', () => {
               syncToSave[key] = importedData[key];
             }
           });
+          if (
+            syncToSave[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY] === undefined
+            && typeof importedData[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] === 'boolean'
+          ) {
+            syncToSave[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY] =
+              importedData[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY];
+          }
 
           if (syncToSave[WEBSITE_URL_STORAGE_KEY] === undefined) {
             const legacyWebsiteUrl = getLegacyWebsiteUrl(importedData);

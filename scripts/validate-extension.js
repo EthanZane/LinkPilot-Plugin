@@ -34,6 +34,7 @@ function validateManifest() {
   assert(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length > 0, '必须配置 content_scripts');
   assert(Array.isArray(manifest.host_permissions) && manifest.host_permissions.includes('https://*/*'), '必须允许访问用户配置的 HTTPS AI Provider');
   assert(manifest.host_permissions.includes('http://*/*'), '必须允许访问用户配置的 HTTP 本地或局域网 AI Provider');
+  assert(Array.isArray(manifest.permissions) && manifest.permissions.includes('unlimitedStorage'), '必须允许本地保存未同步批次的完整结果');
 }
 
 function validateRequiredFiles() {
@@ -79,9 +80,58 @@ function validateOptionsPageScriptScope() {
   }
 }
 
+/**
+ * 批量功能实际运行在 options.html，校验新增交互节点，避免只修改独立 batch.html 后设置页没有界面。
+ */
+function validateBatchUiBindings() {
+  const optionsHtml = readFileSync(path.join(rootDir, 'options.html'), 'utf8');
+  const requiredElementIds = [
+    'databasePersistence',
+    'databasePersistenceMessage',
+    'retryDatabaseBtn',
+    'importResultCsvBtn',
+    'resultCsvInput',
+    'batchHistoryEmpty',
+    'batchHistoryWrap',
+    'batchHistoryBody'
+  ];
+  for (const elementId of requiredElementIds) {
+    assert(optionsHtml.includes(`id="${elementId}"`), `options.html 缺少批量功能节点：${elementId}`);
+  }
+}
+
+/**
+ * 校验表单填充和页面悬浮入口的触发边界，避免普通网页加载时再次出现无授权填表。
+ */
+function validateManualFormFillingAndFloatingButtons() {
+  const contentSource = readFileSync(path.join(rootDir, 'content.js'), 'utf8');
+  const optionsSource = readFileSync(path.join(rootDir, 'options.js'), 'utf8');
+  const optionsHtml = readFileSync(path.join(rootDir, 'options.html'), 'utf8');
+
+  assert(
+    !/await restoreBatchContext\(\);\s*fillInputs\(\);/.test(contentSource),
+    '普通页面初始化流程不得自动调用 fillInputs'
+  );
+  assert(
+    contentSource.includes("fillFormBtn.addEventListener('click'"),
+    'AI 评论面板必须保留用户手动触发表单填充的入口'
+  );
+  assert(
+    /message\.type === 'BATCH_HANDLE'[\s\S]{0,2500}await fillInputs\(\);/.test(contentSource),
+    '批量自动提交任务必须保留显式填表流程'
+  );
+  assert(
+    optionsHtml.includes('id="togglePageFloatingButtonsBtn"')
+      && optionsSource.includes('SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY'),
+    '设置页必须提供统一控制两个页面悬浮按钮的开关'
+  );
+}
+
 validateRequiredFiles();
 validateManifest();
 validateJavaScriptSyntax();
 validateOptionsPageScriptScope();
+validateBatchUiBindings();
+validateManualFormFillingAndFloatingButtons();
 
 console.log('扩展校验通过：manifest、核心 JS 文件及设置页组合脚本均可加载。');

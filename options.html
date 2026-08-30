@@ -787,6 +787,43 @@
 
       .batch-site-summary strong { color: #1d4ed8; }
 
+      /* 数据库提示与批次历史属于批量页宽区域，必须直接定义在设置页中。 */
+      .database-persistence {
+        display: none;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        background: #eff6ff;
+        color: #1e40af;
+        font-size: 12px;
+      }
+
+      .database-persistence.visible { display: flex; }
+      .database-persistence.success { border-color: #a7f3d0; background: #ecfdf5; color: #065f46; }
+      .database-persistence.warning { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+      .database-persistence.failed { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+      .database-persistence-message { flex: 1; line-height: 1.5; word-break: break-word; }
+      .database-persistence .btn { flex: 0 0 auto; padding: 6px 12px; }
+
+      .batch-history-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .batch-history-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .batch-history-empty { padding: 14px 0; color: #94a3b8; font-size: 12px; text-align: center; }
+      .batch-history-wrap { overflow-x: auto; }
+      .batch-history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .batch-history-table th,
+      .batch-history-table td { padding: 8px 10px; border-top: 1px solid #e2e8f0; text-align: left; white-space: nowrap; }
+      .batch-history-table th { color: #64748b; background: #f8fafc; font-weight: 700; }
+      .batch-history-table td { color: #334155; }
+      .batch-history-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+      .batch-history-buttons { display: flex; gap: 6px; }
+      .batch-history-buttons .btn { padding: 5px 10px; font-size: 11px; }
+      .batch-sync-badge { display: inline-flex; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+      .batch-sync-badge.pending { color: #92400e; background: #fef3c7; }
+      .batch-sync-badge.failed { color: #991b1b; background: #fee2e2; }
+      .batch-sync-badge.synced { color: #065f46; background: #d1fae5; }
+
       .target-url-cell {
         display: flex;
         align-items: center;
@@ -876,14 +913,14 @@
       <div class="page-header">
         <div>
           <h1>Auto Register Filler 设置</h1>
-          <div class="subtitle">个人本地版配置中心：AI、网站资料、批量自动外链和扩展行为。</div>
+          <div class="subtitle">个人本地版配置中心：AI、目标 URL 资料、批量自动外链和扩展行为。</div>
         </div>
       </div>
 
       <div class="layout">
         <nav class="sidebar" aria-label="设置分类">
           <button class="tab-btn active" type="button" data-tab-target="ai">AI 配置</button>
-          <button class="tab-btn" type="button" data-tab-target="site">网站管理</button>
+          <button class="tab-btn" type="button" data-tab-target="site">目标 URL 管理</button>
           <button class="tab-btn" type="button" data-tab-target="batch">批量自动外链</button>
           <button class="tab-btn" type="button" data-tab-target="other">其他设置</button>
         </nav>
@@ -957,39 +994,39 @@
           <section class="tab-panel" data-tab-panel="site">
             <div class="section-head">
               <div>
-                <div class="section-title">网站管理</div>
-                <div class="section-desc">管理多个推广网站、网站资料、锚文本池和评论表单个人信息。</div>
+                <div class="section-title">目标 URL 管理</div>
+                <div class="section-desc">管理多个目标 URL、目标资料、锚文本池和评论表单个人信息。</div>
               </div>
             </div>
 
             <div class="site-manager-grid">
               <div class="card">
-                <div class="card-title">网站列表</div>
-                <div class="hint">这里维护可用网站列表；具体使用哪个网站，请在 AI 评论面板或批量任务里选择。</div>
+                <div class="card-title">目标 URL 列表</div>
+                <div class="hint">这里维护可用目标 URL；具体使用哪个目标 URL，请在 AI 评论面板或批量任务里选择。</div>
                 <div class="site-list" id="siteList"></div>
                 <div class="row">
-                  <button id="newSiteBtn" class="btn btn-secondary" type="button">新建网站</button>
+                  <button id="newSiteBtn" class="btn btn-secondary" type="button">新建目标 URL</button>
                 </div>
               </div>
 
               <div class="card">
-                <div class="card-title">站点详情</div>
+                <div class="card-title">目标 URL 详情</div>
                 <div class="grid-2">
                   <div>
-                    <label for="siteName">网站名称</label>
+                    <label for="siteName">目标名称</label>
                     <input type="text" id="siteName" class="required-field" placeholder="例如：Nano Banana" autocomplete="off" required />
-                    <div class="required-hint">请填写网站名称，便于在列表里识别。</div>
+                    <div class="required-hint">请填写目标名称，便于在列表里识别。</div>
                   </div>
                   <div>
-                    <label for="websiteUrl">网站链接</label>
+                    <label for="websiteUrl">目标 URL</label>
                     <input type="url" id="websiteUrl" class="required-field" placeholder="https://test.com" autocomplete="off" required />
-                    <div class="required-hint">请填写网站链接，例如：https://test.com</div>
+                    <div class="required-hint">请填写目标 URL，例如：https://test.com</div>
                   </div>
                 </div>
                 <div style="margin-top: 12px;">
-                  <label for="websiteContent">网站内容</label>
+                  <label for="websiteContent">目标 URL 内容</label>
                   <textarea id="websiteContent" class="required-field" rows="5" placeholder="描述产品、服务、卖点和目标用户。" autocomplete="off" required></textarea>
-                  <div class="required-hint">请填写网站内容，这会用于生成评论文案。</div>
+                  <div class="required-hint">请填写目标 URL 内容，这会用于生成评论文案。</div>
                 </div>
 
                 <div style="margin-top: 14px;">
@@ -998,13 +1035,13 @@
                     <input type="text" id="anchorTextInput" placeholder="多个锚文本用逗号分隔，例如：Nano Banana, AI image editor, image generator" autocomplete="off" />
                     <button id="addAnchorTextsBtn" class="btn btn-secondary" type="button">添加锚文本</button>
                   </div>
-                  <div class="hint">添加后可逐条启用或禁用；生成评论时会从所选网站已启用的锚文本里随机选择一个。没有启用锚文本时，由 AI 自然生成。</div>
+                  <div class="hint">添加后可逐条启用或禁用；生成评论时会从所选目标 URL 已启用的锚文本里随机选择一个。没有启用锚文本时，由 AI 自然生成。</div>
                   <div class="anchor-list" id="anchorList"></div>
                 </div>
 
                 <div class="row">
-                  <button id="saveSettingsBtn" class="btn btn-primary">保存站点</button>
-                  <button id="deleteSiteBtn" class="btn btn-secondary" type="button">删除站点</button>
+                  <button id="saveSettingsBtn" class="btn btn-primary">保存目标 URL</button>
+                  <button id="deleteSiteBtn" class="btn btn-secondary" type="button">删除目标 URL</button>
                   <span id="settingsStatus" class="status">已保存</span>
                 </div>
               </div>
@@ -1012,7 +1049,7 @@
 
             <div class="card">
               <div class="card-title">评论表单基础信息</div>
-              <div class="hint" style="margin-bottom: 12px;">评论表单里的 Name / Author 会自动使用所选推广网站的网站名称；这里仅配置跨站通用的邮箱和可选密码。</div>
+              <div class="hint" style="margin-bottom: 12px;">评论表单里的 Name / Author 会自动使用所选目标 URL 的目标名称；这里仅配置跨站通用的邮箱和可选密码。</div>
               <div class="grid-2">
                 <div>
                   <label for="userEmail">邮箱</label>
@@ -1035,13 +1072,13 @@
             <div class="section-head">
               <div>
                 <div class="section-title">批量自动外链</div>
-                <div class="section-desc">在当前设置页内上传 CSV，批量打开目标页面，自动识别评论表单、生成评论并记录结果。</div>
+                <div class="section-desc">在当前设置页内上传 CSV，批量打开引荐 URL，自动识别评论表单、生成评论并记录结果。</div>
               </div>
             </div>
 
             <div class="card">
               <div class="card-title">CSV 输入规范</div>
-              <div class="hint">必须包含 <code>原URL</code> 列；其他列会保留到导出结果中。</div>
+              <div class="hint">必须包含 <code>引荐URL</code> 列；其他列会保留到导出结果中。</div>
               <table class="mini-table">
                 <thead>
                   <tr>
@@ -1052,11 +1089,11 @@
                 </thead>
                 <tbody>
                   <tr><td>页面AS</td><td>否</td><td>原样保留，用于参考。</td></tr>
-                  <tr><td>原URL</td><td>是</td><td>插件要打开并评论的目标页面。</td></tr>
-                  <tr><td>URL对应域名</td><td>否</td><td>用于预览和非法站点预检测。</td></tr>
-                  <tr><td>目标域名</td><td>否</td><td>原样保留。</td></tr>
+                  <tr><td>引荐URL</td><td>是</td><td>插件要打开并评论的引荐页面。</td></tr>
+                  <tr><td>引荐域名</td><td>否</td><td>用于预览和非法站点预检测，会自动去掉开头的 www.。</td></tr>
+                  <tr><td>目标域名</td><td>否</td><td>目标 URL 的域名，会自动去掉开头的 www.。</td></tr>
                   <tr><td>类型</td><td>否</td><td>原样保留。</td></tr>
-                  <tr><td>外部链接数量</td><td>否</td><td>原样保留。</td></tr>
+                  <tr><td>引荐页外链数量</td><td>否</td><td>原样保留。</td></tr>
                   <tr><td>自动评论运行结果</td><td>否</td><td>导出时会写入新的运行结果。</td></tr>
                 </tbody>
               </table>
@@ -1084,10 +1121,10 @@
                 </div>
 
                 <div style="margin-top: 14px;">
-                  <label for="manualUrlsInput">直接粘贴 URL</label>
+                  <label for="manualUrlsInput">直接粘贴引荐 URL</label>
                   <textarea id="manualUrlsInput" class="manual-url-textarea" rows="7" placeholder="一行一个 URL，例如：&#10;https://example.com/post-a&#10;https://example.com/post-b"></textarea>
                   <div class="manual-url-tools">
-                    <button class="btn btn-secondary" id="parseManualUrlsBtn" type="button">解析粘贴 URL</button>
+                    <button class="btn btn-secondary" id="parseManualUrlsBtn" type="button">解析引荐 URL</button>
                     <button class="btn btn-secondary" id="clearManualUrlsBtn" type="button">清空粘贴内容</button>
                   </div>
                   <div class="hint">支持一行一个 URL；也兼容用空格、逗号分隔。未写协议时会自动补全为 https://。</div>
@@ -1095,15 +1132,15 @@
 
                 <div class="url-preview" id="urlPreview">
                   <div class="url-preview-header">
-                    <span>待处理 URL 列表</span>
+                    <span>待处理引荐 URL 列表</span>
                     <span id="duplicateCount"></span>
                   </div>
                   <table>
                     <thead>
                       <tr>
                         <th>#</th>
-                        <th>来源域名</th>
-                        <th>目标页面</th>
+                        <th>引荐域名</th>
+                        <th>引荐 URL</th>
                       </tr>
                     </thead>
                     <tbody id="urlPreviewBody"></tbody>
@@ -1111,7 +1148,7 @@
                 </div>
 
                 <div class="hint" style="margin-top: 10px;">
-                  CSV 文件需包含 <code>原URL</code> 列；标准格式为：页面AS, 原URL, URL对应域名, 目标域名, 类型, 外部链接数量, 自动评论运行结果。
+                  CSV 文件需包含 <code>引荐URL</code> 列；标准格式为：页面AS, 引荐URL, 引荐域名, 目标域名, 类型, 引荐页外链数量, 自动评论运行结果。
                 </div>
               </div>
 
@@ -1123,7 +1160,7 @@
                       <input type="checkbox" id="batchAutoOpenPanel" checked />
                       <span>
                         <span class="checkbox-title">页面加载后自动打开推广助手</span>
-                        <span class="hint">每个目标页面加载后，会自动弹出评论助手窗口。</span>
+                        <span class="hint">每个引荐 URL 加载后，会自动弹出评论助手窗口。</span>
                       </span>
                     </label>
                     <label class="checkbox-row" for="batchAutoGenerate">
@@ -1140,9 +1177,32 @@
                         <span class="hint">评论填入表单后，自动点击页面里的发送评论按钮。</span>
                       </span>
                     </label>
+                    <label class="checkbox-row" for="batchDebugMode">
+                      <input type="checkbox" id="batchDebugMode" />
+                      <span>
+                        <span class="checkbox-title" style="display:inline-flex;align-items:center;gap:6px;">
+                          <span>Debug 探测模式（免 AI 真实提交）</span>
+                          <span class="badge" style="background:#fef3c7;color:#92400e;font-size:11px;padding:2px 6px;border-radius:4px;font-weight:600;">PROBE</span>
+                        </span>
+                        <span class="hint">跳过 AI 生成调用（零 Token 消耗、极速执行），使用内置预设评论条进行真实表单填充与提交，用于批量探测可提交 URL。</span>
+                      </span>
+                    </label>
                   </div>
 
-                  <div class="inline-field">
+                  <div id="batchDebugOptions" style="display: none; margin-top: 12px; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+                    <label for="batchDebugCommentSelect" style="display: block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 6px;">探测预设评论文案：</label>
+                    <select id="batchDebugCommentSelect" style="width: 100%; font-size: 12px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 8px;">
+                      <option value="random">🎲 随机轮播内置好评条目</option>
+                      <option value="preset_1">Great article! Thank you for sharing these helpful insights.</option>
+                      <option value="preset_2">Very informative post, really appreciate the detailed breakdown!</option>
+                      <option value="preset_3">Awesome tips! Thanks for putting this together, very useful read.</option>
+                      <option value="preset_4">Thanks for sharing this great resource, found it very helpful!</option>
+                      <option value="custom">✏️ 自定义探测文案...</option>
+                    </select>
+                    <textarea id="batchDebugCustomComment" placeholder="输入自定义探测评论内容（支持变量：{url} 目标网址, {name} 目标网站名）" style="display: none; width: 100%; height: 60px; font-size: 12px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; resize: vertical;"></textarea>
+                  </div>
+
+                  <div class="inline-field" style="margin-top: 12px;">
                     <label for="timeoutInput">单页超时</label>
                     <input type="number" id="timeoutInput" min="10" max="600" value="60" />
                     <span class="hint">范围 10-600 秒，超时会记录为失败并继续下一条。</span>
@@ -1162,12 +1222,12 @@
                 </div>
 
                 <div class="card">
-                  <label for="batchPromotionSiteSelect">推广网站</label>
+                  <label for="batchPromotionSiteSelect">目标 URL</label>
                   <select id="batchPromotionSiteSelect"></select>
-                  <div class="hint" style="margin-top: 8px;">开始处理时会锁定这里选择的网站；AI 文案、链接、锚文本和评论表单名称都会使用该网站的配置。</div>
+                  <div class="hint" style="margin-top: 8px;">开始处理时会锁定这里选择的目标 URL；AI 文案、链接、锚文本和评论表单名称都会使用该目标 URL 的配置。</div>
                   <div class="batch-site-summary" id="batchSiteSummary" style="margin-top: 10px;">
                     <strong>即将使用</strong>
-                    <span id="batchSiteSummaryName">未选择网站</span>
+                    <span id="batchSiteSummaryName">未选择目标 URL</span>
                     <span id="batchSiteSummaryUrl">—</span>
                   </div>
                 </div>
@@ -1190,6 +1250,41 @@
                   <div class="stat-item stat-manual inactive"><span class="num" id="manualRequiredCount">0</span> 需手动处理</div>
                   <div class="stat-item stat-pending"><span class="num" id="pendingCount">0</span> 待处理</div>
                   <div class="stat-item" style="margin-left:auto">进度：<span class="num" id="progressText">0/0</span></div>
+                </div>
+              </div>
+
+              <!-- 数据库失败只提示，不影响自动化；失败后可以从这里重新同步。 -->
+              <div class="database-persistence batch-wide" id="databasePersistence" role="status" aria-live="polite">
+                <span class="database-persistence-message" id="databasePersistenceMessage"></span>
+                <button class="btn btn-secondary" id="retryDatabaseBtn" type="button" style="display:none;">重新写入数据库</button>
+              </div>
+
+              <!-- 本地批次日志：未同步批次保留完整明细，同步成功后仅保留摘要。 -->
+              <div class="card batch-wide">
+                <div class="batch-history-header">
+                  <div class="card-title" style="margin-bottom:0;">本地批次日志</div>
+                  <div class="batch-history-actions">
+                    <button class="btn btn-secondary" id="importResultCsvBtn" type="button">导入结果 CSV</button>
+                    <input type="file" id="resultCsvInput" accept=".csv,text/csv" />
+                  </div>
+                </div>
+                <div class="hint" style="margin:8px 0 10px;">未同步批次会保留全部结果，数据库同步成功后只保留批次摘要。</div>
+                <div class="batch-history-empty" id="batchHistoryEmpty">暂无批次记录</div>
+                <div class="batch-history-wrap" id="batchHistoryWrap" style="display:none;">
+                  <table class="batch-history-table">
+                    <thead>
+                      <tr>
+                        <th>时间</th>
+                        <th>批次 ID</th>
+                        <th>目标 URL</th>
+                        <th>结果数</th>
+                        <th>批次状态</th>
+                        <th>数据库</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="batchHistoryBody"></tbody>
+                  </table>
                 </div>
               </div>
 
@@ -1263,8 +1358,8 @@
                     <thead>
                       <tr>
                         <th>#</th>
-                        <th>目标页面</th>
-                        <th>网站 URL</th>
+                        <th>引荐 URL</th>
+                        <th>目标 URL</th>
                         <th>页面深度</th>
                         <th>结果</th>
                         <th>错误信息</th>
@@ -1294,10 +1389,10 @@
             </div>
 
             <div class="card">
-              <div class="card-title">导出外链浮动按钮</div>
-              <div class="hint">控制页面左下角“导出外链”按钮是否显示。</div>
+              <div class="card-title">页面悬浮按钮</div>
+              <div class="hint">统一控制页面左下角“AI 评论”和“导出外链”两个按钮是否显示。隐藏后不会影响批量自动提交。</div>
               <div class="row">
-                <button id="toggleExportOutlinksFloatingBtn" class="btn btn-secondary" type="button">加载中...</button>
+                <button id="togglePageFloatingButtonsBtn" class="btn btn-secondary" type="button">加载中...</button>
               </div>
             </div>
 
