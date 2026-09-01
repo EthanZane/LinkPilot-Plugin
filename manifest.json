@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Auto Register Filler",
+  "name": "LinkPilot - AI 智能外链与博客推广助手",
   "version": "1.5.4",
-  "description": "按需填充评论表单，并为当前引荐页面生成目标 URL 推广文案。",
+  "description": "基于 AI 深度理解页面上下文，智能生成高转化评论并自动化进行博客外链建设。",
   "permissions": [
     "activeTab",
     "storage",
@@ -18,8 +18,20 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
-    "default_title": "Auto Register Filler - 网站按需填表与推广文案助手"
+    "default_title": "LinkPilot - AI 智能外链与博客推广助手",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "options_page": "options.html",
   "content_scripts": [

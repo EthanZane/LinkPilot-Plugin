@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- 背景渐变 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#1e1b4b" />
+      <stop offset="100%" stop-color="#090d16" />
+    </linearGradient>
+
+    <!-- 边框发光渐变 -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#818cf8" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#c084fc" stop-opacity="0.8" />
+    </linearGradient>
+
+    <!-- 主翅膀/外链主渐变 (青蓝 -> 亮靛蓝 -> 霓虹紫) -->
+    <linearGradient id="wingGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe" />
+      <stop offset="45%" stop-color="#38bdf8" />
+      <stop offset="80%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#9333ea" />
+    </linearGradient>
+
+    <!-- 辅助链环渐变 -->
+    <linearGradient id="wingGrad2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#c084fc" />
+    </linearGradient>
+
+    <!-- 核心光芒渐变 -->
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.6" />
+      <stop offset="60%" stop-color="#6366f1" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- 星芒 AI 渐变 -->
+    <linearGradient id="starGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="50%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#818cf8" />
+    </linearGradient>
+
+    <!-- 阴影滤镜 -->
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#0284c7" flood-opacity="0.35" />
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.5" />
+    </filter>
+
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- 背景圆角矩形 -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="6" />
+
+  <!-- 内部环境光 -->
+  <circle cx="256" cy="240" r="180" fill="url(#coreGlow)" />
+
+  <!-- 核心图形：LinkPilot 标志（双联外链环 + 领航机翼 + 极速飞翔剪影） -->
+  <g filter="url(#dropShadow)">
+    <!-- 底层发光环迹 -->
+    <path d="M 155 310 C 115 310 85 275 85 235 C 85 195 115 160 155 160 C 190 160 215 185 230 205 L 210 222 C 198 206 180 188 155 188 C 130 188 112 210 112 235 C 112 260 130 282 155 282 C 180 282 198 264 210 248 L 230 265 C 215 285 190 310 155 310 Z" fill="url(#wingGrad2)" opacity="0.9" />
+
+    <!-- 领航机翼与主外链箭头 -->
+    <path d="M 235 256 L 275 208 C 290 190 315 165 355 165 C 395 165 425 198 425 240 C 425 282 395 315 355 315 C 320 315 295 292 280 272 L 300 255 C 312 270 330 287 355 287 C 380 287 398 266 398 240 C 398 214 380 193 355 193 C 330 193 312 212 300 228 L 260 276 L 235 256 Z" fill="url(#wingGrad1)" />
+
+    <!-- 贯穿连接光束 (Connection Link Beam) -->
+    <path d="M 185 268 L 325 168 C 335 160 348 165 348 178 L 348 200 L 220 292 C 208 300 195 295 195 282 L 195 260 Z" fill="url(#wingGrad1)" opacity="0.8" />
+
+    <!-- 领航机翼冲刺尖峰 (Pilot Jet Aero Apex) -->
+    <path d="M 245 130 L 375 225 L 350 250 L 270 195 L 200 235 L 210 185 Z" fill="url(#wingGrad1)" />
+
+    <!-- 领航高光核心翼点 -->
+    <polygon points="340,150 355,190 395,205 355,220 340,260 325,220 285,205 325,190" fill="url(#starGrad)" filter="url(#glow)" />
+    
+    <!-- AI 导航北极星 (Sparkle Star) -->
+    <polygon points="390,110 398,132 420,140 398,148 390,170 382,148 360,140 382,132" fill="#ffffff" />
+    <circle cx="390" cy="140" r="4" fill="#38bdf8" />
+  </g>
+
+  <!-- 底部细微品牌点缀 -->
+  <circle cx="155" cy="235" r="8" fill="#38bdf8" />
+  <circle cx="355" cy="240" r="8" fill="#c084fc" />
+</svg>
