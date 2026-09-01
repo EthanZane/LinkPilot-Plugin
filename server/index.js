@@ -362,9 +362,19 @@ async function syncRunResults(payload) {
 async function listRuns() {
   const result = await pool.query(
     `
-      select *
-      from ${runsTable}
-      order by started_at desc
+      select
+        r.*,
+        coalesce(count(i.id), 0)::integer as processed_count,
+        count(case when i.result = 'success' then 1 end)::integer as success_count,
+        count(case when i.result = 'skipped' then 1 end)::integer as skipped_count,
+        count(case when i.result = 'manual_required' then 1 end)::integer as manual_required_count,
+        count(case when i.result = 'no_comment_box' then 1 end)::integer as no_comment_box_count,
+        count(case when i.result = 'blocked_illegal' then 1 end)::integer as blocked_illegal_count,
+        count(case when i.result = 'fail' then 1 end)::integer as fail_count
+      from ${runsTable} r
+      left join ${runItemsTable} i on r.id = i.run_id
+      group by r.id
+      order by r.started_at desc
       limit 100
     `
   );

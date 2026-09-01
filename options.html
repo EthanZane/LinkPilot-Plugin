@@ -847,6 +847,7 @@
         white-space: nowrap;
       }
 
+      .copy-url-btn,
       .open-url-btn {
         width: 26px;
         height: 26px;
@@ -858,11 +859,20 @@
         border: 1px solid #cbd5e1;
         border-radius: 6px;
         background: #ffffff;
-        color: #2563eb;
         cursor: pointer;
-        font-size: 15px;
+        transition: all 0.15s ease;
       }
 
+      .copy-url-btn {
+        color: #4b5563;
+      }
+      .copy-url-btn:hover { background: #f3f4f6; border-color: #9ca3af; color: #111827; }
+      .copy-url-btn.copied { background: #d1fae5; border-color: #6ee7b7; color: #059669; }
+
+      .open-url-btn {
+        color: #2563eb;
+        font-size: 15px;
+      }
       .open-url-btn:hover { background: #dbeafe; border-color: #93c5fd; }
 
       .btn-retry-row {

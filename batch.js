@@ -126,6 +126,7 @@ const batchSiteSummary = document.getElementById('batchSiteSummary');
 const databasePersistence = document.getElementById('databasePersistence');
 const databasePersistenceMessage = document.getElementById('databasePersistenceMessage');
 const retryDatabaseBtn = document.getElementById('retryDatabaseBtn');
+const syncDbHistoryBtn = document.getElementById('syncDbHistoryBtn');
 const importResultCsvBtn = document.getElementById('importResultCsvBtn');
 const resultCsvInput = document.getElementById('resultCsvInput');
 const batchHistoryEmpty = document.getElementById('batchHistoryEmpty');
@@ -547,6 +548,8 @@ async function init() {
   await loadBatchHistory();
   const restored = await restoreLastBatchResults();
   if (!restored) updateUI();
+  // 异步在后台静默尝试从本地数据库拉取/恢复历史批次记录
+  syncBatchHistoryFromDatabase({ notify: false }).catch(() => {});
 }
 
 /**
@@ -609,6 +612,125 @@ async function loadBatchHistory() {
   }
   sortBatchHistory();
   renderBatchHistory();
+}
+
+/**
+ * 从本地数据库拉取全部历史批次记录并与本地批次历史合并。
+ * 支持在重装扩展或多端同步后快速恢复历史批次列表。
+ */
+async function syncBatchHistoryFromDatabase({ notify = false } = {}) {
+  if (notify && syncDbHistoryBtn) {
+    syncDbHistoryBtn.disabled = true;
+    syncDbHistoryBtn.textContent = '正在同步...';
+  }
+  try {
+    const runs = await requestLocalDatabase('/api/runs', undefined, {
+      method: 'GET',
+      timeoutMs: 5000
+    });
+
+    if (!Array.isArray(runs)) {
+      if (notify) {
+        setDatabasePersistenceState('warning', '数据库暂无可同步的历史批次记录。');
+        alert('数据库中暂无可同步的历史批次记录。');
+      }
+      return 0;
+    }
+
+    let addedCount = 0;
+    let updatedCount = 0;
+    for (const row of runs) {
+      if (!row || !row.id) continue;
+      const rowId = String(row.id);
+      const existingIndex = batchHistory.findIndex((r) => String(r.id) === rowId);
+
+      const totalNum = Number(row.total_count || row.processed_count || 0);
+      const processedNum = row.processed_count != null
+        ? Number(row.processed_count)
+        : (row.status === 'completed' ? totalNum : 0);
+
+      const dbSummary = {
+        processed: processedNum,
+        success: Number(row.success_count || (row.status === 'completed' && row.processed_count == null ? totalNum : 0)),
+        skipped: Number(row.skipped_count || 0),
+        manualRequired: Number(row.manual_required_count || 0),
+        noCommentBox: Number(row.no_comment_box_count || 0),
+        blockedIllegal: Number(row.blocked_illegal_count || 0),
+        fail: Number(row.fail_count || 0)
+      };
+
+      const recordFromDb = {
+        id: rowId,
+        totalCount: totalNum,
+        status: String(row.status || 'completed'),
+        databaseStatus: 'synced',
+        sourceName: String(row.source_name || '数据库同步'),
+        sourceType: String(row.source_type || 'database'),
+        targetUrl: String(row.target_url || ''),
+        targetName: String(row.target_name || ''),
+        startedAt: row.started_at ? new Date(row.started_at).getTime() : Date.now(),
+        completedAt: row.completed_at ? new Date(row.completed_at).getTime() : null,
+        summary: dbSummary,
+        results: []
+      };
+
+      if (existingIndex >= 0) {
+        const existing = batchHistory[existingIndex];
+        // 1. 如果当前是正在运行中的批次，不覆盖其运行中状态
+        if (batchId && String(batchId) === rowId && status === 'running') {
+          continue;
+        }
+        // 2. 如果本地处于“待同步”或“同步失败”状态，且包含未同步明细，严格保留本地未同步状态和明细数据
+        if (existing.databaseStatus !== 'synced' && Array.isArray(existing.results) && existing.results.length > 0) {
+          continue;
+        }
+        // 3. 如果本地已有且保留了明细结果，保留本地明细
+        if (Array.isArray(existing.results) && existing.results.length > 0) {
+          batchHistory[existingIndex] = {
+            ...existing,
+            databaseStatus: existing.databaseStatus || 'synced',
+            targetUrl: existing.targetUrl || recordFromDb.targetUrl,
+            targetName: existing.targetName || recordFromDb.targetName,
+            status: existing.status || recordFromDb.status
+          };
+        } else {
+          batchHistory[existingIndex] = {
+            ...existing,
+            ...recordFromDb,
+            sourceName: existing.sourceName || recordFromDb.sourceName
+          };
+        }
+        updatedCount++;
+      } else {
+        batchHistory.push(recordFromDb);
+        addedCount++;
+      }
+    }
+
+    sortBatchHistory();
+    await persistBatchHistory();
+    renderBatchHistory();
+
+    if (notify) {
+      setDatabasePersistenceState('success', `已成功从数据库同步 ${runs.length} 个历史批次（新增 ${addedCount} 个，更新 ${updatedCount} 个）。`);
+      alert(`已成功从数据库同步 ${runs.length} 个历史批次！\n点击列表中的任意批次即可载入并查看执行明细。`);
+    }
+    return runs.length;
+  } catch (error) {
+    if (notify) {
+      const errorMsg = formatDatabaseError(error);
+      setDatabasePersistenceState('failed', `从数据库同步历史批次失败：${errorMsg}`);
+      alert(`无法从数据库同步历史批次：\n${errorMsg}\n\n若未启动本地数据库服务，可先在终端执行 pnpm server:start 后重试。`);
+    } else {
+      console.log('[batch] 自动从数据库同步批次跳过（数据库服务可能未启动）:', error.message || error);
+    }
+    return 0;
+  } finally {
+    if (notify && syncDbHistoryBtn) {
+      syncDbHistoryBtn.disabled = false;
+      syncDbHistoryBtn.textContent = '🔄 从数据库同步历史';
+    }
+  }
 }
 
 /**
@@ -737,8 +859,12 @@ async function loadAndApplyBatchHistory(record) {
       }));
 
       record.results = results;
+      record.summary = summarizeBatchResults(results);
       const targetIndex = batchHistory.findIndex((r) => r.id === record.id);
-      if (targetIndex >= 0) batchHistory[targetIndex].results = results;
+      if (targetIndex >= 0) {
+        batchHistory[targetIndex].results = results;
+        batchHistory[targetIndex].summary = record.summary;
+      }
       await persistBatchHistory();
 
       applyBatchHistoryRecord(record);
@@ -850,6 +976,11 @@ function renderBatchHistory() {
 
   batchHistory.forEach((record) => {
     const summary = record.summary || {};
+    const totalCountVal = Number(record.totalCount || (summary && summary.processed) || 0);
+    const processedVal = (summary && summary.processed != null && Number(summary.processed) > 0)
+      ? Number(summary.processed)
+      : (record.status === 'completed' ? totalCountVal : Number(summary.processed || 0));
+
     const isCurrentActive = batchId && String(record.id) === String(batchId) && localResults.length > 0;
     const tr = document.createElement('tr');
     if (isCurrentActive) {
@@ -860,7 +991,7 @@ function renderBatchHistory() {
       <td style="white-space: nowrap;">${escapeHtml(formatDateTime(new Date(Number(record.startedAt) || Date.now())))}</td>
       <td class="batch-history-id" title="${escapeHtml(record.id)}">${escapeHtml(String(record.id || ''))}</td>
       <td class="batch-history-target" title="${escapeHtml(record.targetUrl || '')}">${escapeHtml(record.targetUrl || '—')}</td>
-      <td style="text-align: center; white-space: nowrap;">${Number(summary.processed || 0)} / ${Number(record.totalCount || 0)}</td>
+      <td style="text-align: center; white-space: nowrap;">${processedVal} / ${totalCountVal}</td>
       <td style="text-align: center; white-space: nowrap;">${escapeHtml(getBatchStatusText(record.status))}</td>
       <td style="text-align: center; white-space: nowrap;"><span class="batch-sync-badge ${escapeHtml(record.databaseStatus || 'pending')}">${escapeHtml(getDatabaseStatusText(record.databaseStatus))}</span></td>
     `;
@@ -1088,6 +1219,9 @@ function bindEvents() {
   exportBtn.addEventListener('click', exportResults);
   clearBtn.addEventListener('click', clearBatch);
   if (retryDatabaseBtn) retryDatabaseBtn.addEventListener('click', retryDatabasePersistence);
+  if (syncDbHistoryBtn) {
+    syncDbHistoryBtn.addEventListener('click', () => syncBatchHistoryFromDatabase({ notify: true }));
+  }
   if (importResultCsvBtn && resultCsvInput) {
     importResultCsvBtn.addEventListener('click', () => resultCsvInput.click());
     resultCsvInput.addEventListener('change', handleResultCsvImport);
@@ -2984,6 +3118,34 @@ function filterPageDepthBucket(pageMetrics) {
   return true;
 }
 
+const COPY_URL_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+const COPIED_URL_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+async function copyTextToClipboard(text) {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 function renderStats() {
   if (localResults.length === 0) {
     statsPanel.classList.remove('visible');
@@ -3065,6 +3227,7 @@ function renderStats() {
       <td title="${escapeHtml(r.url)}">
         <div class="target-url-cell">
           <span class="target-url-text">${escapeHtml(shortUrl)}</span>
+          <button type="button" class="copy-url-btn" title="复制引荐 URL" aria-label="复制引荐 URL">${COPY_URL_ICON_SVG}</button>
           <button type="button" class="open-url-btn" title="在新标签页打开引荐 URL" aria-label="在新标签页打开引荐 URL">↗</button>
         </div>
       </td>
@@ -3073,6 +3236,24 @@ function renderStats() {
       <td><span class="result-badge ${r.result}">${getResultText(r.result)}</span></td>
     `;
     tr.className = `url-${r.result}`;
+
+    const copyUrlButton = tr.querySelector('.copy-url-btn');
+    if (copyUrlButton) {
+      copyUrlButton.addEventListener('click', async () => {
+        const ok = await copyTextToClipboard(r.url);
+        if (ok) {
+          copyUrlButton.classList.add('copied');
+          copyUrlButton.title = '已复制 URL！';
+          copyUrlButton.innerHTML = COPIED_URL_ICON_SVG;
+          setTimeout(() => {
+            copyUrlButton.classList.remove('copied');
+            copyUrlButton.title = '复制引荐 URL';
+            copyUrlButton.innerHTML = COPY_URL_ICON_SVG;
+          }, 1500);
+        }
+      });
+    }
+
     const openUrlButton = tr.querySelector('.open-url-btn');
     if (openUrlButton) {
       openUrlButton.addEventListener('click', () => {

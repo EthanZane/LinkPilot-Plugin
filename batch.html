@@ -684,6 +684,7 @@
         white-space: nowrap;
       }
 
+      .copy-url-btn,
       .open-url-btn {
         width: 26px;
         height: 26px;
@@ -695,11 +696,20 @@
         border: 1px solid #d1d5db;
         border-radius: 6px;
         background: #ffffff;
-        color: #2563eb;
         cursor: pointer;
-        font-size: 15px;
+        transition: all 0.15s ease;
       }
 
+      .copy-url-btn {
+        color: #4b5563;
+      }
+      .copy-url-btn:hover { background: #f3f4f6; border-color: #9ca3af; color: #111827; }
+      .copy-url-btn.copied { background: #d1fae5; border-color: #6ee7b7; color: #059669; }
+
+      .open-url-btn {
+        color: #2563eb;
+        font-size: 15px;
+      }
       .open-url-btn:hover { background: #dbeafe; border-color: #93c5fd; }
 
       .url-preview tr.url-processing { background: #dbeafe !important; }
@@ -1161,6 +1171,7 @@
         <div class="batch-history-header">
           <div class="card-title" style="margin-bottom:0;">本地批次日志</div>
           <div class="batch-history-actions">
+            <button class="btn btn-secondary" id="syncDbHistoryBtn" type="button" title="从本地数据库同步所有历史批次记录">🔄 从数据库同步历史</button>
             <button class="btn btn-secondary" id="importResultCsvBtn" type="button">导入结果 CSV</button>
             <input type="file" id="resultCsvInput" accept=".csv,text/csv" />
           </div>
