@@ -11,6 +11,7 @@ const SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY = 'show_page_floating_buttons';
 const SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY = 'show_export_outlinks_floating_button';
 const AI_CONFIG_STORAGE_KEY = 'auto_comment_ai_config';
 const TIMEOUT_STORAGE_KEY = 'batch_timeout_seconds';
+const CONCURRENCY_STORAGE_KEY = 'batch_concurrency_tabs';
 const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
 
 const CONFIG_VERSION = 6;
@@ -28,6 +29,7 @@ const ACTIVE_STORAGE_KEYS = [
 const SYNC_CONFIG_STORAGE_KEYS = [
   ...ACTIVE_STORAGE_KEYS,
   TIMEOUT_STORAGE_KEY,
+  CONCURRENCY_STORAGE_KEY,
   BATCH_CHECKBOX_SETTINGS_KEY,
   LEGACY_SKILL_TEMPLATE_STORAGE_KEY,
   LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY
@@ -533,7 +535,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function persistSitesConfig(callback) {
-    const activeSite = sitesConfig.sites[0] || null;
+    const activeSite = sitesConfig.sites.find((s) => s.id === sitesConfig.activeSiteId) || sitesConfig.sites[0] || null;
     const localPayload = {
       [SITES_CONFIG_STORAGE_KEY]: sitesConfig
     };
@@ -605,12 +607,21 @@ document.addEventListener('DOMContentLoaded', () => {
         : data[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false;
       renderPageFloatingButtonsToggle();
 
-      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY], (localResult) => {
+      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY, 'auto_comment_batch_selected_promotion_site_id', 'auto_comment_selected_promotion_site_id'], (localResult) => {
         if (chrome.runtime.lastError) {
           console.error('读取本地网站配置失败：', chrome.runtime.lastError);
           sitesConfig = normalizeSitesConfig(null, data);
         } else {
           sitesConfig = normalizeSitesConfig(localResult[SITES_CONFIG_STORAGE_KEY], data);
+        }
+        const savedActiveId = String(
+          localResult && (
+            localResult.auto_comment_batch_selected_promotion_site_id ||
+            localResult.auto_comment_selected_promotion_site_id
+          ) || ''
+        ).trim();
+        if (savedActiveId && sitesConfig.sites.some((site) => site.id === savedActiveId)) {
+          sitesConfig.activeSiteId = savedActiveId;
         }
         editingSiteId = sitesConfig.sites[0] ? sitesConfig.sites[0].id : sitesConfig.activeSiteId;
         fillSiteForm(getEditingSite());

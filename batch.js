@@ -90,10 +90,11 @@ const footerActions = document.getElementById('footerActions');
 const exportBtn = document.getElementById('exportBtn');
 const clearBtn = document.getElementById('clearBtn');
 const providerSource = document.getElementById('providerSource');
-const providerHint = document.getElementById('providerHint');
-const costHint = document.getElementById('costHint');
 const statusBadge = document.getElementById('statusBadge');
 const timeoutInput = document.getElementById('timeoutInput');
+const concurrencyInput = document.getElementById('concurrencyInput');
+const CONCURRENCY_STORAGE_KEY = 'batch_concurrency_tabs';
+let maxConcurrentTabs = 3;
 const statsPanel = document.getElementById('statsPanel');
 const statsTotal = document.getElementById('statsTotal');
 const statsSuccess = document.getElementById('statsSuccess');
@@ -180,6 +181,18 @@ let availablePromotionSites = [];
 let batchPromotionSite = null;
 let batchPromotionSiteUserSelected = false;
 let batchSavedPromotionSiteId = '';
+
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+  chrome.storage.local.get([BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY, 'auto_comment_selected_promotion_site_id'], (data) => {
+    const saved = String(data && (data[BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY] || data['auto_comment_selected_promotion_site_id']) || '').trim();
+    if (saved) {
+      batchSavedPromotionSiteId = saved;
+      if (availablePromotionSites.length > 0) {
+        renderBatchPromotionSiteSelect(saved);
+      }
+    }
+  });
+}
 
 // 全局勾选框设置的 storage.sync 键
 const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
@@ -288,7 +301,14 @@ function renderBatchPromotionSiteSelect(preferredSiteId) {
 function applyBatchSitesConfig(config, preferredSiteId) {
   if (!config || !Array.isArray(config.sites)) return false;
   availablePromotionSites = getBatchPromotionSitesFromConfig(config);
-  renderBatchPromotionSiteSelect(preferredSiteId || batchSavedPromotionSiteId);
+  const currentSelectValue = batchPromotionSiteSelect && batchPromotionSiteSelect.value ? batchPromotionSiteSelect.value : '';
+  const currentSelectionStillValid = availablePromotionSites.some((site) => site.id === currentSelectValue);
+  const targetSiteId = preferredSiteId
+    || (currentSelectionStillValid ? currentSelectValue : '')
+    || batchSavedPromotionSiteId
+    || (config && config.activeSiteId)
+    || '';
+  renderBatchPromotionSiteSelect(targetSiteId);
   return availablePromotionSites.length > 0;
 }
 
@@ -352,41 +372,72 @@ function buildLegacyBatchPromotionSite(syncData) {
  */
 async function loadBatchPromotionSites(preferredSiteId) {
   setBatchPromotionSiteSelectMessage('正在加载目标 URL...', true);
-  const runtimeConfig = window.AutoCommentSitesConfig;
-  if (applyBatchSitesConfig(runtimeConfig, preferredSiteId)) {
-    return;
-  }
 
   const localData = await new Promise((resolve) => {
-    chrome.storage.local.get([BATCH_SITES_CONFIG_STORAGE_KEY, BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY], resolve);
-  });
-  batchSavedPromotionSiteId = String(localData && localData[BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY] || '').trim();
-
-  const syncData = await new Promise((resolve) => {
-    chrome.storage.sync.get([
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      resolve({});
+      return;
+    }
+    chrome.storage.local.get([
       BATCH_SITES_CONFIG_STORAGE_KEY,
-      BATCH_WEBSITE_URL_STORAGE_KEY,
-      BATCH_WEBSITE_CONTENT_STORAGE_KEY,
-      BATCH_USER_NAME_STORAGE_KEY,
-      BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY
+      BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY,
+      'auto_comment_selected_promotion_site_id'
     ], resolve);
   });
 
+  const savedId = String(
+    localData && (
+      localData[BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY] ||
+      localData['auto_comment_selected_promotion_site_id']
+    ) || ''
+  ).trim();
+
+  if (savedId) {
+    batchSavedPromotionSiteId = savedId;
+  }
+
+  const runtimeConfig = window.AutoCommentSitesConfig;
   const localConfig = localData && localData[BATCH_SITES_CONFIG_STORAGE_KEY];
+
+  let syncData = null;
+  if (!runtimeConfig && (!localConfig || !Array.isArray(localConfig.sites) || localConfig.sites.length === 0)) {
+    syncData = await new Promise((resolve) => {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
+        resolve({});
+        return;
+      }
+      chrome.storage.sync.get([
+        BATCH_SITES_CONFIG_STORAGE_KEY,
+        BATCH_WEBSITE_URL_STORAGE_KEY,
+        BATCH_WEBSITE_CONTENT_STORAGE_KEY,
+        BATCH_USER_NAME_STORAGE_KEY,
+        BATCH_LEGACY_PROMPT_FIELD_VALUES_STORAGE_KEY
+      ], resolve);
+    });
+  }
+
   const syncConfig = syncData && syncData[BATCH_SITES_CONFIG_STORAGE_KEY];
-  const config = Array.isArray(localConfig && localConfig.sites) && localConfig.sites.length > 0
-    ? localConfig
-    : syncConfig;
+  const config = runtimeConfig
+    || (Array.isArray(localConfig && localConfig.sites) && localConfig.sites.length > 0 ? localConfig : syncConfig);
+
   availablePromotionSites = getBatchPromotionSitesFromConfig(config);
 
-  if (availablePromotionSites.length === 0) {
+  if (availablePromotionSites.length === 0 && syncData) {
     const legacySite = buildLegacyBatchPromotionSite(syncData || {});
     if (legacySite.url || legacySite.content) {
       availablePromotionSites = [legacySite];
     }
   }
 
-  renderBatchPromotionSiteSelect(preferredSiteId || batchSavedPromotionSiteId);
+  const currentSelectValue = batchPromotionSiteSelect && batchPromotionSiteSelect.value ? batchPromotionSiteSelect.value : '';
+  const currentSelectionStillValid = availablePromotionSites.some((site) => site.id === currentSelectValue);
+  const targetSiteId = preferredSiteId
+    || (currentSelectionStillValid ? currentSelectValue : '')
+    || batchSavedPromotionSiteId
+    || (config && config.activeSiteId)
+    || '';
+
+  renderBatchPromotionSiteSelect(targetSiteId);
 }
 
 function getSelectedBatchPromotionSite() {
@@ -476,6 +527,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   await loadTimeoutSetting();
+  await loadConcurrencySetting();
   await loadBatchCheckboxSettings(); // 全局记忆的勾选框设置
   await loadBatchPromotionSites();
   bindEvents();
@@ -590,7 +642,7 @@ function persistBatchHistory() {
 }
 
 /**
- * 保存当前批次快照。未同步时保留全部明细；同步成功后只保留摘要，释放本地空间。
+ * 保存当前批次快照。保留执行明细，方便随时在批次日志中装载查看或导出。
  */
 async function saveCurrentBatchHistory(databaseStatus = 'pending') {
   if (!batchId) return;
@@ -608,19 +660,90 @@ async function saveCurrentBatchHistory(databaseStatus = 'pending') {
     targetName: batchPromotionSite && batchPromotionSite.name || existing.targetName || '',
     startedAt: batchStartedAt || existing.startedAt || Date.now(),
     completedAt: batchCompletedAt || existing.completedAt || null,
-    summary: summarizeBatchResults(localResults)
+    summary: summarizeBatchResults(localResults),
+    results: localResults
   };
-  if (databaseStatus === 'synced') {
-    delete record.results;
-  } else {
-    record.results = localResults;
-  }
 
   if (existingIndex >= 0) batchHistory[existingIndex] = record;
   else batchHistory.push(record);
   await persistBatchHistory();
-  if (databaseStatus === 'synced') chrome.storage.local.remove(['batchLocalResults']);
   renderBatchHistory();
+}
+
+/**
+ * 平滑滚动至结果统计面板
+ */
+function scrollToStatsPanel() {
+  const targetEl = statsPanel || document.getElementById('statsPanel');
+  if (targetEl) {
+    targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+/**
+ * 装载并展示指定批次的执行结果，优先使用本地缓存，若无明细则从本地数据库拉取。
+ */
+async function loadAndApplyBatchHistory(record) {
+  if (!record || !record.id) return false;
+  if (status === 'running') {
+    alert('当前批次正在运行中，不能载入其他批次。');
+    return false;
+  }
+
+  // 1. 如果本地记录已有明细结果
+  if (Array.isArray(record.results) && record.results.length > 0) {
+    applyBatchHistoryRecord(record);
+    renderBatchHistory();
+    scrollToStatsPanel();
+    return true;
+  }
+
+  // 2. 如果本地未保存明细（例如旧版清空过本地缓存），尝试从本地数据库拉取
+  try {
+    setDatabasePersistenceState('saving', `正在从本地数据库拉取批次 ${record.id} 的执行明细...`);
+    const items = await requestLocalDatabase(`/api/runs/${record.id}/items`, undefined, {
+      method: 'GET',
+      timeoutMs: 5000
+    });
+
+    if (Array.isArray(items) && items.length > 0) {
+      const results = items.map((item) => ({
+        originalIndex: Number(item.url_index != null ? item.url_index : 0),
+        url: item.referral_url || '',
+        sourceDomain: item.referral_domain || '',
+        result: item.result || 'fail',
+        aiContent: item.ai_content || null,
+        errorMessage: item.result_message || null,
+        promotionSiteId: item.target_url || record.targetUrl || '',
+        promotionSiteName: record.targetName || '',
+        promotionSiteUrl: item.target_url || record.targetUrl || '',
+        pageMetrics: item.page_metrics && typeof item.page_metrics === 'object' ? item.page_metrics : null,
+        timestamp: item.executed_at ? Date.parse(item.executed_at) : (Number(record.startedAt) || Date.now()),
+        elapsed: item.elapsed_seconds != null ? Number(item.elapsed_seconds) : null,
+        originalRow: Array.isArray(item.original_row) ? item.original_row : []
+      }));
+
+      record.results = results;
+      const targetIndex = batchHistory.findIndex((r) => r.id === record.id);
+      if (targetIndex >= 0) batchHistory[targetIndex].results = results;
+      await persistBatchHistory();
+
+      applyBatchHistoryRecord(record);
+      setDatabasePersistenceState('success', `已从数据库成功装载批次 ${record.id} 的 ${results.length} 条执行明细。`);
+      renderBatchHistory();
+      scrollToStatsPanel();
+      return true;
+    } else {
+      setDatabasePersistenceState('warning', `数据库中未查询到批次 ${record.id} 的明细记录。`);
+      alert(`本地及数据库中未找到批次 ${record.id} 的执行明细。`);
+      return false;
+    }
+  } catch (error) {
+    const errorMsg = formatDatabaseError(error);
+    setDatabasePersistenceState('failed', `装载批次明细失败：${errorMsg}`);
+    alert(`无法从数据库装载批次明细：\n${errorMsg}\n\n若未启动本地数据库服务，可先在终端执行 pnpm server:start 后重试。`);
+    return false;
+  }
 }
 
 /**
@@ -682,7 +805,7 @@ function getDatabaseStatusText(value) {
 }
 
 /**
- * 渲染批次日志。只有仍保留明细的批次才能恢复或直接同步。
+ * 渲染批次日志。每行可点击装载历史结果，或点击按钮载入/同步。
  */
 function renderBatchHistory() {
   if (!batchHistoryBody || !batchHistoryEmpty || !batchHistoryWrap) return;
@@ -691,9 +814,13 @@ function renderBatchHistory() {
   batchHistoryWrap.style.display = batchHistory.length === 0 ? 'none' : 'block';
 
   batchHistory.forEach((record) => {
-    const hasDetails = Array.isArray(record.results) && record.results.length > 0;
     const summary = record.summary || {};
+    const isCurrentActive = batchId && String(record.id) === String(batchId) && localResults.length > 0;
     const tr = document.createElement('tr');
+    if (isCurrentActive) {
+      tr.classList.add('active-batch-row');
+    }
+    tr.title = '点击装载并查看该批次的执行结果';
     tr.innerHTML = `
       <td>${escapeHtml(formatDateTime(new Date(Number(record.startedAt) || Date.now())))}</td>
       <td title="${escapeHtml(record.id)}">${escapeHtml(String(record.id).slice(0, 8))}…</td>
@@ -702,37 +829,46 @@ function renderBatchHistory() {
       <td>${escapeHtml(getBatchStatusText(record.status))}</td>
       <td><span class="batch-sync-badge ${escapeHtml(record.databaseStatus || 'pending')}">${escapeHtml(getDatabaseStatusText(record.databaseStatus))}</span></td>
     `;
+
+    tr.addEventListener('click', (e) => {
+      if (e.target && typeof e.target.closest === 'function' && e.target.closest('button')) return;
+      loadAndApplyBatchHistory(record);
+    });
+
     const actionCell = document.createElement('td');
     const buttons = document.createElement('div');
     buttons.className = 'batch-history-buttons';
-    if (hasDetails) {
-      const restoreButton = document.createElement('button');
-      restoreButton.type = 'button';
-      restoreButton.className = 'btn btn-secondary';
-      restoreButton.textContent = '恢复';
-      restoreButton.addEventListener('click', () => {
-        if (status === 'running') return alert('当前批次正在运行，不能恢复其他批次。');
-        applyBatchHistoryRecord(record);
-        setDatabasePersistenceState('failed', `已恢复批次 ${record.id}，可重新同步数据库。`);
-      });
-      buttons.appendChild(restoreButton);
 
+    const loadButton = document.createElement('button');
+    loadButton.type = 'button';
+    loadButton.className = 'btn btn-secondary';
+    loadButton.textContent = isCurrentActive ? '当前显示' : '载入结果';
+    if (isCurrentActive) {
+      loadButton.disabled = true;
+      loadButton.style.opacity = '0.6';
+    }
+    loadButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      loadAndApplyBatchHistory(record);
+    });
+    buttons.appendChild(loadButton);
+
+    if (record.databaseStatus !== 'synced') {
       const syncButton = document.createElement('button');
       syncButton.type = 'button';
       syncButton.className = 'btn btn-secondary';
       syncButton.textContent = '同步';
-      syncButton.addEventListener('click', async () => {
+      syncButton.addEventListener('click', async (e) => {
+        e.stopPropagation();
         if (status === 'running') return alert('当前批次正在运行，不能同步其他批次。');
-        applyBatchHistoryRecord(record);
-        await syncLocalDatabaseRunResults(record.status === 'completed' ? 'completed' : 'terminated');
+        const ok = await loadAndApplyBatchHistory(record);
+        if (ok) {
+          await syncLocalDatabaseRunResults(record.status === 'completed' ? 'completed' : 'terminated');
+        }
       });
       buttons.appendChild(syncButton);
-    } else {
-      const detailNote = document.createElement('span');
-      detailNote.textContent = '仅保留摘要';
-      detailNote.style.color = '#9ca3af';
-      buttons.appendChild(detailNote);
     }
+
     actionCell.appendChild(buttons);
     tr.appendChild(actionCell);
     batchHistoryBody.appendChild(tr);
@@ -744,20 +880,50 @@ async function loadTimeoutSetting() {
     chrome.storage.sync.get([TIMEOUT_STORAGE_KEY], (data) => {
       const saved = parseInt(data[TIMEOUT_STORAGE_KEY], 10);
       timeoutSeconds = (saved && saved >= 10 && saved <= 600) ? saved : 60;
-      timeoutInput.value = String(timeoutSeconds);
+      if (timeoutInput) timeoutInput.value = String(timeoutSeconds);
       resolve();
     });
   });
 }
 
-// ==================== 事件绑定 ====================
 function saveTimeoutSetting() {
+  if (!timeoutInput) return;
   const val = parseInt(timeoutInput.value, 10);
   if (val >= 10 && val <= 600) {
     timeoutSeconds = val;
     chrome.storage.sync.set({ [TIMEOUT_STORAGE_KEY]: val });
   } else {
     timeoutInput.value = String(timeoutSeconds);
+  }
+}
+
+function getConcurrencySetting() {
+  if (concurrencyInput) {
+    const val = parseInt(concurrencyInput.value, 10);
+    if (val >= 1 && val <= 10) return val;
+  }
+  return maxConcurrentTabs || 3;
+}
+
+async function loadConcurrencySetting() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get([CONCURRENCY_STORAGE_KEY], (data) => {
+      const saved = parseInt(data[CONCURRENCY_STORAGE_KEY], 10);
+      maxConcurrentTabs = (saved && saved >= 1 && saved <= 10) ? saved : 3;
+      if (concurrencyInput) concurrencyInput.value = String(maxConcurrentTabs);
+      resolve();
+    });
+  });
+}
+
+function saveConcurrencySetting() {
+  if (!concurrencyInput) return;
+  const val = parseInt(concurrencyInput.value, 10);
+  if (val >= 1 && val <= 10) {
+    maxConcurrentTabs = val;
+    chrome.storage.sync.set({ [CONCURRENCY_STORAGE_KEY]: val });
+  } else {
+    concurrencyInput.value = String(maxConcurrentTabs);
   }
 }
 
@@ -792,7 +958,12 @@ function bindEvents() {
       batchPromotionSiteUserSelected = true;
       batchSavedPromotionSiteId = batchPromotionSiteSelect.value;
       batchPromotionSite = getSelectedBatchPromotionSite();
-      chrome.storage.local.set({ [BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY]: batchPromotionSiteSelect.value }, () => {});
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({
+          [BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY]: batchPromotionSiteSelect.value,
+          'auto_comment_selected_promotion_site_id': batchPromotionSiteSelect.value
+        }, () => {});
+      }
       updateBatchPromotionSiteSummary();
       console.log('[batch] 已选择本批次目标 URL:', batchPromotionSite && batchPromotionSite.name);
     });
@@ -816,7 +987,8 @@ function bindEvents() {
   }
 
   // 设置
-  timeoutInput.addEventListener('change', saveTimeoutSetting);
+  if (timeoutInput) timeoutInput.addEventListener('change', saveTimeoutSetting);
+  if (concurrencyInput) concurrencyInput.addEventListener('change', saveConcurrencySetting);
 
   // 勾选框设置（全局记忆）
   if (batchAutoOpenPanel) batchAutoOpenPanel.addEventListener('change', saveBatchCheckboxSettings);
@@ -862,24 +1034,29 @@ function bindEvents() {
 
 // 目标 URL 管理更新目标列表后，同步刷新尚未启动批次的目标选择器。
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (
-    areaName !== 'local'
-    || !changes[BATCH_SITES_CONFIG_STORAGE_KEY]
-    || status === 'running'
-    || status === 'terminated'
-  ) return;
-  const preferredSiteId = batchPromotionSiteUserSelected && batchPromotionSiteSelect
-    ? batchPromotionSiteSelect.value
-    : batchSavedPromotionSiteId;
-  loadBatchPromotionSites(preferredSiteId);
+  if (areaName !== 'local') return;
+  if (changes[BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY]) {
+    const newId = String(changes[BATCH_SELECTED_PROMOTION_SITE_STORAGE_KEY].newValue || '').trim();
+    if (newId && newId !== batchSavedPromotionSiteId) {
+      batchSavedPromotionSiteId = newId;
+      if (status !== 'running' && status !== 'terminated' && availablePromotionSites.length > 0) {
+        renderBatchPromotionSiteSelect(newId);
+      }
+    }
+  }
+  if (changes[BATCH_SITES_CONFIG_STORAGE_KEY]) {
+    if (status === 'running' || status === 'terminated') return;
+    const preferredSiteId = (batchPromotionSiteSelect && batchPromotionSiteSelect.value)
+      || batchSavedPromotionSiteId;
+    loadBatchPromotionSites(preferredSiteId);
+  }
 });
 
 // 设置页的目标 URL 管理数据加载或编辑后会广播当前配置，批量页据此立即刷新下拉框。
 window.addEventListener('autoCommentSitesConfigChanged', (event) => {
   if (status === 'running' || status === 'terminated') return;
-  const preferredSiteId = batchPromotionSiteUserSelected && batchPromotionSiteSelect && batchPromotionSiteSelect.value
-    ? batchPromotionSiteSelect.value
-    : '';
+  const currentVal = batchPromotionSiteSelect && batchPromotionSiteSelect.value;
+  const preferredSiteId = currentVal || batchSavedPromotionSiteId || '';
   applyBatchSitesConfig(event.detail, preferredSiteId);
 });
 
@@ -1599,8 +1776,8 @@ async function startBatch() {
   // 数据库写入属于旁路持久化，失败只更新提示，绝不延迟或中断自动化标签页调度。
   persistLocalDatabaseRunStart();
 
-  // 打开第一个标签页
-  openNextTabSync();
+  // 启动并发池打开标签页
+  scheduleNextTabs();
 }
 
 // 保存批量任务设置到 storage.local
@@ -1702,7 +1879,6 @@ async function resumeBatch() {
 
   // 重置终止状态
   isTerminated = false;
-  isOpeningTab = false;  // 重置锁，确保可以继续打开
 
   // 重置待处理计数（仅统计还未处理的）
   const processedCount = getProcessedCount();
@@ -1724,26 +1900,34 @@ async function resumeBatch() {
   updateUI();
   await saveCurrentBatchHistory('pending');
 
-  // 从断点继续打开标签页（固定为1）
-  console.log('[resumeBatch] 将打开 1 个标签页');
+  const maxConcurrent = getConcurrencySetting();
+  console.log('[resumeBatch] 启动并发调度池，最大并发数:', maxConcurrent);
 
-  openNextTabSync();
+  scheduleNextTabs();
 }
 
-// 立即打开下一个标签页（从本地队列获取）
-async function openNextTabSync() {
-  console.log('[openNextTabSync] 调用', { isOpeningTab, status, isTerminated, currentIndex, totalCount });
-  if (isOpeningTab) {
-    console.log('[openNextTabSync] 跳过 - 正在打开中');
-    return;
+// 并发调度池管理器：自动补足打开标签页直到达到 maxConcurrentTabs
+let isScheduling = false;
+async function scheduleNextTabs() {
+  if (isScheduling || status !== 'running' || isTerminated) return;
+  isScheduling = true;
+  try {
+    const maxConcurrent = getConcurrencySetting();
+    console.log('[scheduleNextTabs] 调度并发池:', { activeTabCount, maxConcurrent, currentIndex, totalCount, status });
+    while (status === 'running' && !isTerminated && activeTabCount < maxConcurrent && currentIndex < totalCount) {
+      await openNextTab();
+      if (activeTabCount < maxConcurrent && currentIndex < totalCount) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
+  } finally {
+    isScheduling = false;
   }
-  isOpeningTab = true;
-  await openNextTab();
-  isOpeningTab = false;
 }
 
 async function openNextTab() {
-  console.log('[openNextTab] 检查条件', { status, isTerminated, activeTabCount, currentIndex, totalCount });
+  const maxConcurrent = getConcurrencySetting();
+  console.log('[openNextTab] 检查条件', { status, isTerminated, activeTabCount, maxConcurrent, currentIndex, totalCount });
 
   if (status !== 'running') {
     console.log('[openNextTab] 跳过 - 状态不是 running');
@@ -1753,8 +1937,8 @@ async function openNextTab() {
     console.log('[openNextTab] 跳过 - 已终止');
     return;
   }
-  if (activeTabCount >= 1) {
-    console.log('[openNextTab] 跳过 - 已有标签页在处理中');
+  if (activeTabCount >= maxConcurrent) {
+    console.log('[openNextTab] 跳过 - 已达最大并发数', activeTabCount, '>=', maxConcurrent);
     return;
   }
   if (currentIndex >= totalCount) {
@@ -1764,8 +1948,9 @@ async function openNextTab() {
 
   const urlIndex = currentIndex;
   const item = parsedUrls[urlIndex];
+  if (!item) return;
   const { url, sourceDomain } = item;
-  console.log('[openNextTab] 准备打开标签页', { urlIndex, url });
+  console.log('[openNextTab] 准备打开标签页', { urlIndex, url, activeTabCount, maxConcurrent });
   currentIndex++;
 
   const illegalCheck = item.illegalCheck || evaluateIllegalSiteForBatchItem(url, sourceDomain);
@@ -1774,7 +1959,7 @@ async function openNextTab() {
     item.illegalCheck = illegalCheck;
     handleTabResult(urlIndex, 'blocked_illegal', null, getIllegalSiteBlockMessage(illegalCheck), 0);
     if (status === 'running' && currentIndex < totalCount) {
-      setTimeout(openNextTabSync, 0);
+      setTimeout(scheduleNextTabs, 0);
     } else if (status === 'running' && activeTabCount === 0) {
       checkAllCompleted();
     }
@@ -1837,9 +2022,9 @@ async function openNextTab() {
           };
 
           checkAndRecord().finally(() => {
-            // 标签关闭后补充新标签
+            // 标签关闭后触发并发调度池补充新标签
             if (status === 'running' && currentIndex < totalCount) {
-              openNextTabSync();
+              scheduleNextTabs();
             } else if (status === 'running' && activeTabCount === 0) {
               // 所有标签页都已关闭，检查是否全部完成
               const processedCount = getProcessedCount();
@@ -1919,9 +2104,9 @@ async function openNextTab() {
     });
   } catch (e) {
     console.error('[batch] openNextTab 错误:', e);
-    // 出错时继续下一个
+    // 出错时继续调度下一个
     if (currentIndex < totalCount) {
-      setTimeout(openNextTabSync, 1000);
+      setTimeout(scheduleNextTabs, 1000);
     }
   }
 }
@@ -2423,6 +2608,7 @@ function clearBatch() {
   tabsWaitingClose.clear();
   isTerminated = false;
   isOpeningTab = false;
+  isScheduling = false;
   statsTableBody.innerHTML = '';
   statsTotal.textContent = '0';
   statsSuccess.textContent = '0';

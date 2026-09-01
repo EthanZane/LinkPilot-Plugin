@@ -816,6 +816,10 @@
       .batch-history-table td { padding: 8px 10px; border-top: 1px solid #e2e8f0; text-align: left; white-space: nowrap; }
       .batch-history-table th { color: #64748b; background: #f8fafc; font-weight: 700; }
       .batch-history-table td { color: #334155; }
+      .batch-history-table tbody tr { cursor: pointer; transition: background-color 0.15s ease; }
+      .batch-history-table tbody tr:hover { background-color: #f1f5f9; }
+      .batch-history-table tbody tr.active-batch-row { background-color: #eff6ff !important; }
+      .batch-history-table tbody tr.active-batch-row td:first-child { font-weight: 800; color: #1d4ed8; }
       .batch-history-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
       .batch-history-buttons { display: flex; gap: 6px; }
       .batch-history-buttons .btn { padding: 5px 10px; font-size: 11px; }
@@ -1203,6 +1207,12 @@
                   </div>
 
                   <div class="inline-field" style="margin-top: 12px;">
+                    <label for="concurrencyInput">并发标签数</label>
+                    <input type="number" id="concurrencyInput" min="1" max="10" value="3" />
+                    <span class="hint">同时打开处理的标签页数量（范围 1-10，推荐 2-5，Debug 模式可适当调高）。</span>
+                  </div>
+
+                  <div class="inline-field">
                     <label for="timeoutInput">单页超时</label>
                     <input type="number" id="timeoutInput" min="10" max="600" value="60" />
                     <span class="hint">范围 10-600 秒，超时会记录为失败并继续下一条。</span>
@@ -1257,35 +1267,6 @@
               <div class="database-persistence batch-wide" id="databasePersistence" role="status" aria-live="polite">
                 <span class="database-persistence-message" id="databasePersistenceMessage"></span>
                 <button class="btn btn-secondary" id="retryDatabaseBtn" type="button" style="display:none;">重新写入数据库</button>
-              </div>
-
-              <!-- 本地批次日志：未同步批次保留完整明细，同步成功后仅保留摘要。 -->
-              <div class="card batch-wide">
-                <div class="batch-history-header">
-                  <div class="card-title" style="margin-bottom:0;">本地批次日志</div>
-                  <div class="batch-history-actions">
-                    <button class="btn btn-secondary" id="importResultCsvBtn" type="button">导入结果 CSV</button>
-                    <input type="file" id="resultCsvInput" accept=".csv,text/csv" />
-                  </div>
-                </div>
-                <div class="hint" style="margin:8px 0 10px;">未同步批次会保留全部结果，数据库同步成功后只保留批次摘要。</div>
-                <div class="batch-history-empty" id="batchHistoryEmpty">暂无批次记录</div>
-                <div class="batch-history-wrap" id="batchHistoryWrap" style="display:none;">
-                  <table class="batch-history-table">
-                    <thead>
-                      <tr>
-                        <th>时间</th>
-                        <th>批次 ID</th>
-                        <th>目标 URL</th>
-                        <th>结果数</th>
-                        <th>批次状态</th>
-                        <th>数据库</th>
-                        <th>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody id="batchHistoryBody"></tbody>
-                  </table>
-                </div>
               </div>
 
               <div class="card stats-panel batch-wide" id="statsPanel">
@@ -1376,6 +1357,35 @@
               <div class="footer-actions batch-wide" id="footerActions">
                 <button class="btn btn-secondary" id="exportBtn">导出结果 CSV</button>
                 <button class="btn btn-secondary" id="clearBtn">清空当前批次</button>
+              </div>
+
+              <!-- 本地批次日志：未同步批次保留完整明细，同步成功后仅保留摘要。 -->
+              <div class="card batch-wide">
+                <div class="batch-history-header">
+                  <div class="card-title" style="margin-bottom:0;">本地批次日志</div>
+                  <div class="batch-history-actions">
+                    <button class="btn btn-secondary" id="importResultCsvBtn" type="button">导入结果 CSV</button>
+                    <input type="file" id="resultCsvInput" accept=".csv,text/csv" />
+                  </div>
+                </div>
+                <div class="hint" style="margin:8px 0 10px;">未同步批次会保留全部结果，数据库同步成功后只保留批次摘要。</div>
+                <div class="batch-history-empty" id="batchHistoryEmpty">暂无批次记录</div>
+                <div class="batch-history-wrap" id="batchHistoryWrap" style="display:none;">
+                  <table class="batch-history-table">
+                    <thead>
+                      <tr>
+                        <th>时间</th>
+                        <th>批次 ID</th>
+                        <th>目标 URL</th>
+                        <th>结果数</th>
+                        <th>批次状态</th>
+                        <th>数据库</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="batchHistoryBody"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </section>

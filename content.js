@@ -954,7 +954,11 @@
         resolve();
         return;
       }
-      chrome.storage.local.set({ [SELECTED_PROMOTION_SITE_STORAGE_KEY]: String(siteId || '') }, resolve);
+      const idStr = String(siteId || '');
+      chrome.storage.local.set({
+        [SELECTED_PROMOTION_SITE_STORAGE_KEY]: idStr,
+        'auto_comment_batch_selected_promotion_site_id': idStr
+      }, resolve);
     });
   }
 
@@ -965,8 +969,13 @@
         return;
       }
 
-      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY, SELECTED_PROMOTION_SITE_STORAGE_KEY], (localResult) => {
-        const selectedSiteId = String(localResult && localResult[SELECTED_PROMOTION_SITE_STORAGE_KEY] || '').trim();
+      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY, SELECTED_PROMOTION_SITE_STORAGE_KEY, 'auto_comment_batch_selected_promotion_site_id'], (localResult) => {
+        const selectedSiteId = String(
+          localResult && (
+            localResult[SELECTED_PROMOTION_SITE_STORAGE_KEY] ||
+            localResult['auto_comment_batch_selected_promotion_site_id']
+          ) || ''
+        ).trim();
         if (!chrome.runtime?.lastError) {
           const localSites = getPromotionSitesFromConfig(localResult && localResult[SITES_CONFIG_STORAGE_KEY]);
           if (localSites.length > 0) {
