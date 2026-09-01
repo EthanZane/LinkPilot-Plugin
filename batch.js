@@ -51,6 +51,8 @@ let activeTabsByIndex = new Map();  // urlIndex -> { urlIndex, startTime }
 // 定时器
 let timeoutCheckTimer = null;
 let timeoutSeconds = 60;
+let timeoutRetryCount = 1;
+const TIMEOUT_RETRY_STORAGE_KEY = 'batch_timeout_retry_count';
 let manualUrlParseTimer = null;
 
 // 标签打开锁（防止并发）
@@ -62,6 +64,12 @@ let tabsPendingConfirm = new Map();
 let tabsWaitingClose = new Set();
 // 已跳过（已存在评论）的 urlIndex 记录
 let skippedIndices = new Set();
+// 正在重试的行索引集合
+let retryingItemIndexes = new Set();
+// 超时重试计数器: urlIndex -> 重试次数
+const timeoutRetryMap = new Map();
+// 待重试队列
+let pendingRetryQueue = [];
 
 // ==================== DOM 引用 ====================
 const uploadZone = document.getElementById('uploadZone');
@@ -92,6 +100,7 @@ const clearBtn = document.getElementById('clearBtn');
 const providerSource = document.getElementById('providerSource');
 const statusBadge = document.getElementById('statusBadge');
 const timeoutInput = document.getElementById('timeoutInput');
+const timeoutRetryCountInput = document.getElementById('timeoutRetryCountInput');
 const concurrencyInput = document.getElementById('concurrencyInput');
 const CONCURRENCY_STORAGE_KEY = 'batch_concurrency_tabs';
 let maxConcurrentTabs = 3;
@@ -127,6 +136,7 @@ const batchHistoryBody = document.getElementById('batchHistoryBody');
 const batchAutoOpenPanel = document.getElementById('batchAutoOpenPanel');
 const batchAutoGenerate = document.getElementById('batchAutoGenerate');
 const batchAutoSubmit = document.getElementById('batchAutoSubmit');
+const batchIgnoreHistory = document.getElementById('batchIgnoreHistory');
 const batchDebugMode = document.getElementById('batchDebugMode');
 const batchDebugOptions = document.getElementById('batchDebugOptions');
 const batchDebugCommentSelect = document.getElementById('batchDebugCommentSelect');
@@ -484,6 +494,7 @@ async function loadBatchCheckboxSettings() {
       if (batchAutoOpenPanel) batchAutoOpenPanel.checked = saved.autoOpenPanel !== false;
       if (batchAutoGenerate) batchAutoGenerate.checked = saved.autoGenerate !== false;
       if (batchAutoSubmit) batchAutoSubmit.checked = saved.autoSubmit !== false;
+      if (batchIgnoreHistory) batchIgnoreHistory.checked = Boolean(saved.ignoreHistory);
       if (batchDebugMode) {
         batchDebugMode.checked = Boolean(saved.debugMode);
         if (batchDebugCommentSelect && saved.debugCommentType) {
@@ -509,6 +520,7 @@ async function saveBatchCheckboxSettings() {
       autoOpenPanel: batchAutoOpenPanel ? batchAutoOpenPanel.checked : true,
       autoGenerate: batchAutoGenerate ? batchAutoGenerate.checked : true,
       autoSubmit: batchAutoSubmit ? batchAutoSubmit.checked : true,
+      ignoreHistory: batchIgnoreHistory ? batchIgnoreHistory.checked : false,
       debugMode: isDebug,
       debugCommentType: batchDebugCommentSelect ? batchDebugCommentSelect.value : 'random',
       debugCustomComment: batchDebugCustomComment ? batchDebugCustomComment.value : ''
@@ -527,6 +539,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   await loadTimeoutSetting();
+  await loadTimeoutRetrySetting();
   await loadConcurrencySetting();
   await loadBatchCheckboxSettings(); // 全局记忆的勾选框设置
   await loadBatchPromotionSites();
@@ -758,7 +771,29 @@ function applyBatchHistoryRecord(record) {
   batchSourceType = String(record.sourceType || 'recovered');
   batchStartedAt = Number(record.startedAt) || null;
   batchCompletedAt = Number(record.completedAt) || null;
-  parsedUrls = [];
+  retryingItemIndexes.clear();
+
+  const sortedResults = [...localResults].sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0));
+  const urls = sortedResults.map((item) => item.url).filter(Boolean);
+  if (manualUrlsInput) {
+    manualUrlsInput.value = urls.join('\n');
+  }
+
+  // 重建 parsedUrls，保证重试、行定位及重新批量处理时拥有完整的 URL 列表
+  parsedUrls = sortedResults.map((item, idx) => ({
+    originalIndex: item.originalIndex != null ? item.originalIndex : idx,
+    url: item.url,
+    sourceDomain: item.sourceDomain || extractDomain(item.url),
+    originalRow: Array.isArray(item.originalRow) && item.originalRow.length > 0
+      ? item.originalRow
+      : buildManualOriginalRow(item.url, item.sourceDomain || extractDomain(item.url))
+  }));
+
+  if (fileInfo && fileName && fileCount) {
+    fileName.textContent = batchSourceName || `批次日志 (${record.id ? String(record.id).slice(0, 8) : '已装载'})`;
+    fileCount.textContent = `共 ${parsedUrls.length} 条 URL`;
+    fileInfo.classList.add('visible');
+  }
 
   const firstResult = localResults.find((item) => item && item.promotionSiteUrl) || {};
   const targetUrl = String(record.targetUrl || firstResult.promotionSiteUrl || '').trim();
@@ -822,12 +857,12 @@ function renderBatchHistory() {
     }
     tr.title = '点击装载并查看该批次的执行结果';
     tr.innerHTML = `
-      <td>${escapeHtml(formatDateTime(new Date(Number(record.startedAt) || Date.now())))}</td>
-      <td title="${escapeHtml(record.id)}">${escapeHtml(String(record.id).slice(0, 8))}…</td>
+      <td style="white-space: nowrap;">${escapeHtml(formatDateTime(new Date(Number(record.startedAt) || Date.now())))}</td>
+      <td class="batch-history-id" title="${escapeHtml(record.id)}">${escapeHtml(String(record.id || ''))}</td>
       <td class="batch-history-target" title="${escapeHtml(record.targetUrl || '')}">${escapeHtml(record.targetUrl || '—')}</td>
-      <td>${Number(summary.processed || 0)} / ${Number(record.totalCount || 0)}</td>
-      <td>${escapeHtml(getBatchStatusText(record.status))}</td>
-      <td><span class="batch-sync-badge ${escapeHtml(record.databaseStatus || 'pending')}">${escapeHtml(getDatabaseStatusText(record.databaseStatus))}</span></td>
+      <td style="text-align: center; white-space: nowrap;">${Number(summary.processed || 0)} / ${Number(record.totalCount || 0)}</td>
+      <td style="text-align: center; white-space: nowrap;">${escapeHtml(getBatchStatusText(record.status))}</td>
+      <td style="text-align: center; white-space: nowrap;"><span class="batch-sync-badge ${escapeHtml(record.databaseStatus || 'pending')}">${escapeHtml(getDatabaseStatusText(record.databaseStatus))}</span></td>
     `;
 
     tr.addEventListener('click', (e) => {
@@ -869,10 +904,59 @@ function renderBatchHistory() {
       buttons.appendChild(syncButton);
     }
 
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'btn btn-secondary btn-delete-batch';
+    deleteButton.textContent = '删除';
+    deleteButton.title = '删除此批次记录（不需要同步或已废弃）';
+    deleteButton.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deleteBatchRecord(record);
+    });
+    buttons.appendChild(deleteButton);
+
     actionCell.appendChild(buttons);
     tr.appendChild(actionCell);
     batchHistoryBody.appendChild(tr);
   });
+}
+
+/**
+ * 删除指定的批次记录，并级联清理数据库记录（若服务可用）。
+ */
+async function deleteBatchRecord(record) {
+  if (!record || !record.id) return;
+  const shortId = String(record.id).slice(0, 8);
+
+  if (status === 'running' && batchId === String(record.id)) {
+    alert('当前批次正在运行中，无法删除。请先终止任务。');
+    return;
+  }
+
+  const confirmed = confirm(`确定要删除批次 ${shortId} 的记录吗？\n删除后该批次将不再显示，且不需要同步。`);
+  if (!confirmed) return;
+
+  // 1. 从本地 batchHistory 中移除
+  batchHistory = batchHistory.filter((r) => String(r.id) !== String(record.id));
+  await persistBatchHistory();
+
+  // 2. 如果当前结果面板展示的是被删除的批次，清空当前面板
+  if (batchId === String(record.id)) {
+    clearBatch();
+  }
+
+  // 3. 尝试通知本地数据库级联删除
+  try {
+    await requestLocalDatabase(`/api/runs/${record.id}`, undefined, {
+      method: 'DELETE',
+      timeoutMs: 2000
+    });
+    console.log('[batch] 本地数据库已同步删除批次:', record.id);
+  } catch (err) {
+    console.log('[batch] 数据库可能未启动或批次未入库，仅删除本地记录:', err.message || err);
+  }
+
+  renderBatchHistory();
 }
 
 async function loadTimeoutSetting() {
@@ -894,6 +978,28 @@ function saveTimeoutSetting() {
     chrome.storage.sync.set({ [TIMEOUT_STORAGE_KEY]: val });
   } else {
     timeoutInput.value = String(timeoutSeconds);
+  }
+}
+
+async function loadTimeoutRetrySetting() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get([TIMEOUT_RETRY_STORAGE_KEY], (data) => {
+      const saved = parseInt(data[TIMEOUT_RETRY_STORAGE_KEY], 10);
+      timeoutRetryCount = (saved !== undefined && !isNaN(saved) && saved >= 0 && saved <= 5) ? saved : 1;
+      if (timeoutRetryCountInput) timeoutRetryCountInput.value = String(timeoutRetryCount);
+      resolve();
+    });
+  });
+}
+
+function saveTimeoutRetrySetting() {
+  if (!timeoutRetryCountInput) return;
+  const val = parseInt(timeoutRetryCountInput.value, 10);
+  if (!isNaN(val) && val >= 0 && val <= 5) {
+    timeoutRetryCount = val;
+    chrome.storage.sync.set({ [TIMEOUT_RETRY_STORAGE_KEY]: val });
+  } else {
+    timeoutRetryCountInput.value = String(timeoutRetryCount);
   }
 }
 
@@ -971,7 +1077,8 @@ function bindEvents() {
 
   // 操作按钮
   startBtn.addEventListener('click', () => {
-    if (status === 'terminated') {
+    const canResume = status === 'terminated' && isTerminated && localResults.length > 0 && localResults.length < totalCount && parsedUrls.length === totalCount;
+    if (canResume) {
       resumeBatch();
     } else {
       startBatch();
@@ -988,12 +1095,14 @@ function bindEvents() {
 
   // 设置
   if (timeoutInput) timeoutInput.addEventListener('change', saveTimeoutSetting);
+  if (timeoutRetryCountInput) timeoutRetryCountInput.addEventListener('change', saveTimeoutRetrySetting);
   if (concurrencyInput) concurrencyInput.addEventListener('change', saveConcurrencySetting);
 
   // 勾选框设置（全局记忆）
   if (batchAutoOpenPanel) batchAutoOpenPanel.addEventListener('change', saveBatchCheckboxSettings);
   if (batchAutoGenerate) batchAutoGenerate.addEventListener('change', saveBatchCheckboxSettings);
   if (batchAutoSubmit) batchAutoSubmit.addEventListener('change', saveBatchCheckboxSettings);
+  if (batchIgnoreHistory) batchIgnoreHistory.addEventListener('change', saveBatchCheckboxSettings);
   if (batchDebugMode) {
     batchDebugMode.addEventListener('change', () => {
       updateDebugModeUI();
@@ -1423,7 +1532,28 @@ function applyParsedUrlItems(items, options = {}) {
     document.getElementById('duplicateCount').textContent = `⚠️ ${duplicateCount} 条重复`;
   }
   updateCostHint(Math.max(0, validCount - illegalCount));
-  startBtn.disabled = validCount === 0;
+
+  if (status !== 'running') {
+    status = 'idle';
+    isTerminated = false;
+    batchId = null;
+    localResults = [];
+    databaseFailedItemIndexes.clear();
+    retryingItemIndexes.clear();
+    timeoutRetryMap.clear();
+    pendingRetryQueue = [];
+    successCount = 0;
+    failCount = 0;
+    skippedCount = 0;
+    noCommentBoxCount = 0;
+    manualRequiredCount = 0;
+    blockedIllegalCount = 0;
+    pendingCount = validCount;
+    currentIndex = 0;
+    setStatus('idle');
+    updateStatsUI();
+  }
+  updateUI();
 }
 
 function buildManualOriginalRow(url, sourceDomain) {
@@ -1683,6 +1813,11 @@ async function persistLocalDatabaseRunItem(resultEntry) {
     await requestLocalDatabase('/api/run-items', buildLocalDatabaseRunItemPayload(resultEntry));
     databaseFailedItemIndexes.delete(resultEntry.originalIndex);
     console.log('[batch] 本地数据库明细已写入:', { batchId, urlIndex: resultEntry.originalIndex, result: resultEntry.result });
+
+    // 重试完成或批次已结束状态下，单条写入成功后自动同步完整批次状态并标记为已同步
+    if (status !== 'running' && databaseFailedItemIndexes.size === 0) {
+      await syncLocalDatabaseRunResults(status === 'completed' ? 'completed' : 'terminated');
+    }
   } catch (error) {
     databaseFailedItemIndexes.add(resultEntry.originalIndex);
     const message = formatDatabaseError(error);
@@ -1765,6 +1900,9 @@ async function startBatch() {
   currentIndex = 0;
   localResults = [];
   databaseFailedItemIndexes.clear();
+  retryingItemIndexes.clear();
+  timeoutRetryMap.clear();
+  pendingRetryQueue = [];
   batchStartedAt = Date.now();
   batchCompletedAt = null;
   status = 'running';
@@ -1780,26 +1918,90 @@ async function startBatch() {
   scheduleNextTabs();
 }
 
+// 从数据库拉取目标站点历史成功记录
+async function fetchTargetSiteSuccessHistory(targetUrl) {
+  const normalizedTarget = String(targetUrl || '').trim();
+  if (!normalizedTarget) return {};
+  try {
+    const encoded = encodeURIComponent(normalizedTarget);
+    const result = await requestLocalDatabase(`/api/runs/target-success-items?targetUrl=${encoded}`, undefined, {
+      method: 'GET',
+      timeoutMs: 3000
+    });
+    const historyMap = {};
+    if (Array.isArray(result)) {
+      for (const item of result) {
+        if (item && item.referralUrl) {
+          historyMap[item.referralUrl] = {
+            runId: item.runId || '',
+            executedAt: item.executedAt || '',
+            aiContent: item.aiContent || null,
+            result: item.result || 'success'
+          };
+        }
+      }
+    }
+    console.log(`[batch] 已从本地数据库拉取目标站点历史成功记录：${Object.keys(historyMap).length} 条`);
+    return historyMap;
+  } catch (err) {
+    console.warn('[batch] 无法连接数据库查询历史成功记录，使用本地批次历史聚合兜底:', err.message || err);
+    const historyMap = {};
+    for (const record of batchHistory) {
+      if (record && record.results && isSameTargetUrlForStats(record.targetUrl, normalizedTarget)) {
+        for (const item of record.results) {
+          if (item && item.url && (item.result === 'success' || item.result === 'skipped')) {
+            if (!historyMap[item.url]) {
+              historyMap[item.url] = {
+                runId: record.id || '',
+                executedAt: item.timestamp ? new Date(item.timestamp).toISOString() : (record.startedAt ? new Date(record.startedAt).toISOString() : ''),
+                aiContent: item.aiContent || null,
+                result: item.result
+              };
+            }
+          }
+        }
+      }
+    }
+    return historyMap;
+  }
+}
+
+function isSameTargetUrlForStats(urlA, urlB) {
+  const normA = String(urlA || '').trim().replace(/\/+$/, '').toLowerCase();
+  const normB = String(urlB || '').trim().replace(/\/+$/, '').toLowerCase();
+  return normA === normB || extractDomain(normA) === extractDomain(normB);
+}
+
 // 保存批量任务设置到 storage.local
 async function saveBatchTaskSettings() {
+  const targetUrl = batchPromotionSite && batchPromotionSite.url ? batchPromotionSite.url : '';
+  const isIgnoreHistory = batchIgnoreHistory ? batchIgnoreHistory.checked : false;
+  let successHistory = {};
+  if (!isIgnoreHistory && targetUrl) {
+    successHistory = await fetchTargetSiteSuccessHistory(targetUrl);
+  }
+
   return new Promise((resolve) => {
     const isDebug = batchDebugMode ? batchDebugMode.checked : false;
     const settings = {
       autoOpenPanel: batchAutoOpenPanel ? batchAutoOpenPanel.checked : true,
       autoGenerate: isDebug ? false : (batchAutoGenerate ? batchAutoGenerate.checked : true),
       autoSubmit: batchAutoSubmit ? batchAutoSubmit.checked : true,
+      ignoreHistory: isIgnoreHistory,
       debugMode: isDebug,
       debugComment: isDebug ? resolveDebugCommentText(batchPromotionSite) : '',
       promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
+      targetSuccessHistory: successHistory,
       savedAt: Date.now()
     };
     const urls = parsedUrls.map(item => item.url);
 
     chrome.storage.local.set({
       [BATCH_SETTINGS_KEY]: settings,
-      [BATCH_URLS_KEY]: urls
+      [BATCH_URLS_KEY]: urls,
+      batchTargetSuccessHistory: successHistory
     }, () => {
-      console.log('[batch] 批量任务设置已保存:', settings, 'URL 数量:', urls.length);
+      console.log('[batch] 批量任务设置已保存:', settings, 'URL 数量:', urls.length, '历史成功记录数:', Object.keys(successHistory).length, '是否忽略历史成功:', isIgnoreHistory);
       resolve();
     });
   });
@@ -1808,7 +2010,7 @@ async function saveBatchTaskSettings() {
 // 清除批量任务设置
 async function clearBatchTaskSettings() {
   return new Promise((resolve) => {
-    chrome.storage.local.remove([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], () => {
+    chrome.storage.local.remove([BATCH_SETTINGS_KEY, BATCH_URLS_KEY, 'batchTargetSuccessHistory'], () => {
       console.log('[batch] 批量任务设置已清除');
       resolve();
     });
@@ -1833,7 +2035,9 @@ async function stopBatch() {
   // 先把正在处理的标签页记为已终止，避免关闭回调把它当作待恢复项卡住。
   const activeEntries = Array.from(activeTabs.entries());
   for (const [tabId, info] of activeEntries) {
-    if (!localResults.some((r) => r.originalIndex === info.urlIndex)) {
+    const entry = localResults.find((r) => r.originalIndex === info.urlIndex);
+    const isFresh = entry && entry.timestamp >= info.startTime;
+    if (!isFresh) {
       const elapsed = Math.round((Date.now() - info.startTime) / 1000);
       handleTabResult(info.urlIndex, 'fail', null, '手动终止', elapsed, { suppressCompletion: true });
     }
@@ -1845,6 +2049,8 @@ async function stopBatch() {
   activeTabsByIndex.clear();
   tabsPendingConfirm.clear();
   tabsWaitingClose.clear();
+  timeoutRetryMap.clear();
+  pendingRetryQueue = [];
   for (const tabId of tabIds) {
     try {
       await new Promise((resolve) => {
@@ -1892,6 +2098,14 @@ async function resumeBatch() {
     const fallbackIndex = parsedUrls.findIndex((_, idx) => !processedIndices.has(idx));
     nextIndex = fallbackIndex === -1 ? totalCount : fallbackIndex;
   }
+  if (nextIndex >= totalCount) {
+    console.log('[resumeBatch] 所有条目已处理完成，直接结束');
+    isTerminated = true;
+    setStatus('completed');
+    updateUI();
+    updateStatsUI();
+    return;
+  }
   currentIndex = nextIndex;
 
   console.log('[resumeBatch] 将要处理的 URL 索引范围:', currentIndex, '-', totalCount - 1);
@@ -1913,10 +2127,10 @@ async function scheduleNextTabs() {
   isScheduling = true;
   try {
     const maxConcurrent = getConcurrencySetting();
-    console.log('[scheduleNextTabs] 调度并发池:', { activeTabCount, maxConcurrent, currentIndex, totalCount, status });
-    while (status === 'running' && !isTerminated && activeTabCount < maxConcurrent && currentIndex < totalCount) {
+    console.log('[scheduleNextTabs] 调度并发池:', { activeTabCount, maxConcurrent, currentIndex, totalCount, pendingRetries: pendingRetryQueue.length, status });
+    while (status === 'running' && !isTerminated && activeTabCount < maxConcurrent && (pendingRetryQueue.length > 0 || currentIndex < totalCount)) {
       await openNextTab();
-      if (activeTabCount < maxConcurrent && currentIndex < totalCount) {
+      if (activeTabCount < maxConcurrent && (pendingRetryQueue.length > 0 || currentIndex < totalCount)) {
         await new Promise((r) => setTimeout(r, 150));
       }
     }
@@ -1927,7 +2141,7 @@ async function scheduleNextTabs() {
 
 async function openNextTab() {
   const maxConcurrent = getConcurrencySetting();
-  console.log('[openNextTab] 检查条件', { status, isTerminated, activeTabCount, maxConcurrent, currentIndex, totalCount });
+  console.log('[openNextTab] 检查条件', { status, isTerminated, activeTabCount, maxConcurrent, currentIndex, totalCount, pendingRetries: pendingRetryQueue.length });
 
   if (status !== 'running') {
     console.log('[openNextTab] 跳过 - 状态不是 running');
@@ -1941,24 +2155,31 @@ async function openNextTab() {
     console.log('[openNextTab] 跳过 - 已达最大并发数', activeTabCount, '>=', maxConcurrent);
     return;
   }
-  if (currentIndex >= totalCount) {
-    console.log('[openNextTab] 跳过 - 索引超出范围');
+
+  let urlIndex;
+  let isRetryTab = false;
+  if (pendingRetryQueue.length > 0) {
+    urlIndex = pendingRetryQueue.shift();
+    isRetryTab = true;
+  } else if (currentIndex < totalCount) {
+    urlIndex = currentIndex;
+    currentIndex++;
+  } else {
+    console.log('[openNextTab] 跳过 - 索引超出范围且无待重试项');
     return;
   }
 
-  const urlIndex = currentIndex;
   const item = parsedUrls[urlIndex];
   if (!item) return;
   const { url, sourceDomain } = item;
-  console.log('[openNextTab] 准备打开标签页', { urlIndex, url, activeTabCount, maxConcurrent });
-  currentIndex++;
+  console.log('[openNextTab] 准备打开标签页', { urlIndex, url, activeTabCount, maxConcurrent, isRetryTab });
 
   const illegalCheck = item.illegalCheck || evaluateIllegalSiteForBatchItem(url, sourceDomain);
   if (illegalCheck.blocked) {
     console.warn('[batch] 命中非法网站规则，跳过打开标签页:', { urlIndex, url, illegalCheck });
     item.illegalCheck = illegalCheck;
     handleTabResult(urlIndex, 'blocked_illegal', null, getIllegalSiteBlockMessage(illegalCheck), 0);
-    if (status === 'running' && currentIndex < totalCount) {
+    if (status === 'running' && (pendingRetryQueue.length > 0 || currentIndex < totalCount)) {
       setTimeout(scheduleNextTabs, 0);
     } else if (status === 'running' && activeTabCount === 0) {
       checkAllCompleted();
@@ -1992,10 +2213,13 @@ async function openNextTab() {
 
           // 检查是否已有结果（content.js 主动上报或超时处理过了）
           const checkAndRecord = async () => {
-            if (!localResults.some((r) => r.originalIndex === urlIndex)) {
+            const currentEntry = localResults.find((r) => r.originalIndex === urlIndex);
+            const isFresh = currentEntry && currentEntry.timestamp >= (startTime || 0);
+            if (!isFresh) {
               // 延迟 400ms 并读取 storage，防止页面跳转关闭时上报还在途中
               await new Promise(r => setTimeout(r, 400));
-              if (localResults.some((r) => r.originalIndex === urlIndex)) {
+              const currentEntry2 = localResults.find((r) => r.originalIndex === urlIndex);
+              if (currentEntry2 && currentEntry2.timestamp >= (startTime || 0)) {
                 clearPreviewRow(urlIndex);
                 updateStatsUI();
                 return;
@@ -2004,7 +2228,7 @@ async function openNextTab() {
                 chrome.storage.local.get(['batchResults'], (d) => resolve(d && d.batchResults));
               });
               const match = Array.isArray(stored) && stored.find(item => item.batchId === batchId && item.urlIndex === urlIndex);
-              if (match) {
+              if (match && match.timestamp >= (startTime || 0)) {
                 console.log('[batch] 标签关闭后从 storage 恢复匹配结果:', match);
                 handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
                 clearPreviewRow(urlIndex);
@@ -2023,7 +2247,7 @@ async function openNextTab() {
 
           checkAndRecord().finally(() => {
             // 标签关闭后触发并发调度池补充新标签
-            if (status === 'running' && currentIndex < totalCount) {
+            if (status === 'running' && (pendingRetryQueue.length > 0 || currentIndex < totalCount)) {
               scheduleNextTabs();
             } else if (status === 'running' && activeTabCount === 0) {
               // 所有标签页都已关闭，检查是否全部完成
@@ -2044,17 +2268,36 @@ async function openNextTab() {
         }
         if (retries > 60) {
           console.warn('[batch] content.js 就绪超时，放弃发送, tabId:', tabId);
-          handleTabResult(urlIndex, 'fail', null, '页面脚本注入就绪超时');
+          activeTabs.delete(tabId);
+          activeTabsByIndex.delete(urlIndex);
+          tabsPendingConfirm.delete(tabId);
+          tabsWaitingClose.delete(tabId);
+          activeTabCount = Math.max(0, activeTabCount - 1);
           try {
             chrome.tabs.remove(tabId, () => {});
           } catch (_) {}
+
+          const currentRetries = timeoutRetryMap.get(urlIndex) || 0;
+          if (status === 'running' && !isTerminated && currentRetries < timeoutRetryCount) {
+            timeoutRetryMap.set(urlIndex, currentRetries + 1);
+            console.log(`[batch] urlIndex ${urlIndex} 页面脚本就绪超时，加入重试队列 (第 ${currentRetries + 1}/${timeoutRetryCount} 次重试)...`);
+            pendingRetryQueue.push(urlIndex);
+            highlightPreviewRow(urlIndex, 'pending');
+            setTimeout(scheduleNextTabs, 500);
+          } else {
+            handleTabResult(urlIndex, 'fail', null, currentRetries > 0 ? `页面脚本注入就绪超时（已重试 ${currentRetries} 次）` : '页面脚本注入就绪超时');
+            if (status === 'running' && !isTerminated) {
+              setTimeout(scheduleNextTabs, 0);
+            }
+          }
           return;
         }
         chrome.tabs.sendMessage(tabId, { type: 'PING' }, { frameId: 0 }).then(() => {
           const isDebug = batchDebugMode ? batchDebugMode.checked : false;
+          const isIgnoreHistory = batchIgnoreHistory ? batchIgnoreHistory.checked : false;
           const presetComment = isDebug ? resolveDebugCommentText(batchPromotionSite) : '';
 
-          console.log('[batch] content.js 已就绪，发送 BATCH_HANDLE → tabId:', tab.id, { batchId, urlIndex, url, isDebug, time: new Date().toISOString() });
+          console.log('[batch] content.js 已就绪，发送 BATCH_HANDLE → tabId:', tab.id, { batchId, urlIndex, url, isDebug, isIgnoreHistory, time: new Date().toISOString() });
           chrome.tabs.sendMessage(tab.id, {
             type: 'BATCH_HANDLE',
             batchId,
@@ -2062,11 +2305,14 @@ async function openNextTab() {
             url,
             promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
             debugMode: isDebug,
-            presetComment: presetComment
+            presetComment: presetComment,
+            ignoreHistory: isIgnoreHistory
           }, { frameId: 0 }).then((response) => {
             console.log('[batch] 收到 content.js 响应:', response, 'tabId:', tab.id, 'tabsPendingConfirm:', [...tabsPendingConfirm.keys()], 'time:', new Date().toISOString());
             if (response && response.ok) {
-              if (localResults.some((r) => r.originalIndex === urlIndex) || !activeTabs.has(tab.id)) {
+              const currentEntry = localResults.find((r) => r.originalIndex === urlIndex);
+              const isFresh = currentEntry && currentEntry.timestamp >= (startTime || 0);
+              if (isFresh || !activeTabs.has(tab.id)) {
                 console.log('[batch] 结果已确认或标签已关闭，不再登记 tabsPendingConfirm:', { tabId: tab.id, urlIndex });
                 return;
               }
@@ -2080,12 +2326,14 @@ async function openNextTab() {
             console.warn('[batch] sendMessage BATCH_HANDLE 发送失败:', err.message || err, 'tabId:', tab.id);
             // 表单提交后页面跳转/关闭会导致消息通道断开，先从 storage 检索已落盘结果
             await new Promise(r => setTimeout(r, 800));
-            if (!localResults.some((r) => r.originalIndex === urlIndex)) {
+            const currentEntry = localResults.find((r) => r.originalIndex === urlIndex);
+            const isFresh = currentEntry && currentEntry.timestamp >= (startTime || 0);
+            if (!isFresh) {
               const stored = await new Promise(resolve => {
                 chrome.storage.local.get(['batchResults'], (d) => resolve(d && d.batchResults));
               });
               const match = Array.isArray(stored) && stored.find(item => item.batchId === batchId && item.urlIndex === urlIndex);
-              if (match) {
+              if (match && match.timestamp >= (startTime || 0)) {
                 console.log('[batch] catch 中从 storage 恢复匹配结果:', match);
                 handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
                 try { chrome.tabs.remove(tab.id, () => {}); } catch (_) {}
@@ -2111,19 +2359,35 @@ async function openNextTab() {
   }
 }
 
+function recalculateStatsCounts() {
+  const summary = summarizeBatchResults(localResults);
+  successCount = summary.success;
+  failCount = summary.fail;
+  skippedCount = summary.skipped;
+  noCommentBoxCount = summary.noCommentBox;
+  manualRequiredCount = summary.manualRequired;
+  blockedIllegalCount = summary.blockedIllegal;
+  pendingCount = Math.max(0, totalCount - summary.processed);
+}
+
 // 处理标签页结果
 // elapsed 可选，外部已知的耗时直接传入（如手动关闭时），否则从 activeTabsByIndex 计算
 function handleTabResult(urlIndex, result, aiContent, errorMessage, forcedElapsed, options = {}) {
   console.log('[batch] handleTabResult 被调用:', { urlIndex, result, aiContentLen: aiContent ? aiContent.length : 0, errorMessage });
-  const item = parsedUrls[urlIndex];
+  let item = parsedUrls[urlIndex];
+  if (!item) {
+    const existing = localResults.find((r) => r.originalIndex === urlIndex);
+    if (existing) {
+      item = {
+        originalIndex: urlIndex,
+        url: existing.url,
+        sourceDomain: existing.sourceDomain || extractDomain(existing.url),
+        originalRow: existing.originalRow || []
+      };
+    }
+  }
   if (!item) {
     console.log('[batch] handleTabResult: item 不存在, urlIndex=', urlIndex);
-    return;
-  }
-
-  // 避免重复处理
-  if (localResults.some((r) => r.originalIndex === urlIndex)) {
-    console.log('[batch] handleTabResult: 重复调用, urlIndex=', urlIndex);
     return;
   }
 
@@ -2149,32 +2413,24 @@ function handleTabResult(urlIndex, result, aiContent, errorMessage, forcedElapse
     originalRow: item.originalRow || null  // 保存原始行数据用于导出
   };
 
-  localResults.push(resultEntry);
+  const existingIdx = localResults.findIndex((r) => r.originalIndex === urlIndex);
+  if (existingIdx >= 0) {
+    localResults[existingIdx] = resultEntry;
+  } else {
+    localResults.push(resultEntry);
+  }
 
   reportBlogRunStatsIfNeeded(item, result);
 
-  if (result === 'success') {
-    successCount++;
-    highlightPreviewRow(urlIndex, 'success');
-  } else if (result === 'skipped') {
-    skippedCount++;
+  if (result === 'skipped') {
     skippedIndices.add(urlIndex);
-    highlightPreviewRow(urlIndex, 'skipped');
-  } else if (result === 'no_comment_box') {
-    noCommentBoxCount++;
-    highlightPreviewRow(urlIndex, 'no_comment_box');
-  } else if (result === 'manual_required') {
-    manualRequiredCount++;
-    highlightPreviewRow(urlIndex, 'manual_required');
-  } else if (result === 'blocked_illegal') {
-    blockedIllegalCount++;
-    highlightPreviewRow(urlIndex, 'blocked_illegal');
   } else {
-    failCount++;
-    highlightPreviewRow(urlIndex, 'fail');
+    skippedIndices.delete(urlIndex);
   }
+  timeoutRetryMap.delete(urlIndex);
+  highlightPreviewRow(urlIndex, result);
 
-  pendingCount = totalCount - getProcessedCount();
+  recalculateStatsCounts();
   updateStatsUI();
   renderStats();
 
@@ -2252,14 +2508,9 @@ function parseIntegerForStats(value) {
 function handleTabConfirmed(urlIndex, result, aiContent, errorMessage, resultMetadata = {}) {
   console.log('[batch] handleTabConfirmed >>>', { urlIndex, result, aiContentLen: aiContent ? aiContent.length : 0, errorMessage, tabsPendingConfirmBefore: [...tabsPendingConfirm.entries()] });
 
-  // 如果已经记录过结果（标签页可能已被 onRemoved 提前关闭清理），跳过 handleTabResult
-  if (localResults.some((r) => r.originalIndex === urlIndex)) {
-    console.log('[batch] handleTabConfirmed: urlIndex', urlIndex, '已有结果，可能是标签页提前关闭，无需重复处理');
-    checkAllCompleted();
-  } else {
-    // 处理结果（更新 UI、写入 storage）
-    handleTabResult(urlIndex, result, aiContent, errorMessage, undefined, resultMetadata);
-  }
+  retryingItemIndexes.delete(urlIndex);
+  // 处理结果（更新 UI、写入 storage）
+  handleTabResult(urlIndex, result, aiContent, errorMessage, undefined, resultMetadata);
 
   // 查找并关闭标签页（如果还在的话）
   let closedTab = false;
@@ -2315,7 +2566,10 @@ function checkAllCompleted(options = {}) {
 // 保存结果到本地存储
 function saveLocalResults() {
   // 每条结果完成后都更新本地批次历史；数据库不可用也不会丢失可恢复的明细。
-  saveCurrentBatchHistory(databaseFailedItemIndexes.size > 0 ? 'failed' : 'pending');
+  const existingRecord = batchHistory.find((record) => record.id === batchId);
+  const prevDbStatus = existingRecord ? existingRecord.databaseStatus : 'pending';
+  const currentDbStatus = databaseFailedItemIndexes.size > 0 ? 'failed' : (status === 'running' ? 'pending' : (prevDbStatus === 'synced' ? 'synced' : 'pending'));
+  saveCurrentBatchHistory(currentDbStatus);
 }
 
 // 全部完成
@@ -2351,7 +2605,7 @@ async function onAllCompleted() {
 function startTimeoutChecker() {
   if (timeoutCheckTimer) return;
   timeoutCheckTimer = setInterval(() => {
-    if (status !== 'running') {
+    if (activeTabs.size === 0) {
       stopTimeoutChecker();
       return;
     }
@@ -2382,12 +2636,28 @@ async function checkTimeouts() {
   for (const { tabId, urlIndex } of toRemove) {
     activeTabs.delete(tabId);
     activeTabsByIndex.delete(urlIndex);
-    handleTabResult(urlIndex, 'fail', null, '处理超时');
+    retryingItemIndexes.delete(urlIndex);
+    tabsPendingConfirm.delete(tabId);
+    tabsWaitingClose.delete(tabId);
+    activeTabCount = Math.max(0, activeTabCount - 1);
+
     try {
-      await new Promise((resolve) => {
-        chrome.tabs.remove(tabId, () => resolve());
-      });
+      chrome.tabs.remove(tabId, () => {});
     } catch (_) {}
+
+    const currentRetries = timeoutRetryMap.get(urlIndex) || 0;
+    if (status === 'running' && !isTerminated && currentRetries < timeoutRetryCount) {
+      timeoutRetryMap.set(urlIndex, currentRetries + 1);
+      console.log(`[batch] urlIndex ${urlIndex} 处理超时，加入重试队列 (第 ${currentRetries + 1}/${timeoutRetryCount} 次重试)...`);
+      pendingRetryQueue.push(urlIndex);
+      highlightPreviewRow(urlIndex, 'pending');
+      setTimeout(scheduleNextTabs, 500);
+    } else {
+      handleTabResult(urlIndex, 'fail', null, currentRetries > 0 ? `处理超时（已重试 ${currentRetries} 次）` : '处理超时');
+      if (status === 'running' && !isTerminated) {
+        setTimeout(scheduleNextTabs, 0);
+      }
+    }
   }
 }
 
@@ -2409,10 +2679,10 @@ function updateUI() {
   const isCompleted = status === 'completed';
   const isTerminated = status === 'terminated';
 
-  // 开始按钮：空闲时可开始，终止时可重新开始
-  startBtn.disabled = isRunning || isCompleted || parsedUrls.length === 0;
-  // 终止状态下显示"重新开始"，正常空闲显示"开始批量处理"
-  startBtn.textContent = isTerminated ? '▶ 重新开始' : '▶ 开始批量处理';
+  // 开始按钮：运行中或无有效 URL 时禁用；空闲、完成、终止状态均可发起/恢复处理
+  startBtn.disabled = isRunning || parsedUrls.length === 0;
+  const canResume = isTerminated && localResults.length > 0 && localResults.length < totalCount && parsedUrls.length === totalCount;
+  startBtn.textContent = canResume ? '▶ 继续处理' : '▶ 开始批量处理';
 
   stopBtn.disabled = isIdle || isTerminated || isCompleted;
   stopBtn.style.display = (isTerminated || isCompleted) ? 'none' : 'inline-flex';
@@ -2600,6 +2870,7 @@ function clearBatch() {
   batchSourceName = '';
   batchSourceType = '';
   databaseFailedItemIndexes.clear();
+  retryingItemIndexes.clear();
   batchStartedAt = null;
   batchCompletedAt = null;
   activeTabs.clear();
@@ -2836,11 +3107,248 @@ function renderStats() {
     timeCell.textContent = timeStr;
     tr.appendChild(timeCell);
 
+    const actionCell = document.createElement('td');
+    actionCell.style.whiteSpace = 'nowrap';
+    actionCell.style.textAlign = 'center';
+
+    const isRetrying = retryingItemIndexes.has(r.originalIndex);
+    const isRetryable = true;
+
+    if (isRetrying) {
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'btn-retry-row retrying';
+      retryBtn.disabled = true;
+      retryBtn.textContent = '重试中…';
+      actionCell.appendChild(retryBtn);
+    } else if (isRetryable) {
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'btn-retry-row';
+      retryBtn.title = '重试此记录并更新当前批次结果';
+      retryBtn.textContent = '重试';
+      retryBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        retrySingleRow(r.originalIndex);
+      });
+      actionCell.appendChild(retryBtn);
+    } else {
+      actionCell.textContent = '—';
+      actionCell.style.color = '#d1d5db';
+    }
+    tr.appendChild(actionCell);
+
     statsTableBody.appendChild(tr);
   }
 
   // 滚动到最新
   statsTableWrap.scrollTop = 0;
+}
+
+/**
+ * 针对单条失败记录进行就地重试，执行结果实时更新当前批次及数据库。
+ */
+async function retrySingleRow(urlIndex) {
+  console.log('[batch] retrySingleRow 开始:', { urlIndex, status, batchId });
+
+  if (retryingItemIndexes.has(urlIndex) || activeTabsByIndex.has(urlIndex)) {
+    console.warn('[batch] 该项目正在处理或重试中，忽略重复点击:', urlIndex);
+    return;
+  }
+
+  const existingResult = localResults.find((r) => r.originalIndex === urlIndex);
+  if (!existingResult) {
+    console.warn('[batch] 未找到索引对应的结果记录:', urlIndex);
+    return;
+  }
+
+  if (!batchPromotionSite || !batchPromotionSite.url) {
+    const site = getSelectedBatchPromotionSite();
+    if (site && site.url) {
+      batchPromotionSite = normalizeBatchPromotionSite(site);
+    } else if (existingResult.promotionSiteUrl) {
+      batchPromotionSite = normalizeBatchPromotionSite({
+        id: existingResult.promotionSiteId || 'retry_target',
+        name: existingResult.promotionSiteName || '重试目标',
+        url: existingResult.promotionSiteUrl,
+        content: ''
+      });
+    }
+  }
+
+  if (!batchPromotionSite || !batchPromotionSite.url) {
+    alert('重试失败：缺少目标 URL 配置，请先选择目标 URL。');
+    return;
+  }
+
+  let item = parsedUrls[urlIndex];
+  if (!item) {
+    item = {
+      originalIndex: urlIndex,
+      url: existingResult.url,
+      sourceDomain: existingResult.sourceDomain || extractDomain(existingResult.url),
+      originalRow: existingResult.originalRow || []
+    };
+    parsedUrls[urlIndex] = item;
+  }
+
+  if (!batchId) {
+    batchId = generateUUID();
+    batchStartedAt = Date.now();
+  }
+
+  await saveBatchTaskSettings();
+
+  retryingItemIndexes.add(urlIndex);
+  renderStats();
+
+  const illegalCheck = item.illegalCheck || evaluateIllegalSiteForBatchItem(item.url, item.sourceDomain);
+  if (illegalCheck.blocked) {
+    console.warn('[batch] 重试命中非法网站规则，拦截:', { urlIndex, url: item.url });
+    item.illegalCheck = illegalCheck;
+    retryingItemIndexes.delete(urlIndex);
+    handleTabResult(urlIndex, 'blocked_illegal', null, getIllegalSiteBlockMessage(illegalCheck), 0);
+    return;
+  }
+
+  try {
+    chrome.tabs.create({ url: item.url, active: true }, (tab) => {
+      if (chrome.runtime.lastError || !tab) {
+        retryingItemIndexes.delete(urlIndex);
+        renderStats();
+        console.error('[batch] 重试打开标签页失败:', chrome.runtime.lastError);
+        alert('无法打开新标签页进行重试');
+        return;
+      }
+
+      activeTabCount++;
+      const startTime = Date.now();
+      activeTabs.set(tab.id, { urlIndex, startTime });
+      activeTabsByIndex.set(urlIndex, { urlIndex, startTime });
+
+      highlightPreviewRow(urlIndex, 'processing');
+      startTimeoutChecker();
+
+      // 监听标签页关闭
+      const listener = (tabId, removeInfo) => {
+        if (tabId === tab.id) {
+          const tabStartTime = activeTabs.get(tab.id)?.startTime || startTime;
+          activeTabs.delete(tab.id);
+          activeTabsByIndex.delete(urlIndex);
+          retryingItemIndexes.delete(urlIndex);
+          activeTabCount = Math.max(0, activeTabCount - 1);
+          chrome.tabs.onRemoved.removeListener(listener);
+
+          console.log('[batch] 重试标签页关闭:', { tabId, urlIndex, activeTabCount });
+
+          const checkAndRecord = async () => {
+            const currentEntry = localResults.find((r) => r.originalIndex === urlIndex);
+            const isFresh = currentEntry && currentEntry.timestamp >= startTime;
+            if (!isFresh) {
+              await new Promise((r) => setTimeout(r, 400));
+              const currentEntry2 = localResults.find((r) => r.originalIndex === urlIndex);
+              if (currentEntry2 && currentEntry2.timestamp >= startTime) {
+                clearPreviewRow(urlIndex);
+                updateStatsUI();
+                renderStats();
+                return;
+              }
+
+              const stored = await new Promise((resolve) => {
+                chrome.storage.local.get(['batchResults'], (d) => resolve(d && d.batchResults));
+              });
+              const match = Array.isArray(stored) && stored.find((it) => it.batchId === batchId && it.urlIndex === urlIndex);
+              if (match && match.timestamp >= startTime) {
+                console.log('[batch] 重试标签关闭后从 storage 恢复匹配结果:', match);
+                handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
+                clearPreviewRow(urlIndex);
+                updateStatsUI();
+                renderStats();
+                return;
+              }
+
+              console.log('[batch] 重试标签关闭但无新结果，更新为失败:', urlIndex);
+              const elapsed = Math.round((Date.now() - tabStartTime) / 1000);
+              handleTabResult(urlIndex, 'fail', null, '用户手动关闭', elapsed);
+            } else {
+              console.log('[batch] 重试标签关闭已有新结果:', urlIndex);
+              clearPreviewRow(urlIndex);
+            }
+            updateStatsUI();
+            renderStats();
+          };
+
+          checkAndRecord();
+        }
+      };
+      chrome.tabs.onRemoved.addListener(listener);
+
+      function sendWhenReady(tabId, retries = 0) {
+        if (!activeTabs.has(tabId)) {
+          console.log('[batch] retry sendWhenReady 停止：标签页已关闭', { tabId, urlIndex });
+          retryingItemIndexes.delete(urlIndex);
+          renderStats();
+          return;
+        }
+        if (retries > 60) {
+          console.warn('[batch] 重试 content.js 就绪超时, tabId:', tabId);
+          retryingItemIndexes.delete(urlIndex);
+          handleTabResult(urlIndex, 'fail', null, '页面脚本注入就绪超时');
+          try {
+            chrome.tabs.remove(tabId, () => {});
+          } catch (_) {}
+          return;
+        }
+        chrome.tabs.sendMessage(tabId, { type: 'PING' }, { frameId: 0 }).then(() => {
+          const isDebug = batchDebugMode ? batchDebugMode.checked : false;
+          const presetComment = isDebug ? resolveDebugCommentText(batchPromotionSite) : '';
+
+          console.log('[batch] 重试 content.js 已就绪，发送 BATCH_HANDLE → tabId:', tab.id, { batchId, urlIndex, url: item.url });
+          chrome.tabs.sendMessage(tab.id, {
+            type: 'BATCH_HANDLE',
+            batchId,
+            urlIndex,
+            url: item.url,
+            promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
+            debugMode: isDebug,
+            presetComment: presetComment,
+            forceRetry: true
+          }, { frameId: 0 }).then((response) => {
+            console.log('[batch] 重试收到 content.js 响应:', response, 'tabId:', tab.id);
+            if (response && response.ok) {
+              tabsPendingConfirm.set(tab.id, { urlIndex });
+              tabsWaitingClose.add(tab.id);
+            }
+          }).catch(async (err) => {
+            console.warn('[batch] 重试 sendMessage BATCH_HANDLE 失败:', err.message || err);
+            await new Promise((r) => setTimeout(r, 800));
+            const currentEntry = localResults.find((r) => r.originalIndex === urlIndex);
+            if (!currentEntry || currentEntry.timestamp < startTime) {
+              const stored = await new Promise((resolve) => {
+                chrome.storage.local.get(['batchResults'], (d) => resolve(d && d.batchResults));
+              });
+              const match = Array.isArray(stored) && stored.find((it) => it.batchId === batchId && it.urlIndex === urlIndex);
+              if (match && match.timestamp >= startTime) {
+                handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
+                try { chrome.tabs.remove(tab.id, () => {}); } catch (_) {}
+                return;
+              }
+              handleTabResult(urlIndex, 'fail', null, '消息发送失败：' + (err.message || '标签页可能已关闭'));
+            }
+          });
+        }).catch(() => {
+          setTimeout(() => sendWhenReady(tabId, retries + 1), 500);
+        });
+      }
+
+      sendWhenReady(tab.id);
+    });
+  } catch (e) {
+    retryingItemIndexes.delete(urlIndex);
+    renderStats();
+    console.error('[batch] retrySingleRow 异常:', e);
+    alert('重试执行发生异常：' + (e.message || e));
+  }
 }
 
 // ==================== 表单处理函数 ====================

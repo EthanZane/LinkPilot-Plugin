@@ -623,6 +623,37 @@
         white-space: nowrap;
       }
 
+      .btn-retry-row {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 8px;
+        font-size: 11px;
+        font-weight: 500;
+        color: #2563eb;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        line-height: 1.4;
+      }
+
+      .btn-retry-row:hover:not(:disabled) {
+        background: #dbeafe;
+        border-color: #93c5fd;
+        color: #1d4ed8;
+      }
+
+      .btn-retry-row:disabled,
+      .btn-retry-row.retrying {
+        opacity: 0.6;
+        cursor: not-allowed;
+        background: #f3f4f6;
+        border-color: #e5e7eb;
+        color: #9ca3af;
+      }
+
       .batch-site-summary {
         display: grid;
         grid-template-columns: auto minmax(120px, 0.5fr) minmax(220px, 1fr);
@@ -784,8 +815,11 @@
       .batch-history-table tbody tr.active-batch-row { background-color: #eff6ff !important; }
       .batch-history-table tbody tr.active-batch-row td:first-child { font-weight: 700; color: #1d4ed8; }
       .batch-history-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+      .batch-history-id { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #475569; letter-spacing: -0.2px; }
       .batch-history-buttons { display: flex; gap: 6px; }
       .batch-history-buttons .btn { padding: 5px 10px; font-size: 11px; }
+      .batch-history-buttons .btn-delete-batch { color: #dc2626; border-color: #fecaca; background: #fff; }
+      .batch-history-buttons .btn-delete-batch:hover { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
       .batch-sync-badge { display: inline-flex; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
       .batch-sync-badge.pending { color: #92400e; background: #fef3c7; }
       .batch-sync-badge.failed { color: #991b1b; background: #fee2e2; }
@@ -892,6 +926,17 @@
           </div>
         </div>
 
+        <div style="margin-bottom: 10px;">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="batchIgnoreHistory" />
+            <span>忽略历史成功记录，强制重新发布外链</span>
+            <span style="background:#fee2e2;color:#991b1b;font-size:11px;padding:1px 5px;border-radius:4px;font-weight:600;">FORCE</span>
+          </label>
+          <div class="hint" style="margin-left: 22px; margin-top: 4px;">
+            勾选后批量处理将跳过“已发布”去重检查，对所有引荐 URL 重新生成并提交外链。
+          </div>
+        </div>
+
         <div>
           <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13px;cursor:pointer;">
             <input type="checkbox" id="batchDebugMode" />
@@ -940,6 +985,18 @@
             style="width:80px;padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;"
           />
           <span style="font-size:12px;color:#9ca3af;">范围 10~600 秒</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:12px;">
+          <label for="timeoutRetryCountInput" style="font-size:13px;font-weight:500;color:#374151;white-space:nowrap;margin:0;">超时重试次数：</label>
+          <input
+            type="number"
+            id="timeoutRetryCountInput"
+            min="0"
+            max="5"
+            value="1"
+            style="width:80px;padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;"
+          />
+          <span style="font-size:12px;color:#9ca3af;">范围 0~5 次，单页超时后自动重试（默认 1 次，0 为不重试）</span>
         </div>
       </div>
 
@@ -1085,6 +1142,7 @@
                 <th>AI 生成内容</th>
                 <th>耗时</th>
                 <th>执行时间</th>
+                <th style="text-align:center;width:64px;">操作</th>
               </tr>
             </thead>
             <tbody id="statsTableBody"></tbody>
@@ -1113,13 +1171,13 @@
           <table class="batch-history-table">
             <thead>
               <tr>
-                <th>时间</th>
-                <th>批次 ID</th>
+                <th style="width: 140px; white-space: nowrap;">时间</th>
+                <th style="width: 270px; white-space: nowrap;">批次 ID</th>
                 <th>目标 URL</th>
-                <th>结果数</th>
-                <th>批次状态</th>
-                <th>数据库</th>
-                <th>操作</th>
+                <th style="width: 75px; text-align: center; white-space: nowrap;">结果数</th>
+                <th style="width: 80px; text-align: center; white-space: nowrap;">批次状态</th>
+                <th style="width: 75px; text-align: center; white-space: nowrap;">数据库</th>
+                <th style="width: 145px; text-align: center; white-space: nowrap;">操作</th>
               </tr>
             </thead>
             <tbody id="batchHistoryBody"></tbody>

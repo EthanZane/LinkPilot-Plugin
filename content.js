@@ -1538,6 +1538,13 @@
     });
 
     clearBatchSubmitContext();
+
+    // 页面重定向并确认成功后自动关闭标签页
+    setTimeout(() => {
+      try {
+        window.close();
+      } catch (_) {}
+    }, 1500);
   }
 
   // 从 storage 恢复提交后上下文（仅补确认，不再恢复成可执行批处理任务）
@@ -3031,10 +3038,73 @@
   }
 
   /**
+   * 判断请求是否可能是评论表单提交地址
+   * 排除静态资源、广告统计，重点匹配评论提交接口或当前站点的 POST 变更请求
+   * @param {string|Request} input
+   * @param {string} [method]
+   */
+  function isFormSubmitUrl(input, method = '') {
+    if (!input) return false;
+    let url = '';
+    let reqMethod = (method || '').toUpperCase();
+    if (typeof input === 'string') {
+      url = input;
+    } else if (typeof input === 'object' && input !== null) {
+      url = input.url || '';
+      if (!reqMethod && input.method) {
+        reqMethod = String(input.method).toUpperCase();
+      }
+    }
+    if (!url) return false;
+
+    // 非变更请求（GET、HEAD、OPTIONS）绝不是评论提交
+    if (reqMethod && !['POST', 'PUT', 'PATCH'].includes(reqMethod)) {
+      return false;
+    }
+
+    const s = String(url).toLowerCase();
+
+    // 排除静态资源和常见第三方监控/统计/广告打点
+    const excludePatterns = [
+      /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|webp|mp4|webm|ogg|mp3|wav|zip|tar|gz)(\?.*)?$/,
+      /google-analytics|googletagmanager|doubleclick|facebook\.com\/tr|analytics|tracking|pixel|clarity\.ms|hotjar|sentry\.io|datadog|cloudflareinsights/i,
+      /\/wp-content\/plugins\/(?!wpdiscuz|wp-comments-post|ajax-comment)/i
+    ];
+    for (const p of excludePatterns) {
+      if (p.test(s)) return false;
+    }
+
+    // 常见评论接口白名单
+    const commentEndpointPatterns = [
+      /wp-comments-post\.php/i,
+      /admin-ajax\.php/i,
+      /\/wp-json\/(wp\/v2\/)?comments/i,
+      /wpdiscuz/i,
+      /comment/i,
+      /reply/i,
+      /feedback/i,
+      /disqus\.com/i,
+      /discourse/i
+    ];
+    if (commentEndpointPatterns.some(p => p.test(s))) {
+      return true;
+    }
+
+    // 如果是 POST 且发往当前域名且非静态资源，视为评论相关提交
+    try {
+      const parsedUrl = new URL(url, window.location.href);
+      if (parsedUrl.origin === window.location.origin && reqMethod === 'POST') {
+        return true;
+      }
+    } catch (_) {}
+
+    return false;
+  }
+
+  /**
    * 同时检测 AJAX 提交请求和页面导航，任一发生即 resolve
-   * 用于：点击提交按钮后，等待表单提交（不管页面是否跳转）
    * @param {number} timeoutMs - 超时毫秒数
-   * @returns {Promise<string>} 'ajax' | 'navigating' | 'pagehide' | 'timeout'
+   * @returns {Promise<string>} 'ajax' | 'form_submitted' | 'navigating' | 'pagehide' | 'timeout'
    */
   function waitForSubmitOrNavigate(timeoutMs = 10000) {
     return new Promise((resolve) => {
@@ -3057,21 +3127,22 @@
         window.removeEventListener('beforeunload', onBeforeUnload);
         window.removeEventListener('pagehide', onPageHide);
       }
-      function onSubmit(e) { finish('ajax'); }
+      function onSubmit(e) { finish('form_submitted'); }
       function onBeforeUnload() { finish('navigating'); }
-      function onPageHide(e) { finish(e.persisted ? 'pagehide' : 'pagehide'); }
+      function onPageHide(e) { finish(e.persisted ? 'pagehide-persisted' : 'pagehide'); }
 
       // 拦截 fetch
       const originalFetch = window.fetch;
       window.fetch = function(input, init) {
-        if (!resolved && isFormSubmitUrl(input)) finish('ajax');
+        const method = (init && init.method) || (typeof input === 'object' && input && input.method) || 'GET';
+        if (!resolved && isFormSubmitUrl(input, method)) finish('ajax');
         return originalFetch.apply(this, arguments);
       };
 
       // 拦截 XHR
       const originalXHROpen = window.XMLHttpRequest.prototype.open;
       window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        if (!resolved && isFormSubmitUrl(url)) finish('ajax');
+        if (!resolved && isFormSubmitUrl(url, method)) finish('ajax');
         return originalXHROpen.call(this, method, url, ...rest);
       };
 
@@ -3117,7 +3188,8 @@
       // 拦截原生 fetch
       const originalFetch = window.fetch;
       window.fetch = function(input, init) {
-        if (!detected && isFormSubmitUrl(input)) {
+        const method = (init && init.method) || (typeof input === 'object' && input && input.method) || 'GET';
+        if (!detected && isFormSubmitUrl(input, method)) {
           detected = true;
           cleanup();
           resolve(true);
@@ -3128,7 +3200,7 @@
       // 拦截 XMLHttpRequest
       const originalXHROpen = window.XMLHttpRequest.prototype.open;
       window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        if (!detected && isFormSubmitUrl(url)) {
+        if (!detected && isFormSubmitUrl(url, method)) {
           detected = true;
           cleanup();
           resolve(true);
@@ -3136,28 +3208,8 @@
         return originalXHROpen.call(this, method, url, ...rest);
       };
 
-      // 监听表单 submit 事件（catch 所有未拦截到的表单）
       document.addEventListener('submit', onSubmit, true);
     });
-  }
-
-  /**
-   * 判断 URL 是否可能是评论表单提交地址
-   * 排除静态资源和图片，只拦截看起来像 API/表单提交的 URL
-   */
-  function isFormSubmitUrl(url) {
-    if (!url) return false;
-    const s = String(url).toLowerCase();
-    // 排除静态资源和常见非提交地址
-    const excludePatterns = [
-      /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|webp|mp4|webm|ogg|mp3|wav|zip|tar|gz)$/,
-      /google-analytics|googletagmanager|doubleclick|facebook\.com\/tr|analytics|tracking|pixel/i,
-      /\/wp-admin\/admin-ajax/,
-    ];
-    for (const p of excludePatterns) {
-      if (p.test(s)) return false;
-    }
-    return true;
   }
 
   // 执行点击操作
@@ -3233,6 +3285,7 @@
         view: window
       };
 
+      // 1. 模拟鼠标前置事件（辅助触发现代前端框架绑定的 mousedown / pointerdown）
       try {
         if (typeof PointerEvent !== 'undefined') {
           button.dispatchEvent(new PointerEvent('pointerdown', pointerOpts));
@@ -3261,7 +3314,25 @@
           button.dispatchEvent(new PointerEvent('pointerup', pointerOpts));
           await new Promise(resolve => setTimeout(resolve, 20));
         }
+      } catch (err) {
+        console.warn('[AutoComment] 派发辅助鼠标事件异常:', err);
+      }
 
+      // 2. 提前挂载提交/跳转监听器，确保不遗漏瞬间发生的 submit/navigate/fetch
+      const submitPromise = waitForSubmitOrNavigate(10000);
+
+      // 3. 核心：调用原生 button.click() 触发原生表单提交与激活行为
+      let clicked = false;
+      try {
+        button.click();
+        clicked = true;
+        console.log('[AutoComment] 原生 button.click() 执行成功');
+      } catch (e) {
+        console.warn('[AutoComment] button.click() 失败:', e.message);
+      }
+
+      // 4. 派发标准 click 事件作为兜底（支持自定义监听器）
+      try {
         button.dispatchEvent(new MouseEvent('click', {
           view: window,
           bubbles: true,
@@ -3269,90 +3340,32 @@
           clientX,
           clientY
         }));
+      } catch (_) {}
 
-        recordFormSubmit();
-
-        console.log('[AutoComment] 提交按钮点击成功 (pointer/mousedown→mouseup→click)');
-        const submitResult = await waitForSubmitOrNavigate(10000);
-        console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-        return { success: true, button: button, submitResult: submitResult };
-      } catch (e) {
-        console.log('[AutoComment] 合成事件失败，尝试 button.click():', e.message);
-        try {
-          button.click();
-          recordFormSubmit();
-          console.log('[AutoComment] button.click() 点击成功');
-          const submitResult = await waitForSubmitOrNavigate(10000);
-          console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-          return { success: true, button: button, submitResult: submitResult };
-        } catch (e2) {
-          console.log('[AutoComment] button.click() 也失败:', e2.message);
-
-          const formEl = button.form || button.closest('form');
-          if (tryRequestSubmit(formEl, button)) {
-            recordFormSubmit();
-            console.log('[AutoComment] form.requestSubmit(submitter) 成功');
-            const submitResult = await waitForSubmitOrNavigate(10000);
-            console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-            return { success: true, button: button, submitResult: submitResult };
-          }
+      // 5. 若按钮在表单内，短延时确认是否需要调用 requestSubmit / submit 兜底
+      const formEl = button.form || button.closest('form') || (document.querySelector('#commentform') || document.querySelector('form.comment-form'));
+      if (formEl) {
+        setTimeout(() => {
           try {
-            if (formEl) {
-              console.log('[AutoComment] 降级 form.submit()（无 submit 事件）');
-              formEl.submit();
-              recordFormSubmit();
-              const submitResult = await waitForSubmitOrNavigate(10000);
-              console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-              return { success: true, button: button, submitResult: submitResult };
+            if (tryRequestSubmit(formEl, button)) {
+              console.log('[AutoComment] 兜底 form.requestSubmit(button) 执行');
+            } else {
+              HTMLFormElement.prototype.submit.call(formEl);
+              console.log('[AutoComment] 兜底 HTMLFormElement.prototype.submit.call 执行');
             }
-          } catch (e3) {
-            console.log('[AutoComment] 表单提交也失败:', e3.message);
-          }
-
-          return { success: false, error: '点击按钮失败: ' + e2.message };
-        }
+          } catch (_) {}
+        }, 300);
       }
+
+      recordFormSubmit();
+
+      console.log('[AutoComment] 提交点击已完成，等待提交或跳转响应...');
+      const submitResult = await submitPromise;
+      console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
+      return { success: true, button: button, submitResult: submitResult };
     } catch (e) {
-      console.log('[AutoComment] 直接点击失败:', e.message);
-
-      try {
-        const event = new MouseEvent('click', {
-          view: window,
-          bubbles: true,
-          cancelable: true
-        });
-        button.dispatchEvent(event);
-        recordFormSubmit();
-        console.log('[AutoComment] 使用 dispatchEvent 点击成功');
-        const submitResult = await waitForSubmitOrNavigate(10000);
-        console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-        return { success: true, button: button, submitResult: submitResult };
-      } catch (e2) {
-        console.log('[AutoComment] dispatchEvent 点击也失败:', e2.message);
-
-        const formEl = button.form || button.closest('form');
-        if (tryRequestSubmit(formEl, button)) {
-          recordFormSubmit();
-          console.log('[AutoComment] form.requestSubmit(submitter) 成功');
-          const submitResult = await waitForSubmitOrNavigate(10000);
-          console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-          return { success: true, button: button, submitResult: submitResult };
-        }
-        try {
-          if (formEl) {
-            console.log('[AutoComment] 尝试 form.submit()');
-            formEl.submit();
-            recordFormSubmit();
-            const submitResult = await waitForSubmitOrNavigate(10000);
-            console.log('[AutoComment] waitForSubmitOrNavigate 结果:', submitResult);
-            return { success: true, button: button, submitResult: submitResult };
-          }
-        } catch (e3) {
-          console.log('[AutoComment] 表单提交失败:', e3.message);
-        }
-
-        return { success: false, error: '点击按钮失败: ' + e.message };
-      }
+      console.log('[AutoComment] 点击提交过程异常:', e.message);
+      return { success: false, error: '点击按钮失败: ' + e.message };
     }
   }
 
@@ -4760,7 +4773,9 @@
             await fillInputs();
             return handleBatchTask(message.batchId, message.urlIndex, message.url, undefined, {
               debugMode: message.debugMode,
-              presetComment: message.presetComment
+              presetComment: message.presetComment,
+              forceRetry: message.forceRetry,
+              ignoreHistory: message.ignoreHistory
             });
           })
           .then(() => {
@@ -4851,12 +4866,16 @@
         await reportIllegalSiteAndClose(batchId, urlIndex, url, illegalCheck);
         return;
       }
-      console.log('[content] 2/6 检查是否已处理过...');
-      const existingResult = await checkExistingBatchResult(batchId, url, urlIndex);
-      if (existingResult) {
-        console.log('[content] 该URL已处理过，跳过AI生成，直接上报:', existingResult);
-        await reportAlreadyCommented(batchId, urlIndex, url, existingResult.aiContent);
-        return;
+      if (!options.forceRetry && !options.ignoreHistory) {
+        console.log('[content] 2/6 检查是否已处理过...');
+        const existingResult = await checkExistingBatchResult(batchId, url, urlIndex);
+        if (existingResult) {
+          console.log('[content] 该URL已处理过，跳过AI生成，直接上报:', existingResult);
+          await reportAlreadyCommented(batchId, urlIndex, url, existingResult);
+          return;
+        }
+      } else {
+        console.log('[content] 2/6 收到 forceRetry/ignoreHistory 强制发布指令，跳过已存在去重检查，重新执行发帖流程...');
       }
       console.log('[content] 3/6 确认评论表单存在...');
       // 先尝试触发评论表单展开（如果表单是隐藏的需要点击回复链接）
@@ -4998,9 +5017,22 @@
         throw new Error(clickResult.error || '提交按钮点击失败');
       }
 
-      // 检测表单是否成功提交：页面跳转、AJAX 请求、或表单被清空任一发生即确认成功
       const submitResult = clickResult.submitResult || 'timeout';
-      if (submitResult === 'timeout') {
+      console.log('[content] 处理提交结果类型:', submitResult);
+
+      if (submitResult === 'navigating' || submitResult.startsWith('pagehide')) {
+        console.log('[content] 页面正在跳转/刷新提交中，等待页面重载后由 restoreBatchContext 自动补发确认并关闭');
+        // 保持 batchSubmitCtx，不调用 clearBatchSubmitContext()，让新页面完成上报与关页
+        return;
+      }
+
+      if (submitResult === 'form_submitted') {
+        // 表单 submit 事件已触发，等待 2 秒观察是否发生页面刷新或 AJAX 响应
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const ta = findLikelyCommentTextarea({ allowGenericFallback: true });
+        const formCleared = !ta || !ta.value.trim();
+        console.log('[content] form_submitted 检测表单状态:', { formCleared });
+      } else if (submitResult === 'timeout') {
         // 超时后检查表单是否被清空（评论框内容消失表示提交成功）
         await new Promise(resolve => setTimeout(resolve, 3000));
         const ta = findLikelyCommentTextarea({ allowGenericFallback: true });
@@ -5211,21 +5243,74 @@
     return compactAiContent.includes(activeSiteUrl.replace(/\s+/g, ''));
   }
 
+  function normalizeUrlForMatch(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url);
+      return (u.origin + u.pathname).replace(/\/+$/, '').toLowerCase();
+    } catch (_) {
+      return String(url).trim().replace(/\/+$/, '').toLowerCase();
+    }
+  }
+
+  function formatBatchDateTime(date) {
+    if (!date || isNaN(date.getTime())) return '';
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const h = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${d} ${h}:${min}:${s}`;
+  }
+
   /**
    * 检查“引荐 URL + 当前目标 URL”是否已经成功处理过。
+   * 优先比对从本地数据库拉取的历史成功记录，其次比对当前批次内其他行。
    */
   async function checkExistingBatchResult(batchId, url, urlIndex) {
     const activeSite = await getActivePromotionSite();
     return new Promise((resolve) => {
-      chrome.storage.local.get(['batchResults'], (data) => {
-        const results = data.batchResults || [];
-        // 历史去重不限制批次，但必须同时属于当前批次锁定的目标 URL。
+      chrome.storage.local.get(['batchTargetSuccessHistory', 'batch_task_settings', 'batchResults'], (data) => {
+        const historyMap = data.batchTargetSuccessHistory || (data.batch_task_settings && data.batch_task_settings.targetSuccessHistory) || {};
+        const normUrl = normalizeUrlForMatch(url);
+
+        // 1. 优先在数据库/批次历史成功列表中匹配
+        for (const [histUrl, item] of Object.entries(historyMap)) {
+          if (normalizeUrlForMatch(histUrl) === normUrl) {
+            resolve({
+              url: histUrl,
+              runId: item.runId || '',
+              executedAt: item.executedAt || '',
+              aiContent: item.aiContent || null,
+              source: 'database'
+            });
+            return;
+          }
+        }
+
+        // 2. 检查当前批次内其他行是否已成功提交过（同批次重复 URL 去重）
+        const results = Array.isArray(data.batchResults) ? data.batchResults : [];
         const match = results.find((result) => (
-          result.url === url
+          result.batchId === batchId
+          && result.urlIndex !== urlIndex
+          && normalizeUrlForMatch(result.url) === normUrl
           && result.result === 'success'
           && isBatchResultForPromotionSite(result, activeSite)
         ));
-        resolve(match || null);
+        if (match) {
+          resolve({
+            url: match.url,
+            runId: match.batchId || batchId,
+            executedAt: match.timestamp ? new Date(match.timestamp).toISOString() : '',
+            aiContent: match.aiContent || null,
+            source: 'current_batch',
+            otherIndex: match.urlIndex
+          });
+          return;
+        }
+
+        resolve(null);
       });
     });
   }
@@ -5233,9 +5318,22 @@
   /**
    * 上报"已存在评论"状态：跳过 AI 生成，直接写结果并通知 background
    */
-  async function reportAlreadyCommented(batchId, urlIndex, url, aiContent) {
-    await writePendingResult(batchId, urlIndex, url, 'skipped', aiContent, 'already_commented');
-    sendBeaconReport(batchId, urlIndex, 'skipped', aiContent, 'already_commented');
+  async function reportAlreadyCommented(batchId, urlIndex, url, existingResult) {
+    const aiContent = existingResult && existingResult.aiContent ? existingResult.aiContent : null;
+    let reasonMessage = '已在历史任务中成功发布';
+    if (existingResult) {
+      if (existingResult.source === 'current_batch' && existingResult.otherIndex != null) {
+        reasonMessage = `当前批次已在第 ${existingResult.otherIndex + 1} 行成功发布`;
+      } else if (existingResult.runId || existingResult.executedAt) {
+        const runIdPart = existingResult.runId ? `批次: ${String(existingResult.runId).slice(0, 8)}` : '';
+        const timePart = existingResult.executedAt ? formatBatchDateTime(new Date(existingResult.executedAt)) : '';
+        const detail = [runIdPart, timePart].filter(Boolean).join('，');
+        reasonMessage = `已在历史任务成功发布 (${detail})`;
+      }
+    }
+
+    await writePendingResult(batchId, urlIndex, url, 'skipped', aiContent, reasonMessage);
+    sendBeaconReport(batchId, urlIndex, 'skipped', aiContent, reasonMessage);
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       await new Promise((resolve) => {
         chrome.runtime.sendMessage({
@@ -5245,7 +5343,7 @@
           url: url || '',
           aiContent: aiContent || '',
           result: 'skipped',
-          errorMessage: 'already_commented',
+          errorMessage: reasonMessage,
           ...getBatchPromotionSiteMetadata()
         }).then(resolve).catch(resolve);
       });

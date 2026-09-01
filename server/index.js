@@ -95,7 +95,7 @@ function writeJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type'
   });
   response.end(JSON.stringify(payload));
@@ -104,7 +104,7 @@ function writeJson(response, statusCode, payload) {
 function writeNoContent(response) {
   response.writeHead(204, {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type'
   });
   response.end();
@@ -385,6 +385,36 @@ async function listRunItems(runId) {
 }
 
 /**
+ * 查询指定目标站点所有历史成功/已存在的引荐 URL 及当时批次信息，用于跑批前精准去重。
+ */
+async function listTargetSuccessItems(targetUrl) {
+  const normalizedTarget = String(targetUrl || '').trim();
+  const normalizedTargetDomain = normalizeDomain(normalizedTarget);
+  if (!normalizedTarget && !normalizedTargetDomain) return [];
+
+  const result = await pool.query(
+    `
+      select distinct on (referral_url)
+        referral_url as "referralUrl",
+        run_id as "runId",
+        target_url as "targetUrl",
+        target_domain as "targetDomain",
+        result,
+        result_message as "resultMessage",
+        ai_content as "aiContent",
+        executed_at as "executedAt"
+      from ${runItemsTable}
+      where
+        (target_url = $1 or target_domain = $2)
+        and result in ('success', 'skipped')
+      order by referral_url, executed_at desc
+    `,
+    [normalizedTarget, normalizedTargetDomain]
+  );
+  return result.rows;
+}
+
+/**
  * 使用极简路由处理本地 API，避免为个人本地服务引入较重的 Web 框架。
  */
 async function handleRequest(request, response) {
@@ -405,6 +435,12 @@ async function handleRequest(request, response) {
         schema: config.pgSchema,
         time: new Date().toISOString()
       });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/runs/target-success-items') {
+      const targetUrl = url.searchParams.get('targetUrl') || '';
+      writeJson(response, 200, { ok: true, data: await listTargetSuccessItems(targetUrl) });
       return;
     }
 
@@ -441,6 +477,15 @@ async function handleRequest(request, response) {
     if (method === 'PATCH' && runStatusMatch) {
       const payload = await readJsonBody(request);
       writeJson(response, 200, { ok: true, data: await updateRunStatus(runStatusMatch[1], payload.status, payload.completedAt) });
+      return;
+    }
+
+    const runDeleteMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
+    if (method === 'DELETE' && runDeleteMatch) {
+      const runId = runDeleteMatch[1];
+      const result = await pool.query(`delete from ${runsTable} where id = $1 returning id`, [runId]);
+      const deleted = result.rowCount > 0;
+      writeJson(response, 200, { ok: true, data: { deleted, runId } });
       return;
     }
 
