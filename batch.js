@@ -40,6 +40,8 @@ let batchStartedAt = null;
 let batchCompletedAt = null;
 let batchHistory = [];
 let batchHistoryWriteChain = Promise.resolve();
+const BATCH_HISTORY_PAGE_SIZE = 10;
+let batchHistoryCurrentPage = 1;
 
 // 轮询定时器
 let pollTimer = null;
@@ -133,6 +135,10 @@ const resultCsvInput = document.getElementById('resultCsvInput');
 const batchHistoryEmpty = document.getElementById('batchHistoryEmpty');
 const batchHistoryWrap = document.getElementById('batchHistoryWrap');
 const batchHistoryBody = document.getElementById('batchHistoryBody');
+const batchHistoryPagination = document.getElementById('batchHistoryPagination');
+const batchHistoryPageInfo = document.getElementById('batchHistoryPageInfo');
+const batchHistoryPrevPageBtn = document.getElementById('batchHistoryPrevPageBtn');
+const batchHistoryNextPageBtn = document.getElementById('batchHistoryNextPageBtn');
 
 // 批量任务设置勾选框
 const batchAutoOpenPanel = document.getElementById('batchAutoOpenPanel');
@@ -1223,15 +1229,28 @@ function getDatabaseStatusText(value) {
 }
 
 /**
- * 渲染批次日志。每行可点击装载历史结果，或点击按钮载入/同步。
+ * 渲染批次日志（每页 10 条）。每行可点击装载历史结果，或点击按钮载入/同步。
  */
 function renderBatchHistory() {
   if (!batchHistoryBody || !batchHistoryEmpty || !batchHistoryWrap) return;
   batchHistoryBody.innerHTML = '';
-  batchHistoryEmpty.style.display = batchHistory.length === 0 ? 'block' : 'none';
-  batchHistoryWrap.style.display = batchHistory.length === 0 ? 'none' : 'block';
+  const totalRecords = batchHistory.length;
+  batchHistoryEmpty.style.display = totalRecords === 0 ? 'block' : 'none';
+  batchHistoryWrap.style.display = totalRecords === 0 ? 'none' : 'block';
 
-  batchHistory.forEach((record) => {
+  if (totalRecords === 0) {
+    if (batchHistoryPagination) batchHistoryPagination.style.display = 'none';
+    return;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalRecords / BATCH_HISTORY_PAGE_SIZE));
+  if (batchHistoryCurrentPage > totalPages) batchHistoryCurrentPage = totalPages;
+  if (batchHistoryCurrentPage < 1) batchHistoryCurrentPage = 1;
+
+  const startIndex = (batchHistoryCurrentPage - 1) * BATCH_HISTORY_PAGE_SIZE;
+  const pageRecords = batchHistory.slice(startIndex, startIndex + BATCH_HISTORY_PAGE_SIZE);
+
+  pageRecords.forEach((record) => {
     const summary = record.summary || {};
     const totalCountVal = Number(record.totalCount || (summary && summary.processed) || 0);
     const processedVal = (summary && summary.processed != null && Number(summary.processed) > 0)
@@ -1307,6 +1326,20 @@ function renderBatchHistory() {
     tr.appendChild(actionCell);
     batchHistoryBody.appendChild(tr);
   });
+
+  // 更新分页控件状态
+  if (batchHistoryPagination) {
+    batchHistoryPagination.style.display = totalRecords > 0 ? 'flex' : 'none';
+  }
+  if (batchHistoryPageInfo) {
+    batchHistoryPageInfo.textContent = `第 ${batchHistoryCurrentPage} / ${totalPages} 页（共 ${totalRecords} 条，每页 ${BATCH_HISTORY_PAGE_SIZE} 条）`;
+  }
+  if (batchHistoryPrevPageBtn) {
+    batchHistoryPrevPageBtn.disabled = batchHistoryCurrentPage <= 1;
+  }
+  if (batchHistoryNextPageBtn) {
+    batchHistoryNextPageBtn.disabled = batchHistoryCurrentPage >= totalPages;
+  }
 }
 
 /**
@@ -1538,6 +1571,23 @@ function bindEvents() {
   if (importResultCsvBtn && resultCsvInput) {
     importResultCsvBtn.addEventListener('click', () => resultCsvInput.click());
     resultCsvInput.addEventListener('change', handleResultCsvImport);
+  }
+  if (batchHistoryPrevPageBtn) {
+    batchHistoryPrevPageBtn.addEventListener('click', () => {
+      if (batchHistoryCurrentPage > 1) {
+        batchHistoryCurrentPage--;
+        renderBatchHistory();
+      }
+    });
+  }
+  if (batchHistoryNextPageBtn) {
+    batchHistoryNextPageBtn.addEventListener('click', () => {
+      const totalPages = Math.max(1, Math.ceil(batchHistory.length / BATCH_HISTORY_PAGE_SIZE));
+      if (batchHistoryCurrentPage < totalPages) {
+        batchHistoryCurrentPage++;
+        renderBatchHistory();
+      }
+    });
   }
 
   // 设置

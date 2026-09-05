@@ -1146,10 +1146,23 @@
       .batch-history-buttons .btn { padding: 5px 10px; font-size: 11px; }
       .batch-history-buttons .btn-delete-batch { color: #dc2626; border-color: #fecaca; background: #fff; }
       .batch-history-buttons .btn-delete-batch:hover { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
-      .batch-sync-badge { display: inline-flex; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; }
       .batch-sync-badge.pending { color: #92400e; background: #fef3c7; }
       .batch-sync-badge.failed { color: #991b1b; background: #fee2e2; }
       .batch-sync-badge.synced { color: #065f46; background: #d1fae5; }
+      .batch-history-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 10px;
+        padding: 10px 4px 4px;
+        border-top: 1px solid #e2e8f0;
+        font-size: 12px;
+        color: #64748b;
+      }
+      .batch-pagination-info { font-size: 12px; color: #334155; }
+      .batch-pagination-controls { display: flex; align-items: center; gap: 8px; }
+      .batch-pagination-controls .btn { padding: 4px 12px; font-size: 12px; }
+      .batch-pagination-controls .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
       .target-url-cell {
         display: flex;
@@ -1795,6 +1808,13 @@
                     </thead>
                     <tbody id="batchHistoryBody"></tbody>
                   </table>
+                  <div class="batch-history-pagination" id="batchHistoryPagination" style="display:none;">
+                    <div class="batch-pagination-info" id="batchHistoryPageInfo">第 1 / 1 页（共 0 条）</div>
+                    <div class="batch-pagination-controls">
+                      <button class="btn btn-secondary btn-sm" id="batchHistoryPrevPageBtn" type="button">上一页</button>
+                      <button class="btn btn-secondary btn-sm" id="batchHistoryNextPageBtn" type="button">下一页</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
