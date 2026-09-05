@@ -462,6 +462,24 @@
 
       .stats-panel.visible { display: block; }
 
+      .stats-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .stats-panel-header .card-title {
+        margin-bottom: 0;
+      }
+
+      .stats-panel-header .btn {
+        padding: 6px 12px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
       .stats-summary {
         display: flex;
         gap: 0;
@@ -655,11 +673,10 @@
       }
 
       .batch-site-summary {
-        display: grid;
-        grid-template-columns: auto minmax(120px, 0.5fr) minmax(220px, 1fr);
-        gap: 10px;
-        align-items: center;
-        margin-top: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 10px;
         padding: 10px 12px;
         border: 1px solid #bfdbfe;
         border-radius: 8px;
@@ -668,7 +685,308 @@
         font-size: 12px;
       }
 
-      .batch-site-summary strong { color: #1d4ed8; }
+      .batch-site-summary strong {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        width: fit-content;
+        max-width: 100%;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: #dbeafe;
+        color: #1d4ed8;
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+        line-height: 1.4;
+      }
+
+      #batchSiteSummaryName {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #1e293b;
+        line-height: 1.4;
+        word-break: break-word;
+      }
+
+      #batchSiteSummaryUrl {
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.4;
+        word-break: break-all;
+      }
+
+      .batch-summary-step {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 2px 8px;
+        background: #ffffff;
+        border: 1px solid #bfdbfe;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #1e40af;
+        max-width: 100%;
+      }
+
+      .batch-summary-step .step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 15px;
+        height: 15px;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 999px;
+        flex-shrink: 0;
+      }
+
+      .batch-summary-step .step-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 180px;
+      }
+
+      .batch-summary-step.active {
+        background: #dbeafe;
+        border-color: #3b82f6;
+        color: #1d4ed8;
+      }
+
+      .batch-summary-arrow {
+        color: #93c5fd;
+        font-size: 12px;
+        font-weight: 700;
+        user-select: none;
+      }
+
+      .batch-summary-queue-meta {
+        font-size: 12px;
+        font-weight: 400;
+        color: #64748b;
+      }
+
+      .batch-sites-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .batch-sites-header label {
+        font-weight: 600;
+        font-size: 13px;
+        color: #374151;
+        margin: 0;
+      }
+      .batch-sites-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .batch-sites-actions .btn-sm {
+        padding: 3px 8px;
+        font-size: 11px;
+        border-radius: 4px;
+        cursor: pointer;
+        line-height: 1.2;
+      }
+      .batch-dropdown-container {
+        position: relative;
+        width: 100%;
+        margin-bottom: 8px;
+      }
+      .batch-dropdown-trigger {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 40px;
+        padding: 6px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #ffffff;
+        cursor: pointer;
+        user-select: none;
+        transition: all 0.15s ease;
+        gap: 8px;
+      }
+      .batch-dropdown-trigger:hover:not(.disabled) {
+        border-color: #9ca3af;
+      }
+      .batch-dropdown-trigger.open {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+      }
+      .batch-dropdown-trigger.disabled {
+        background: #f9fafb;
+        cursor: not-allowed;
+        opacity: 0.65;
+      }
+      .batch-dropdown-selected {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .batch-dropdown-arrow {
+        font-size: 10px;
+        color: #6b7280;
+        transition: transform 0.2s ease;
+        flex-shrink: 0;
+      }
+      .batch-dropdown-trigger.open .batch-dropdown-arrow {
+        transform: rotate(180deg);
+      }
+      .batch-site-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 2px 8px;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #1e40af;
+        max-width: 240px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .batch-site-chip .chip-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 15px;
+        height: 15px;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 999px;
+        flex-shrink: 0;
+      }
+      .batch-dropdown-menu {
+        display: none;
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        right: 0;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.14);
+        z-index: 100;
+        padding: 6px;
+      }
+      .batch-dropdown-menu.open {
+        display: block;
+      }
+      .batch-sites-list {
+        max-height: 220px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 2px;
+      }
+      .batch-site-item {
+        display: flex;
+        align-items: center;
+        padding: 7px 10px;
+        border-radius: 6px;
+        border: 1px solid #e5e7eb;
+        background: #fafafa;
+        transition: all 0.15s ease;
+        cursor: pointer;
+      }
+      .batch-site-item:hover {
+        background-color: #f1f5f9;
+        border-color: #cbd5e1;
+      }
+      .batch-site-item.checked {
+        background-color: #eff6ff;
+        border-color: #93c5fd;
+      }
+      .batch-site-item label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        cursor: pointer;
+        margin: 0;
+      }
+      .batch-site-order-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 999px;
+      }
+      .batch-site-info {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .batch-site-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #1f2937;
+        white-space: nowrap;
+      }
+      .batch-site-url {
+        font-size: 12px;
+        color: #6b7280;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .batch-queue-banner {
+        margin-bottom: 12px;
+        padding: 10px 14px;
+        border-radius: 8px;
+        background: #eff6ff;
+        border: 1px solid #93c5fd;
+        color: #1e40af;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .batch-queue-banner strong {
+        color: #1d4ed8;
+      }
+      .batch-queue-banner .queue-skip-btn {
+        padding: 4px 10px;
+        font-size: 12px;
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .batch-queue-banner .queue-skip-btn:hover {
+        background: #1d4ed8;
+      }
 
       .target-url-cell {
         display: flex;
@@ -844,13 +1162,27 @@
       <div class="subtitle">上传 CSV 文件，批量打开引荐 URL，自动发送评论并记录结果</div>
 
 
-      <div class="card">
-        <div class="card-title">本批次目标 URL</div>
-        <div class="promotion-site-field">
-          <label for="batchPromotionSiteSelect">目标 URL</label>
-          <select id="batchPromotionSiteSelect"></select>
+      <div class="card" style="position: relative;">
+        <div class="batch-sites-header">
+          <label>本批次目标 URL（下拉多选）</label>
+          <div class="batch-sites-actions">
+            <button type="button" class="btn btn-secondary btn-sm" id="selectAllSitesBtn">全选</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="clearAllSitesBtn">清空</button>
+          </div>
         </div>
-        <div class="hint" style="margin-top: 8px;">开始处理时会锁定这里选择的目标 URL；AI 文案、链接、锚文本和评论表单名称都会使用该目标 URL 的配置。</div>
+        <div class="batch-dropdown-container" id="batchDropdownContainer">
+          <div class="batch-dropdown-trigger" id="batchDropdownTrigger" tabindex="0" role="combobox" aria-expanded="false">
+            <div class="batch-dropdown-selected" id="batchDropdownSelected">
+              <span class="placeholder" style="color:#9ca3af;font-size:13px;">请选择目标 URL（支持多选）...</span>
+            </div>
+            <span class="batch-dropdown-arrow">▼</span>
+          </div>
+          <div class="batch-dropdown-menu" id="batchDropdownMenu">
+            <div class="batch-sites-list" id="batchPromotionSitesList"></div>
+          </div>
+        </div>
+        <select id="batchPromotionSiteSelect" style="display:none;"></select>
+        <div class="hint" style="margin-top: 6px;">勾选多个目标站点时，批量任务将<strong>按顺序依次为每个目标站点跑完所有引荐 URL</strong>（先完整跑完站点 1，再自动开始站点 2）。</div>
       </div>
 
 
@@ -1041,6 +1373,7 @@
 
       <!-- 进度显示 -->
       <div class="card progress-section" id="progressSection">
+        <div id="batchQueueBanner" class="batch-queue-banner" style="display:none;"></div>
         <div class="card-title">处理进度</div>
         <div class="progress-bar-wrap">
           <div class="progress-bar" id="progressBar"></div>
@@ -1075,7 +1408,12 @@
 
       <!-- 结果统计面板 -->
       <div class="card stats-panel" id="statsPanel">
-        <div class="card-title">执行结果统计</div>
+        <div class="stats-panel-header">
+          <div class="card-title">执行结果统计</div>
+          <div class="stats-header-actions">
+            <button class="btn btn-secondary" id="retryAllFailedBtn" type="button" style="display:none;" title="重新执行当前批次中所有失败的 URL">🔄 重试所有失败</button>
+          </div>
+        </div>
         <div class="stats-summary">
           <div class="stats-card">
             <div class="stats-card-label">总数</div>

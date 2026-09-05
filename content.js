@@ -1,4 +1,17 @@
 (function () {
+  /**
+   * 检查当前扩展上下文是否仍然有效。
+   * 当用户在 chrome://extensions 重新加载或更新扩展时，已打开网页中的 content script 上下文会失效（Extension context invalidated）。
+   * 此时访问任何 chrome.* API 均会同步抛出异常。
+   */
+  function isExtensionContextValid() {
+    try {
+      return typeof chrome !== 'undefined' && Boolean(chrome.runtime && chrome.runtime.id);
+    } catch (_e) {
+      return false;
+    }
+  }
+
   // ====== 原有自动填表功能 ======
   // 默认值设为空，用户需要在扩展选项中配置
   const DEFAULT_EMAIL = '';
@@ -950,70 +963,97 @@
 
   function saveSelectedPromotionSiteId(siteId) {
     return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve();
+          return;
+        }
+        const idStr = String(siteId || '');
+        chrome.storage.local.set({
+          [SELECTED_PROMOTION_SITE_STORAGE_KEY]: idStr,
+          'auto_comment_batch_selected_promotion_site_id': idStr
+        }, () => resolve());
+      } catch (_e) {
         resolve();
-        return;
       }
-      const idStr = String(siteId || '');
-      chrome.storage.local.set({
-        [SELECTED_PROMOTION_SITE_STORAGE_KEY]: idStr,
-        'auto_comment_batch_selected_promotion_site_id': idStr
-      }, resolve);
     });
   }
 
   function loadPromotionSiteSelectionContext() {
     return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
-        resolve({ sites: [], selectedSiteId: '' });
-        return;
-      }
-
-      chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY, SELECTED_PROMOTION_SITE_STORAGE_KEY, 'auto_comment_batch_selected_promotion_site_id'], (localResult) => {
-        const selectedSiteId = String(
-          localResult && (
-            localResult[SELECTED_PROMOTION_SITE_STORAGE_KEY] ||
-            localResult['auto_comment_batch_selected_promotion_site_id']
-          ) || ''
-        ).trim();
-        if (!chrome.runtime?.lastError) {
-          const localSites = getPromotionSitesFromConfig(localResult && localResult[SITES_CONFIG_STORAGE_KEY]);
-          if (localSites.length > 0) {
-            resolve({ sites: localSites, selectedSiteId });
-            return;
-          }
-        } else {
-          console.error('读取本地目标 URL 列表失败：', chrome.runtime.lastError);
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve({ sites: [], selectedSiteId: '' });
+          return;
         }
 
-        chrome.storage.sync.get(
-          [
-            SITES_CONFIG_STORAGE_KEY,
-            WEBSITE_URL_STORAGE_KEY,
-            WEBSITE_CONTENT_STORAGE_KEY,
-            PROMPT_FIELD_VALUES_STORAGE_KEY
-          ],
-          (syncResult) => {
-            if (chrome.runtime && chrome.runtime.lastError) {
-              console.error('读取目标 URL 兼容配置失败：', chrome.runtime.lastError);
+        chrome.storage.local.get([SITES_CONFIG_STORAGE_KEY, SELECTED_PROMOTION_SITE_STORAGE_KEY, 'auto_comment_batch_selected_promotion_site_id'], (localResult) => {
+          try {
+            if (!isExtensionContextValid()) {
+              resolve({ sites: [], selectedSiteId: '' });
+              return;
+            }
+            const selectedSiteId = String(
+              localResult && (
+                localResult[SELECTED_PROMOTION_SITE_STORAGE_KEY] ||
+                localResult['auto_comment_batch_selected_promotion_site_id']
+              ) || ''
+            ).trim();
+            if (!chrome.runtime?.lastError) {
+              const localSites = getPromotionSitesFromConfig(localResult && localResult[SITES_CONFIG_STORAGE_KEY]);
+              if (localSites.length > 0) {
+                resolve({ sites: localSites, selectedSiteId });
+                return;
+              }
+            } else {
+              console.error('读取本地目标 URL 列表失败：', chrome.runtime.lastError);
+            }
+
+            if (!isExtensionContextValid() || !chrome.storage.sync) {
               resolve({ sites: [], selectedSiteId });
               return;
             }
 
-            const syncSites = getPromotionSitesFromConfig(syncResult && syncResult[SITES_CONFIG_STORAGE_KEY]);
-            if (syncSites.length > 0) {
-              resolve({ sites: syncSites, selectedSiteId });
-              return;
-            }
+            chrome.storage.sync.get(
+              [
+                SITES_CONFIG_STORAGE_KEY,
+                WEBSITE_URL_STORAGE_KEY,
+                WEBSITE_CONTENT_STORAGE_KEY,
+                PROMPT_FIELD_VALUES_STORAGE_KEY
+              ],
+              (syncResult) => {
+                try {
+                  if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+                    if (chrome.runtime?.lastError) {
+                      console.error('读取目标 URL 兼容配置失败：', chrome.runtime.lastError);
+                    }
+                    resolve({ sites: [], selectedSiteId });
+                    return;
+                  }
 
-            const legacySite = buildLegacyPromotionSite(syncResult || {});
-            resolve({
-              sites: legacySite.url || legacySite.content ? [legacySite] : [],
-              selectedSiteId
-            });
+                  const syncSites = getPromotionSitesFromConfig(syncResult && syncResult[SITES_CONFIG_STORAGE_KEY]);
+                  if (syncSites.length > 0) {
+                    resolve({ sites: syncSites, selectedSiteId });
+                    return;
+                  }
+
+                  const legacySite = buildLegacyPromotionSite(syncResult || {});
+                  resolve({
+                    sites: legacySite.url || legacySite.content ? [legacySite] : [],
+                    selectedSiteId
+                  });
+                } catch (_e) {
+                  resolve({ sites: [], selectedSiteId });
+                }
+              }
+            );
+          } catch (_e) {
+            resolve({ sites: [], selectedSiteId: '' });
           }
-        );
-      });
+        });
+      } catch (_e) {
+        resolve({ sites: [], selectedSiteId: '' });
+      }
     });
   }
 
@@ -1146,60 +1186,80 @@
     const activeSite = await getActivePromotionSite();
     const siteName = String(activeSite && activeSite.name || '').trim();
     return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
-        resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
-        return;
-      }
-      chrome.storage.sync.get(
-        [USER_NAME_STORAGE_KEY, USER_EMAIL_STORAGE_KEY, USER_PASSWORD_STORAGE_KEY],
-        (result) => {
-          if (chrome.runtime && chrome.runtime.lastError) {
-            console.error('读取评论表单基础信息失败：', chrome.runtime.lastError);
-            resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
-            return;
-          }
-          const legacyName = result && typeof result[USER_NAME_STORAGE_KEY] === 'string'
-            ? result[USER_NAME_STORAGE_KEY].trim() : '';
-          let name = siteName || legacyName;
-          let email = result && typeof result[USER_EMAIL_STORAGE_KEY] === 'string'
-            ? result[USER_EMAIL_STORAGE_KEY].trim() : '';
-          let password = result && typeof result[USER_PASSWORD_STORAGE_KEY] === 'string'
-            ? result[USER_PASSWORD_STORAGE_KEY].trim() : '';
-
-          if (!name) name = DEFAULT_USERNAME;
-          if (!email) email = DEFAULT_EMAIL;
-          if (!password) password = DEFAULT_PASSWORD;
-
-          resolve({ name, email, password });
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.sync) {
+          resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+          return;
         }
-      );
+        chrome.storage.sync.get(
+          [USER_NAME_STORAGE_KEY, USER_EMAIL_STORAGE_KEY, USER_PASSWORD_STORAGE_KEY],
+          (result) => {
+            try {
+              if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+                if (chrome.runtime?.lastError) {
+                  console.error('读取评论表单基础信息失败：', chrome.runtime.lastError);
+                }
+                resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+                return;
+              }
+              const legacyName = result && typeof result[USER_NAME_STORAGE_KEY] === 'string'
+                ? result[USER_NAME_STORAGE_KEY].trim() : '';
+              let name = siteName || legacyName;
+              let email = result && typeof result[USER_EMAIL_STORAGE_KEY] === 'string'
+                ? result[USER_EMAIL_STORAGE_KEY].trim() : '';
+              let password = result && typeof result[USER_PASSWORD_STORAGE_KEY] === 'string'
+                ? result[USER_PASSWORD_STORAGE_KEY].trim() : '';
+
+              if (!name) name = DEFAULT_USERNAME;
+              if (!email) email = DEFAULT_EMAIL;
+              if (!password) password = DEFAULT_PASSWORD;
+
+              resolve({ name, email, password });
+            } catch (_e) {
+              resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+            }
+          }
+        );
+      } catch (_e) {
+        resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+      }
     });
   }
 
   function getShowPageFloatingButtonsSetting() {
     return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) {
-        resolve(true);
-        return;
-      }
-      chrome.storage.sync.get(
-        [
-          SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY,
-          SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
-        ],
-        (result) => {
-          if (chrome.runtime && chrome.runtime.lastError) {
-            console.error('读取页面悬浮按钮设置失败：', chrome.runtime.lastError);
-            resolve(true);
-            return;
-          }
-          if (typeof result?.[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY] === 'boolean') {
-            resolve(result[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]);
-            return;
-          }
-          resolve(result?.[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false);
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.sync) {
+          resolve(true);
+          return;
         }
-      );
+        chrome.storage.sync.get(
+          [
+            SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY,
+            SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY
+          ],
+          (result) => {
+            try {
+              if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+                if (chrome.runtime?.lastError) {
+                  console.error('读取页面悬浮按钮设置失败：', chrome.runtime.lastError);
+                }
+                resolve(true);
+                return;
+              }
+              if (typeof result?.[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY] === 'boolean') {
+                resolve(result[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]);
+                return;
+              }
+              resolve(result?.[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY] !== false);
+            } catch (_e) {
+              resolve(true);
+            }
+          }
+        );
+      } catch (_e) {
+        resolve(true);
+      }
     });
   }
 
@@ -1207,31 +1267,39 @@
   // 仅当当前 URL 在批量任务列表中时才返回 true
   function getAutoOpenQwenPanelSetting() {
     return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve(false);
+          return;
+        }
+        // 同时读取设置和 URL 列表
+        chrome.storage.local.get([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], (result) => {
+          try {
+            if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+              resolve(false);
+              return;
+            }
+            const settings = result ? result[BATCH_SETTINGS_KEY] : null;
+            const urls = result ? result[BATCH_URLS_KEY] : null;
+            if (!settings || !urls || !Array.isArray(urls)) {
+              resolve(false);
+              return;
+            }
+            // 验证当前 URL 是否在批量任务列表中
+            const currentUrl = window.location.href;
+            const isInBatch = urls.some(url => currentUrl.startsWith(url) || url.startsWith(currentUrl));
+            if (!isInBatch) {
+              resolve(false);
+              return;
+            }
+            resolve(Boolean(settings.autoOpenPanel));
+          } catch (_e) {
+            resolve(false);
+          }
+        });
+      } catch (_e) {
         resolve(false);
-        return;
       }
-      // 同时读取设置和 URL 列表
-      chrome.storage.local.get([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], (result) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          resolve(false);
-          return;
-        }
-        const settings = result[BATCH_SETTINGS_KEY];
-        const urls = result[BATCH_URLS_KEY];
-        if (!settings || !urls || !Array.isArray(urls)) {
-          resolve(false);
-          return;
-        }
-        // 验证当前 URL 是否在批量任务列表中
-        const currentUrl = window.location.href;
-        const isInBatch = urls.some(url => currentUrl.startsWith(url) || url.startsWith(currentUrl));
-        if (!isInBatch) {
-          resolve(false);
-          return;
-        }
-        resolve(Boolean(settings.autoOpenPanel));
-      });
     });
   }
 
@@ -1239,29 +1307,37 @@
   // 仅当当前 URL 在批量任务列表中时才返回 true
   function getAutoGenerateQwenOnPageLoadSetting() {
     return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve(false);
+          return;
+        }
+        chrome.storage.local.get([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], (result) => {
+          try {
+            if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+              resolve(false);
+              return;
+            }
+            const settings = result ? result[BATCH_SETTINGS_KEY] : null;
+            const urls = result ? result[BATCH_URLS_KEY] : null;
+            if (!settings || !urls || !Array.isArray(urls)) {
+              resolve(false);
+              return;
+            }
+            const currentUrl = window.location.href;
+            const isInBatch = urls.some(url => currentUrl.startsWith(url) || url.startsWith(currentUrl));
+            if (!isInBatch) {
+              resolve(false);
+              return;
+            }
+            resolve(Boolean(settings.autoGenerate));
+          } catch (_e) {
+            resolve(false);
+          }
+        });
+      } catch (_e) {
         resolve(false);
-        return;
       }
-      chrome.storage.local.get([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], (result) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          resolve(false);
-          return;
-        }
-        const settings = result[BATCH_SETTINGS_KEY];
-        const urls = result[BATCH_URLS_KEY];
-        if (!settings || !urls || !Array.isArray(urls)) {
-          resolve(false);
-          return;
-        }
-        const currentUrl = window.location.href;
-        const isInBatch = urls.some(url => currentUrl.startsWith(url) || url.startsWith(currentUrl));
-        if (!isInBatch) {
-          resolve(false);
-          return;
-        }
-        resolve(Boolean(settings.autoGenerate));
-      });
     });
   }
 
@@ -1269,173 +1345,206 @@
   // 仅当当前 URL 在批量任务列表中时才返回 true
   function getAutoSubmitCommentSetting() {
     return new Promise((resolve) => {
-      console.log('[AutoComment] getAutoSubmitCommentSetting 开始检查...');
+      try {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve(false);
+          return;
+        }
 
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
-        console.log('[AutoComment] chrome 或 chrome.storage.local 未定义，返回 false');
+        chrome.storage.local.get([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], (result) => {
+          try {
+            if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+              resolve(false);
+              return;
+            }
+            const settings = result ? result[BATCH_SETTINGS_KEY] : null;
+            const urls = result ? result[BATCH_URLS_KEY] : null;
+            if (!settings || !urls || !Array.isArray(urls)) {
+              resolve(false);
+              return;
+            }
+            // 验证当前 URL 是否在批量任务列表中
+            const currentUrl = window.location.href;
+            const isInBatch = urls.some(url => currentUrl.startsWith(url) || url.startsWith(currentUrl));
+            if (!isInBatch) {
+              resolve(false);
+              return;
+            }
+            const val = Boolean(settings.autoSubmit);
+            resolve(val);
+          } catch (_e) {
+            resolve(false);
+          }
+        });
+      } catch (_e) {
         resolve(false);
-        return;
       }
-
-      chrome.storage.local.get([BATCH_SETTINGS_KEY, BATCH_URLS_KEY], (result) => {
-        console.log('[AutoComment] storage.local.get 回调，result:', JSON.stringify(result));
-        if (chrome.runtime && chrome.runtime.lastError) {
-          console.log('[AutoComment] chrome.runtime.lastError 存在，返回 false');
-          resolve(false);
-          return;
-        }
-        const settings = result[BATCH_SETTINGS_KEY];
-        const urls = result[BATCH_URLS_KEY];
-        console.log('[AutoComment] settings:', settings, 'urls:', urls);
-        if (!settings || !urls || !Array.isArray(urls)) {
-          console.log('[AutoComment] 设置或 URL 列表无效，返回 false');
-          resolve(false);
-          return;
-        }
-        // 验证当前 URL 是否在批量任务列表中
-        const currentUrl = window.location.href;
-        const isInBatch = urls.some(url => currentUrl.startsWith(url) || url.startsWith(currentUrl));
-        console.log('[AutoComment] currentUrl:', currentUrl, 'isInBatch:', isInBatch);
-        if (!isInBatch) {
-          console.log('[AutoComment] 当前 URL 不在批量任务列表中，返回 false');
-          resolve(false);
-          return;
-        }
-        const val = Boolean(settings.autoSubmit);
-        console.log('[AutoComment] 开关值:', val);
-        resolve(val);
-      });
     });
   }
 
   // 检查当前域名是否在冷却时间内
   function isUrlInCooldown() {
     return new Promise((resolve) => {
-      const currentDomain = getCurrentDomain();
-
-      if (typeof chrome === 'undefined' || !chrome.storage) {
-        resolve(false);
-        return;
-      }
-
-      let storageArea = null;
       try {
-        if (chrome.storage.local && typeof chrome.storage.local.get === 'function') {
-          storageArea = chrome.storage.local;
-        }
-      } catch (_e) {
-        resolve(false);
-        return;
-      }
+        const currentDomain = getCurrentDomain();
 
-      if (!storageArea) {
-        resolve(false);
-        return;
-      }
-
-      storageArea.get([GENERATION_RECORD_KEY, SUBMIT_COOLDOWN_KEY], (result) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
+        if (!isExtensionContextValid() || !chrome.storage) {
           resolve(false);
           return;
         }
 
-        const records = result && result[GENERATION_RECORD_KEY];
-        const submitCooldown = result && result[SUBMIT_COOLDOWN_KEY];
-
-        if (submitCooldown && submitCooldown.domain === currentDomain) {
-          const submitTime = submitCooldown.timestamp || 0;
-          const timeSinceSubmit = Date.now() - submitTime;
-          if (timeSinceSubmit < SUBMIT_COOLDOWN_MS) {
-            resolve(true);
-            return;
-          }
+        let storageArea = null;
+        if (chrome.storage.local && typeof chrome.storage.local.get === 'function') {
+          storageArea = chrome.storage.local;
         }
 
-        if (records && records[currentDomain] && records[currentDomain].timestamp) {
-          const lastGenTime = records[currentDomain].timestamp;
-          const timeSinceGen = Date.now() - lastGenTime;
-          if (timeSinceGen < DOMAIN_COOLDOWN_MS) {
-            resolve(true);
-            return;
-          }
+        if (!storageArea) {
+          resolve(false);
+          return;
         }
 
+        storageArea.get([GENERATION_RECORD_KEY, SUBMIT_COOLDOWN_KEY], (result) => {
+          try {
+            if (!isExtensionContextValid() || (chrome.runtime && chrome.runtime.lastError)) {
+              resolve(false);
+              return;
+            }
+
+            const records = result && result[GENERATION_RECORD_KEY];
+            const submitCooldown = result && result[SUBMIT_COOLDOWN_KEY];
+
+            if (submitCooldown && submitCooldown.domain === currentDomain) {
+              const submitTime = submitCooldown.timestamp || 0;
+              const timeSinceSubmit = Date.now() - submitTime;
+              if (timeSinceSubmit < SUBMIT_COOLDOWN_MS) {
+                resolve(true);
+                return;
+              }
+            }
+
+            if (records && records[currentDomain] && records[currentDomain].timestamp) {
+              const lastGenTime = records[currentDomain].timestamp;
+              const timeSinceGen = Date.now() - lastGenTime;
+              if (timeSinceGen < DOMAIN_COOLDOWN_MS) {
+                resolve(true);
+                return;
+              }
+            }
+
+            resolve(false);
+          } catch (_e) {
+            resolve(false);
+          }
+        });
+      } catch (_e) {
         resolve(false);
-      });
+      }
     });
   }
 
   // 记录当前域名的生成时间戳和内容
   function recordGenerationTime(content) {
     return new Promise((resolve) => {
-      const currentDomain = getCurrentDomain();
+      try {
+        const currentDomain = getCurrentDomain();
 
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
-        resolve();
-        return;
-      }
-
-      chrome.storage.local.get([GENERATION_RECORD_KEY], (result) => {
-        const records = result && result[GENERATION_RECORD_KEY] || {};
-        records[currentDomain] = {
-          timestamp: Date.now(),
-          content: content || ''
-        };
-
-        // 清理过期的记录（只保留7天内的）
-        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        for (const domain in records) {
-          if (records[domain] && records[domain].timestamp < sevenDaysAgo) {
-            delete records[domain];
-          }
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve();
+          return;
         }
 
-        chrome.storage.local.set({ [GENERATION_RECORD_KEY]: records }, () => {
-          resolve();
+        chrome.storage.local.get([GENERATION_RECORD_KEY], (result) => {
+          try {
+            if (!isExtensionContextValid()) {
+              resolve();
+              return;
+            }
+            const records = result && result[GENERATION_RECORD_KEY] || {};
+            records[currentDomain] = {
+              timestamp: Date.now(),
+              content: content || ''
+            };
+
+            // 清理过期的记录（只保留7天内的）
+            const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            for (const domain in records) {
+              if (records[domain] && records[domain].timestamp < sevenDaysAgo) {
+                delete records[domain];
+              }
+            }
+
+            if (isExtensionContextValid()) {
+              chrome.storage.local.set({ [GENERATION_RECORD_KEY]: records }, () => {
+                resolve();
+              });
+            } else {
+              resolve();
+            }
+          } catch (_e) {
+            resolve();
+          }
         });
-      });
+      } catch (_e) {
+        resolve();
+      }
     });
   }
 
   // 记录表单提交事件
   function recordFormSubmit() {
     return new Promise((resolve) => {
-      const currentDomain = getCurrentDomain();
+      try {
+        const currentDomain = getCurrentDomain();
 
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
-        resolve();
-        return;
-      }
-
-      chrome.storage.local.set({
-        [SUBMIT_COOLDOWN_KEY]: {
-          domain: currentDomain,
-          timestamp: Date.now()
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
+          resolve();
+          return;
         }
-      }, () => {
+
+        chrome.storage.local.set({
+          [SUBMIT_COOLDOWN_KEY]: {
+            domain: currentDomain,
+            timestamp: Date.now()
+          }
+        }, () => {
+          resolve();
+        });
+      } catch (_e) {
         resolve();
-      });
+      }
     });
   }
 
   // 获取缓存的推广文案
   function getCachedPromotionCopy() {
     return new Promise((resolve) => {
-      const currentDomain = getCurrentDomain();
+      try {
+        const currentDomain = getCurrentDomain();
 
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
-        resolve('');
-        return;
-      }
-
-      chrome.storage.local.get([GENERATION_RECORD_KEY], (result) => {
-        const records = result && result[GENERATION_RECORD_KEY];
-        if (records && records[currentDomain] && records[currentDomain].content) {
-          resolve(records[currentDomain].content);
-        } else {
+        if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) {
           resolve('');
+          return;
         }
-      });
+
+        chrome.storage.local.get([GENERATION_RECORD_KEY], (result) => {
+          try {
+            if (!isExtensionContextValid()) {
+              resolve('');
+              return;
+            }
+            const records = result && result[GENERATION_RECORD_KEY];
+            if (records && records[currentDomain] && records[currentDomain].content) {
+              resolve(records[currentDomain].content);
+            } else {
+              resolve('');
+            }
+          } catch (_e) {
+            resolve('');
+          }
+        });
+      } catch (_e) {
+        resolve('');
+      }
     });
   }
 
@@ -1522,6 +1631,9 @@
       promotionSite,
       timestamp: Date.now()
     };
+    try {
+      sessionStorage.setItem('__linkpilot_batch_submitting', JSON.stringify({ batchId, urlIndex, timestamp: Date.now() }));
+    } catch (_) {}
     await new Promise((resolve) => {
       chrome.storage.local.get(['batchSubmitCtxMap'], (data) => {
         const map = (data && data.batchSubmitCtxMap && typeof data.batchSubmitCtxMap === 'object')
@@ -1540,6 +1652,9 @@
   }
 
   function clearBatchSubmitContext(key) {
+    try {
+      sessionStorage.removeItem('__linkpilot_batch_submitting');
+    } catch (_) {}
     if (typeof chrome !== 'undefined' && chrome.storage) {
       const targetKey = key || (window.location.href ? getUrlKey(window.location.href) : '');
       chrome.storage.local.get(['batchSubmitCtxMap'], (data) => {
@@ -1556,14 +1671,14 @@
     }
   }
 
-  async function confirmRestoredBatchSubmit(ctx, mapKey) {
+  async function confirmRestoredBatchSubmit(ctx, mapKey, hasSessionFlag) {
     if (!ctx || !ctx.batchId || ctx.urlIndex === undefined) return;
-    if (Date.now() - (ctx.timestamp || 0) > 10 * 60 * 1000) {
+    if (Date.now() - (ctx.timestamp || 0) > 2 * 60 * 1000) {
       clearBatchSubmitContext(mapKey);
       return;
     }
 
-    console.log('[AutoComment] 恢复提交后上下文，仅补发确认，不重新生成AI:', ctx);
+    console.log('[AutoComment] 恢复提交后上下文，仅补发确认，不重新生成AI:', ctx, 'hasSessionFlag:', hasSessionFlag);
     await new Promise((resolve) => {
       chrome.runtime.sendMessage({
         type: 'BATCH_HANDLE_CONFIRM',
@@ -1579,21 +1694,73 @@
 
     clearBatchSubmitContext(mapKey);
 
-    // 页面重定向并确认成功后自动关闭标签页
-    setTimeout(() => {
-      try {
-        window.close();
-      } catch (_) {}
-    }, 1500);
+    // 只有在当前标签页明确带有本标签页提交标记（sessionStorage）时，才允许自动关闭！
+    // 如果用户手动打开新标签页，绝对不调用 window.close()！
+    if (hasSessionFlag) {
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch (_) {}
+      }, 1500);
+    }
   }
 
   // 从 storage 恢复提交后上下文（仅补确认，不再恢复成可执行批处理任务）
   async function restoreBatchContext() {
     console.log('[AutoComment] restoreBatchContext 开始, 当前URL:', window.location.href);
-    if (typeof chrome === 'undefined' || !chrome.storage) return;
-    const data = await new Promise((resolve) => chrome.storage.local.get(['batchSubmitCtx', 'batchSubmitCtxMap', 'batchCtx'], resolve));
-    if (data.batchCtx) {
-      chrome.storage.local.remove('batchCtx', () => {});
+    let hasSessionFlag = false;
+    try {
+      const sessionData = sessionStorage.getItem('__linkpilot_batch_submitting');
+      if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        if (parsed && Date.now() - (parsed.timestamp || 0) <= 2 * 60 * 1000) {
+          hasSessionFlag = true;
+        } else {
+          sessionStorage.removeItem('__linkpilot_batch_submitting');
+        }
+      }
+    } catch (_) {}
+
+    // 如果本标签页不是由表单提交跳转产生（无 session 标记），用户手动打开页面绝不执行自动关窗恢复
+    if (!hasSessionFlag) {
+      // 顺便清理过期的 map 项
+      if (isExtensionContextValid() && chrome.storage && chrome.storage.local) {
+        try {
+          chrome.storage.local.get(['batchSubmitCtxMap'], (data) => {
+            try {
+              if (data && data.batchSubmitCtxMap && typeof data.batchSubmitCtxMap === 'object') {
+                const map = { ...data.batchSubmitCtxMap };
+                let changed = false;
+                const now = Date.now();
+                for (const [k, v] of Object.entries(map)) {
+                  if (!v || now - (v.timestamp || 0) > 2 * 60 * 1000) {
+                    delete map[k];
+                    changed = true;
+                  }
+                }
+                if (changed && isExtensionContextValid()) {
+                  chrome.storage.local.set({ batchSubmitCtxMap: map });
+                }
+              }
+            } catch (_e) {}
+          });
+        } catch (_e) {}
+      }
+      return;
+    }
+
+    if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.local) return;
+    let data = null;
+    try {
+      data = await new Promise((resolve) => chrome.storage.local.get(['batchSubmitCtx', 'batchSubmitCtxMap', 'batchCtx'], resolve));
+    } catch (_e) {
+      return;
+    }
+    if (!data) return;
+    if (data.batchCtx && isExtensionContextValid()) {
+      try {
+        chrome.storage.local.remove('batchCtx', () => {});
+      } catch (_e) {}
     }
 
     const currentUrl = window.location.href;
@@ -1604,7 +1771,7 @@
     if (data.batchSubmitCtxMap && typeof data.batchSubmitCtxMap === 'object') {
       // 优先从 map 中匹配当前页面的 URL
       for (const [key, ctx] of Object.entries(data.batchSubmitCtxMap)) {
-        if (!ctx || Date.now() - (ctx.timestamp || 0) > 10 * 60 * 1000) continue;
+        if (!ctx || Date.now() - (ctx.timestamp || 0) > 2 * 60 * 1000) continue;
         if (isUrlMatch(key, currentUrlKey) || isUrlMatch(ctx.url, currentUrl)) {
           matchedCtx = ctx;
           matchedKey = key;
@@ -1615,7 +1782,7 @@
 
     if (!matchedCtx && data.batchSubmitCtx) {
       const ctx = data.batchSubmitCtx;
-      if (ctx && Date.now() - (ctx.timestamp || 0) <= 10 * 60 * 1000) {
+      if (ctx && Date.now() - (ctx.timestamp || 0) <= 2 * 60 * 1000) {
         if (isUrlMatch(ctx.url, currentUrl)) {
           matchedCtx = ctx;
           matchedKey = getUrlKey(ctx.url);
@@ -1623,9 +1790,9 @@
       }
     }
 
-    console.log('[AutoComment] restoreBatchContext 匹配结果:', { matchedKey, hasMatchedCtx: !!matchedCtx });
+    console.log('[AutoComment] restoreBatchContext 匹配结果:', { matchedKey, hasMatchedCtx: !!matchedCtx, hasSessionFlag });
     if (matchedCtx) {
-      await confirmRestoredBatchSubmit(matchedCtx, matchedKey);
+      await confirmRestoredBatchSubmit(matchedCtx, matchedKey, hasSessionFlag);
     }
   }
 
@@ -1965,6 +2132,7 @@
 
   function observeDynamicElements() {
     setTimeout(() => {
+      if (!isExtensionContextValid()) return;
       if (!hasCheckedInitialCommentBox) {
         hasCheckedInitialCommentBox = true;
         const hasCommentBox = !!findLikelyCommentTextarea({ allowGenericFallback: false }) || hasBloggerCommentSystem();
@@ -1973,15 +2141,20 @@
           hasNotifiedCommentBox = true;
           getAutoGenerateQwenOnPageLoadSetting().then((shouldAutoGenerate) => {
             console.log('[AutoComment] 初始检查 shouldAutoGenerate:', shouldAutoGenerate, 'autoGeneratedOnce:', autoGeneratedOnce);
-            if (shouldAutoGenerate && !autoGeneratedOnce) {
+            if (shouldAutoGenerate && !autoGeneratedOnce && isExtensionContextValid()) {
               autoGeneratePromotionOnPageLoad();
             }
-          });
+          }).catch(() => {});
         }
       }
     }, 1000);
 
     const observer = new MutationObserver((mutations) => {
+      // 扩展已被重新加载或上下文失效时，立即断开观察器并退出，防止继续操作抛出异常
+      if (!isExtensionContextValid()) {
+        try { observer.disconnect(); } catch (_e) {}
+        return;
+      }
       let shouldTriggerFlow = false;
 
       // 检查是否有新的 textarea、Blogger iframe 或评论区域出现
@@ -1995,13 +2168,13 @@
           console.log('[AutoComment] MutationObserver 检测到评论 textarea 或 Blogger iframe 出现');
           getAutoGenerateQwenOnPageLoadSetting().then((shouldAutoGenerate) => {
             console.log('[AutoComment] shouldAutoGenerate:', shouldAutoGenerate, 'autoGeneratedOnce:', autoGeneratedOnce);
-            if (shouldAutoGenerate && !autoGeneratedOnce) {
+            if (shouldAutoGenerate && !autoGeneratedOnce && isExtensionContextValid()) {
               // 直接调用，不等待 triggerCommentFormFlow，因为 textarea 已存在
               autoGeneratePromotionOnPageLoad();
             } else {
               console.log('[AutoComment] 自动生成条件不满足，跳过');
             }
-          });
+          }).catch(() => {});
         }
       }
 
@@ -2014,7 +2187,7 @@
 
       if (newReplyLinks.length > 0 && !hasTriggeredCommentFlow) {
         getAutoGenerateQwenOnPageLoadSetting().then((shouldAutoGenerate) => {
-          if (shouldAutoGenerate && !autoGeneratedOnce && !hasTriggeredCommentFlow) {
+          if (shouldAutoGenerate && !autoGeneratedOnce && !hasTriggeredCommentFlow && isExtensionContextValid()) {
             hasTriggeredCommentFlow = true;
             console.log('[AutoComment] MutationObserver 检测到回复链接，自动触发评论流程');
 
@@ -2026,11 +2199,13 @@
             // 自动点击回复链接来展开表单
             triggerCommentFormFlow().then(() => {
               setTimeout(() => {
-                autoGeneratePromotionOnPageLoad();
+                if (isExtensionContextValid()) {
+                  autoGeneratePromotionOnPageLoad();
+                }
               }, 500);
-            });
+            }).catch(() => {});
           }
-        });
+        }).catch(() => {});
       }
 
       // 检查是否有新的评论区域出现（增强）
@@ -4860,23 +5035,27 @@
 
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (
-        areaName !== 'sync'
-        || (
-          !changes[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]
-          && !changes[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY]
-        )
-      ) {
-        return;
-      }
-      // 重新读取设置以正确处理新版总开关与旧版兼容键的优先级。
-      applyPageFloatingButtonsVisibility();
+      if (!isExtensionContextValid()) return;
+      try {
+        if (
+          areaName !== 'sync'
+          || (
+            !changes[SHOW_PAGE_FLOATING_BUTTONS_STORAGE_KEY]
+            && !changes[SHOW_EXPORT_OUTLINKS_FLOATING_BUTTON_STORAGE_KEY]
+          )
+        ) {
+          return;
+        }
+        // 重新读取设置以正确处理新版总开关与旧版兼容键的优先级。
+        applyPageFloatingButtonsVisibility();
+      } catch (_e) {}
     });
   }
 
   // 监听 background.js 中点击扩展图标发送的消息
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
+      if (!isExtensionContextValid()) return;
       // 就绪检测：batch.js 发 PING 确认 content.js 已注入
       if (message && message.type === 'PING') {
         _sendResponse({ ok: true });
@@ -5130,6 +5309,16 @@
       if (manualCheckBeforeSubmit.found) {
         await reportManualRequiredAndClose(batchId, urlIndex, url, aiContent);
         return;
+      }
+
+      // 提交前二次去重校验：防止并发标签页在 AI 生成期间另一标签已先提交成功导致双发
+      if (!options.forceRetry && !options.ignoreHistory) {
+        const preSubmitExisting = await checkExistingBatchResult(batchId, url, urlIndex);
+        if (preSubmitExisting) {
+          console.log('[content] 提交前二次校验命中：该 URL 已在同批次或历史记录中成功提交，终止本次提交以防重复:', preSubmitExisting);
+          await reportAlreadyCommented(batchId, urlIndex, url, preSubmitExisting);
+          return;
+        }
       }
 
       // 提交前先写入 pending 结果（页面刷新后 batch.js 仍能立即读到）

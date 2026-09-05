@@ -89,6 +89,8 @@ function validateBatchUiBindings() {
     'databasePersistence',
     'databasePersistenceMessage',
     'retryDatabaseBtn',
+    'retryAllFailedBtn',
+    'syncDbHistoryBtn',
     'importResultCsvBtn',
     'resultCsvInput',
     'batchHistoryEmpty',
@@ -98,6 +100,7 @@ function validateBatchUiBindings() {
   for (const elementId of requiredElementIds) {
     assert(optionsHtml.includes(`id="${elementId}"`), `options.html 缺少批量功能节点：${elementId}`);
   }
+  assert(optionsHtml.includes('src="lib/papaparse.min.js"'), 'options.html 必须引入 lib/papaparse.min.js 以支持结果 CSV 导入');
 }
 
 /**
