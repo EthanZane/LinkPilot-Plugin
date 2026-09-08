@@ -122,6 +122,15 @@ const filterKeyword = document.getElementById('filterKeyword');
 const statsTableBody = document.getElementById('statsTableBody');
 const statsTableWrap = document.getElementById('statsTableWrap');
 const statsCountLabel = document.getElementById('statsCountLabel');
+const statsScopeBadge = document.getElementById('statsScopeBadge');
+const toggleSiteOverviewBtn = document.getElementById('toggleSiteOverviewBtn');
+const statsSiteNav = document.getElementById('statsSiteNav');
+const statsSiteTabs = document.getElementById('statsSiteTabs');
+const statsSiteOverviewWrap = document.getElementById('statsSiteOverviewWrap');
+const statsSiteOverviewBody = document.getElementById('statsSiteOverviewBody');
+const filterTargetSite = document.getElementById('filterTargetSite');
+let statsSelectedSiteKey = 'all';
+let isSiteOverviewOpen = false;
 const batchSiteSummaryName = document.getElementById('batchSiteSummaryName');
 const batchSiteSummaryUrl = document.getElementById('batchSiteSummaryUrl');
 const batchSiteSummary = document.getElementById('batchSiteSummary');
@@ -1045,6 +1054,12 @@ async function saveCurrentBatchHistory(databaseStatus = 'pending') {
     ? `${sites.map((s) => s.name || s.url).join(', ')} (共 ${sites.length} 个目标)`
     : (sites[0] && (sites[0].name || sites[0].url)) || existing.targetName || '';
   const targetUrl = sites.map((s) => s.url).filter(Boolean).join(', ') || existing.targetUrl || '';
+  const targetSites = sites.map((s, idx) => ({
+    id: s.id || `site_${idx}`,
+    name: s.name || s.url || `目标站点 ${idx + 1}`,
+    url: s.url || '',
+    content: s.content || ''
+  }));
 
   const record = {
     ...existing,
@@ -1056,6 +1071,7 @@ async function saveCurrentBatchHistory(databaseStatus = 'pending') {
     sourceType: batchSourceType || existing.sourceType || '',
     targetUrl,
     targetName,
+    targetSites: targetSites.length > 0 ? targetSites : (existing.targetSites || []),
     startedAt: batchStartedAt || existing.startedAt || Date.now(),
     completedAt: batchCompletedAt || existing.completedAt || null,
     summary: summarizeBatchResults(localResults),
@@ -1196,6 +1212,33 @@ function applyBatchHistoryRecord(record) {
       content: ''
     });
 
+  // 恢复多目标站点队列信息
+  if (Array.isArray(record.targetSites) && record.targetSites.length > 0) {
+    batchTargetQueue = record.targetSites.map(normalizeBatchPromotionSite);
+  } else {
+    // 从历史明细中反向推导多站点
+    const inferredSites = [];
+    const seenSiteKeys = new Set();
+    for (const item of localResults) {
+      const u = (item.promotionSiteUrl || '').trim();
+      const n = (item.promotionSiteName || '').trim();
+      const k = u || n;
+      if (k && !seenSiteKeys.has(k)) {
+        seenSiteKeys.add(k);
+        inferredSites.push(normalizeBatchPromotionSite({
+          id: item.promotionSiteId || k,
+          name: n || u || `目标站点 ${inferredSites.length + 1}`,
+          url: u,
+          content: ''
+        }));
+      }
+    }
+    if (inferredSites.length > 1) {
+      batchTargetQueue = inferredSites;
+    }
+  }
+  statsSelectedSiteKey = 'all';
+
   const summary = summarizeBatchResults(localResults);
   successCount = summary.success;
   failCount = summary.fail;
@@ -1208,6 +1251,7 @@ function applyBatchHistoryRecord(record) {
   setStatus(record.status === 'completed' ? 'completed' : 'terminated');
   updateStatsUI();
   updateUI();
+  renderStats();
   return true;
 }
 
@@ -1555,9 +1599,9 @@ function bindEvents() {
   startBtn.addEventListener('click', () => {
     const canResume = status === 'terminated' && isTerminated && localResults.length > 0 && localResults.length < totalCount && parsedUrls.length === totalCount;
     if (canResume) {
-      resumeBatch();
+      resumeBatch().catch((err) => console.error('[batch] resumeBatch 异常:', err));
     } else {
-      startBatch();
+      startBatch().catch((err) => console.error('[batch] startBatch 异常:', err));
     }
   });
   stopBtn.addEventListener('click', stopBatch);
@@ -1631,6 +1675,21 @@ function bindEvents() {
   });
 
   // 统计筛选器
+  if (filterTargetSite) {
+    filterTargetSite.addEventListener('change', () => {
+      statsSelectedSiteKey = filterTargetSite.value;
+      renderStats();
+    });
+  }
+  if (toggleSiteOverviewBtn) {
+    toggleSiteOverviewBtn.addEventListener('click', () => {
+      isSiteOverviewOpen = !isSiteOverviewOpen;
+      if (statsSiteOverviewWrap) {
+        statsSiteOverviewWrap.style.display = isSiteOverviewOpen ? 'block' : 'none';
+      }
+      toggleSiteOverviewBtn.textContent = isSiteOverviewOpen ? '▲ 收起汇总对比' : '📊 目标站点汇总对比';
+    });
+  }
   filterResult.addEventListener('change', renderStats);
   filterDomain.addEventListener('change', renderStats);
   filterTimeRange.addEventListener('change', renderStats);
@@ -2493,6 +2552,8 @@ async function startBatch() {
   pendingCount = totalCount;
   currentIndex = 0;
   localResults = [];
+  statsSelectedSiteKey = 'all';
+  isSiteOverviewOpen = false;
   databaseFailedItemIndexes.clear();
   retryingItemIndexes.clear();
   timeoutRetryMap.clear();
@@ -2516,11 +2577,17 @@ async function startBatch() {
   updateUI();
   updateStatsUI();
   updateBatchPromotionSiteSummary();
-  updateQueueBanner();
-
-  await saveCurrentBatchHistory('pending');
+  try {
+    await saveCurrentBatchHistory('pending');
+  } catch (err) {
+    console.error('[batch] 保存批次初始快照失败:', err);
+  }
   // 数据库写入属于旁路持久化，失败只更新提示，绝不延迟或中断自动化标签页调度。
-  persistLocalDatabaseRunStart();
+  try {
+    persistLocalDatabaseRunStart();
+  } catch (err) {
+    console.error('[batch] 写入数据库初始运行记录失败:', err);
+  }
 
   // 启动并发池打开标签页
   scheduleNextTabs();
@@ -2595,7 +2662,11 @@ async function fetchTargetSiteSuccessHistory(targetUrl) {
 function isSameTargetUrlForStats(urlA, urlB) {
   const normA = String(urlA || '').trim().replace(/\/+$/, '').toLowerCase();
   const normB = String(urlB || '').trim().replace(/\/+$/, '').toLowerCase();
-  return normA === normB || extractDomain(normA) === extractDomain(normB);
+  if (!normA || !normB) return false;
+  if (normA === normB) return true;
+  const domA = extractDomain(normA);
+  const domB = extractDomain(normB);
+  return Boolean(domA && domB && domA === domB);
 }
 
 // 保存批量任务设置到 storage.local
@@ -2745,7 +2816,11 @@ async function resumeBatch() {
 
   setStatus('running');
   updateUI();
-  await saveCurrentBatchHistory('pending');
+  try {
+    await saveCurrentBatchHistory('pending');
+  } catch (err) {
+    console.error('[batch] 恢复批次初始快照失败:', err);
+  }
 
   const maxConcurrent = getConcurrencySetting();
   console.log('[resumeBatch] 启动并发调度池，最大并发数:', maxConcurrent);
@@ -2841,8 +2916,8 @@ async function openNextTab() {
       }
 
       activeTabCount++;
-      activeTabs.set(tab.id, { urlIndex, urlIndexInSite, siteIndex: currentQueueSiteIndex, startTime: Date.now() });
-      activeTabsByIndex.set(urlIndex, { urlIndex, urlIndexInSite, siteIndex: currentQueueSiteIndex, startTime: Date.now() });
+      activeTabs.set(tab.id, { urlIndex, urlIndexInSite, siteIndex: task ? task.siteIndex : currentQueueSiteIndex, startTime: Date.now() });
+      activeTabsByIndex.set(urlIndex, { urlIndex, urlIndexInSite, siteIndex: task ? task.siteIndex : currentQueueSiteIndex, startTime: Date.now() });
 
       // 高亮预览表格中对应的行 (只高亮当前引荐 URL 行 0..M-1)
       highlightPreviewRow(urlIndexInSite, 'processing');
@@ -3474,13 +3549,22 @@ function updateStatsUI() {
 
 // ==================== 导出 ====================
 function exportResults() {
-  if (localResults.length === 0) {
-    alert('没有可导出的结果');
+  const targetSites = getTargetSitesList();
+  const selectedSite = statsSelectedSiteKey === 'all'
+    ? null
+    : targetSites.find((s) => s.key === statsSelectedSiteKey);
+
+  const exportList = selectedSite
+    ? localResults.filter((r) => isResultMatchingSite(r, selectedSite))
+    : localResults;
+
+  if (exportList.length === 0) {
+    alert(selectedSite ? `目标站点 [${selectedSite.name}] 没有可导出的结果` : '没有可导出的结果');
     return;
   }
 
   // 查找第一条有原始行数据的结果来确定导入格式
-  const sampleResult = localResults.find((r) => r.originalRow && r.originalRow.length > 0);
+  const sampleResult = exportList.find((r) => r.originalRow && r.originalRow.length > 0) || localResults.find((r) => r.originalRow && r.originalRow.length > 0);
   if (!sampleResult) {
     alert('缺少导入数据，无法按原始格式导出');
     return;
@@ -3523,7 +3607,7 @@ function exportResults() {
     return str;
   };
 
-  const rows = localResults.map((r) => {
+  const rows = exportList.map((r) => {
     // 基础列：从原始输入中取值，同时规范化引荐域名和目标域名。
     const baseCols = [];
     for (let i = 0; i < originalRowLen; i++) {
@@ -3554,7 +3638,10 @@ function exportResults() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `batch_result_${batchId}.csv`;
+  const siteSuffix = selectedSite
+    ? `_${(selectedSite.name || 'site').replace(/[^\w\u4e00-\u9fa5]/g, '_').slice(0, 20)}`
+    : '';
+  a.download = `batch_result${siteSuffix}_${batchId}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -3651,8 +3738,26 @@ function clearBatch() {
     retryAllFailedBtn.style.display = 'none';
     retryAllFailedBtn.disabled = false;
   }
+  statsSelectedSiteKey = 'all';
+  isSiteOverviewOpen = false;
+  if (statsSiteNav) statsSiteNav.style.display = 'none';
+  if (statsSiteTabs) statsSiteTabs.innerHTML = '';
+  if (statsSiteOverviewWrap) statsSiteOverviewWrap.style.display = 'none';
+  if (statsSiteOverviewBody) statsSiteOverviewBody.innerHTML = '';
+  if (toggleSiteOverviewBtn) {
+    toggleSiteOverviewBtn.style.display = 'none';
+    toggleSiteOverviewBtn.textContent = '📊 目标站点汇总对比';
+  }
+  if (filterTargetSite) {
+    filterTargetSite.style.display = 'none';
+    filterTargetSite.innerHTML = '<option value="all">全部目标站点</option>';
+  }
+  if (statsScopeBadge) {
+    statsScopeBadge.style.display = 'none';
+    statsScopeBadge.textContent = '';
+  }
   pendingRetryQueue = [];
-  filterDomain.innerHTML = '<option value="all">全部域名</option>';
+  filterDomain.innerHTML = '<option value="all">全部引荐域名</option>';
   filterResult.value = 'all';
   filterTimeRange.value = 'all';
   if (filterPageDepth) filterPageDepth.value = 'all';
@@ -3692,20 +3797,26 @@ function clearPreviewRow(urlIndex) {
   highlightPreviewRow(urlIndex, null);
 }
 
-function buildDomainOptions() {
+function buildDomainOptions(results = localResults) {
   const domainMap = new Map();
-  for (const r of localResults) {
+  for (const r of results) {
     const domain = extractDomain(r.url);
     if (domain) domainMap.set(domain, (domainMap.get(domain) || 0) + 1);
   }
   const select = filterDomain;
-  // 保留第一项 "全部域名"
-  select.innerHTML = '<option value="all">全部域名</option>';
+  const prevVal = select.value;
+  // 保留第一项 "全部引荐域名"
+  select.innerHTML = '<option value="all">全部引荐域名</option>';
   for (const [domain, count] of [...domainMap.entries()].sort((a, b) => b[1] - a[1])) {
     const opt = document.createElement('option');
     opt.value = domain;
     opt.textContent = `${domain} (${count})`;
     select.appendChild(opt);
+  }
+  if (prevVal && domainMap.has(prevVal)) {
+    select.value = prevVal;
+  } else {
+    select.value = 'all';
   }
 }
 
@@ -3769,6 +3880,115 @@ async function copyTextToClipboard(text) {
   }
 }
 
+/**
+ * 获取当前结果或队列中涉及的所有目标站点清单，并计算每个站点的统计数据。
+ */
+function getTargetSitesList() {
+  const sitesList = [];
+  const seenKeys = new Set();
+
+  // 1. 优先使用当前批次的 batchTargetQueue 队列
+  if (Array.isArray(batchTargetQueue) && batchTargetQueue.length > 0) {
+    batchTargetQueue.forEach((s, idx) => {
+      const key = (s.url || s.id || `site_${idx}`).trim();
+      if (key && !seenKeys.has(key)) {
+        seenKeys.add(key);
+        sitesList.push({
+          key,
+          id: s.id || key,
+          name: s.name || s.url || `目标站点 ${idx + 1}`,
+          url: s.url || '',
+          siteIndex: idx
+        });
+      }
+    });
+  }
+
+  // 2. 检查 localResults 中实际包含的目标站点
+  if (Array.isArray(localResults) && localResults.length > 0) {
+    for (const r of localResults) {
+      const siteUrl = (r.promotionSiteUrl || '').trim();
+      const siteName = (r.promotionSiteName || '').trim();
+      const siteId = (r.promotionSiteId || '').trim();
+      const key = siteUrl || siteId || siteName;
+      if (key && !seenKeys.has(key)) {
+        seenKeys.add(key);
+        let name = siteName;
+        if (!name || name === siteUrl) {
+          const found = availablePromotionSites.find((s) => (s.url && isSameTargetUrlForStats(s.url, siteUrl)) || (s.id && s.id === siteId));
+          if (found && found.name) name = found.name;
+        }
+        sitesList.push({
+          key,
+          id: siteId || key,
+          name: name || siteUrl || `目标站点 ${sitesList.length + 1}`,
+          url: siteUrl,
+          siteIndex: r.siteIndex != null ? r.siteIndex : sitesList.length
+        });
+      }
+    }
+  }
+
+  // 3. 若仍为空且存在 batchPromotionSite 则兜底
+  if (sitesList.length === 0 && batchPromotionSite && batchPromotionSite.url) {
+    const key = batchPromotionSite.url.trim();
+    sitesList.push({
+      key,
+      id: batchPromotionSite.id || key,
+      name: batchPromotionSite.name || batchPromotionSite.url,
+      url: batchPromotionSite.url,
+      siteIndex: 0
+    });
+  }
+
+  // 确保按 siteIndex 升序排序
+  sitesList.sort((a, b) => (a.siteIndex ?? 0) - (b.siteIndex ?? 0));
+
+  // 聚合各站点的指标
+  return sitesList.map((site) => {
+    const matched = localResults.filter((r) => isResultMatchingSite(r, site));
+    const total = matched.length;
+    const success = matched.filter((r) => r.result === 'success').length;
+    const skipped = matched.filter((r) => r.result === 'skipped').length;
+    const manualRequired = matched.filter((r) => r.result === 'manual_required').length;
+    const noCommentBox = matched.filter((r) => r.result === 'no_comment_box').length;
+    const fail = matched.filter((r) => r.result === 'fail').length;
+    const validCount = success + skipped;
+    const rate = total > 0 ? Math.round((validCount / total) * 100) : 0;
+    return {
+      ...site,
+      total,
+      success,
+      skipped,
+      manualRequired,
+      noCommentBox,
+      fail,
+      rate
+    };
+  });
+}
+
+function isResultMatchingSite(resultItem, site) {
+  if (!resultItem || !site) return false;
+  // 1. 若两端均存在明确的 siteIndex，以此为准
+  if (resultItem.siteIndex != null && site.siteIndex != null) {
+    return resultItem.siteIndex === site.siteIndex;
+  }
+  // 2. 若两端均存在明确的目标站点 ID，以此为准
+  if (resultItem.promotionSiteId && site.id) {
+    return resultItem.promotionSiteId === site.id;
+  }
+  // 3. 若存在目标 URL，按目标 URL 严格匹配
+  if (resultItem.promotionSiteUrl && site.url) {
+    return isSameTargetUrlForStats(resultItem.promotionSiteUrl, site.url);
+  }
+  // 4. 按目标名称匹配
+  if (resultItem.promotionSiteName && site.name) {
+    return resultItem.promotionSiteName.trim().toLowerCase() === site.name.trim().toLowerCase();
+  }
+  return false;
+}
+
 function renderStats() {
   if (localResults.length === 0) {
     statsPanel.classList.remove('visible');
@@ -3776,12 +3996,139 @@ function renderStats() {
   }
   statsPanel.classList.add('visible');
 
-  const total = localResults.length;
-  const success = localResults.filter((r) => r.result === 'success').length;
-  const skipped = localResults.filter((r) => r.result === 'skipped').length;
-  const fail = localResults.filter((r) => r.result === 'fail').length;
-  const noCommentBox = localResults.filter((r) => r.result === 'no_comment_box').length;
-  const manualRequired = localResults.filter((r) => r.result === 'manual_required').length;
+  const targetSites = getTargetSitesList();
+  const hasMultipleSites = targetSites.length > 1;
+
+  // 校验当前选中的目标站点 key 是否有效
+  if (statsSelectedSiteKey !== 'all') {
+    const exists = targetSites.some((s) => s.key === statsSelectedSiteKey);
+    if (!exists) statsSelectedSiteKey = 'all';
+  }
+
+  // 渲染多目标站点导航和汇总对比
+  if (hasMultipleSites) {
+    if (statsSiteNav) statsSiteNav.style.display = 'flex';
+    if (toggleSiteOverviewBtn) toggleSiteOverviewBtn.style.display = 'inline-flex';
+    if (filterTargetSite) filterTargetSite.style.display = 'inline-block';
+    if (statsScopeBadge) statsScopeBadge.style.display = 'inline-flex';
+
+    // 渲染站点 Tab 导航栏
+    if (statsSiteTabs) {
+      const overallTotal = localResults.length;
+      const overallSuccess = localResults.filter((r) => r.result === 'success').length;
+      const overallSkipped = localResults.filter((r) => r.result === 'skipped').length;
+      const overallRate = overallTotal > 0 ? Math.round(((overallSuccess + overallSkipped) / overallTotal) * 100) : 0;
+
+      let tabsHtml = `
+        <button type="button" class="stats-site-tab ${statsSelectedSiteKey === 'all' ? 'active' : ''}" data-site-key="all">
+          <span class="tab-title">全部目标站点</span>
+          <span class="tab-badge">${overallTotal} 条 · ${overallRate}%</span>
+        </button>
+      `;
+
+      for (const s of targetSites) {
+        const rateClass = s.rate >= 70 ? 'badge-high' : (s.rate >= 30 ? 'badge-mid' : 'badge-low');
+        tabsHtml += `
+          <button type="button" class="stats-site-tab ${statsSelectedSiteKey === s.key ? 'active' : ''}" data-site-key="${escapeHtml(s.key)}" title="${escapeHtml(s.url || s.name)}">
+            <span class="step-num">${s.siteIndex + 1}</span>
+            <span class="tab-title">${escapeHtml(s.name)}</span>
+            <span class="tab-badge ${rateClass}">${s.total} 条 · ${s.total > 0 ? s.rate + '%' : '—'}</span>
+          </button>
+        `;
+      }
+      statsSiteTabs.innerHTML = tabsHtml;
+
+      statsSiteTabs.querySelectorAll('.stats-site-tab').forEach((tab) => {
+        tab.addEventListener('click', () => {
+          const key = tab.getAttribute('data-site-key') || 'all';
+          statsSelectedSiteKey = key;
+          renderStats();
+        });
+      });
+    }
+
+    // 同步筛选栏的目标站点下拉框
+    if (filterTargetSite) {
+      let optionsHtml = `<option value="all">全部目标站点 (共 ${targetSites.length} 个站点)</option>`;
+      for (const s of targetSites) {
+        optionsHtml += `<option value="${escapeHtml(s.key)}">[${s.siteIndex + 1}] ${escapeHtml(s.name)} (${s.total} 条 · 成功率 ${s.total > 0 ? s.rate + '%' : '—'})</option>`;
+      }
+      filterTargetSite.innerHTML = optionsHtml;
+      filterTargetSite.value = statsSelectedSiteKey;
+    }
+
+    // 渲染各站点统计对比汇总表
+    if (statsSiteOverviewBody) {
+      let overviewRowsHtml = '';
+      for (const s of targetSites) {
+        const isCurrent = statsSelectedSiteKey === s.key;
+        const rateClass = s.rate >= 70 ? 'badge-high' : (s.rate >= 30 ? 'badge-mid' : 'badge-low');
+        overviewRowsHtml += `
+          <tr class="${isCurrent ? 'current-site-row' : ''}">
+            <td style="text-align:center;color:#64748b;font-weight:600;">${s.siteIndex + 1}</td>
+            <td style="font-weight:600;color:#1e293b;">${escapeHtml(s.name)}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(s.url)}">
+              <span style="color:#64748b;font-size:11px;">${escapeHtml(s.url || '—')}</span>
+            </td>
+            <td style="text-align:center;font-weight:700;">${s.total}</td>
+            <td style="text-align:center;color:#059669;font-weight:700;">${s.success}</td>
+            <td style="text-align:center;color:#2563eb;">${s.skipped}</td>
+            <td style="text-align:center;color:#b45309;">${s.manualRequired}</td>
+            <td style="text-align:center;color:#dc2626;font-weight:700;">${s.fail}</td>
+            <td style="text-align:center;">
+              <span class="tab-badge ${rateClass}" style="display:inline-block;padding:2px 6px;">${s.total > 0 ? s.rate + '%' : '—'}</span>
+            </td>
+            <td style="text-align:center;white-space:nowrap;">
+              <button type="button" class="site-action-btn view-site-detail-btn" data-site-key="${escapeHtml(s.key)}">查看此站点</button>
+            </td>
+          </tr>
+        `;
+      }
+      statsSiteOverviewBody.innerHTML = overviewRowsHtml;
+
+      statsSiteOverviewBody.querySelectorAll('.view-site-detail-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-site-key') || 'all';
+          statsSelectedSiteKey = key;
+          renderStats();
+          if (statsTableWrap) statsTableWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      });
+    }
+
+    // 更新作用域徽标
+    if (statsScopeBadge) {
+      if (statsSelectedSiteKey === 'all') {
+        statsScopeBadge.textContent = `全部目标站点 (共 ${targetSites.length} 个站点)`;
+      } else {
+        const curr = targetSites.find((s) => s.key === statsSelectedSiteKey);
+        statsScopeBadge.textContent = curr ? `当前站点：[${curr.siteIndex + 1}] ${curr.name}` : '';
+      }
+    }
+  } else {
+    if (statsSiteNav) statsSiteNav.style.display = 'none';
+    if (toggleSiteOverviewBtn) toggleSiteOverviewBtn.style.display = 'none';
+    if (statsSiteOverviewWrap) statsSiteOverviewWrap.style.display = 'none';
+    if (filterTargetSite) filterTargetSite.style.display = 'none';
+    if (statsScopeBadge) statsScopeBadge.style.display = 'none';
+  }
+
+  // 根据当前选中的目标站点，确定本次统计卡片与明细表格的数据集
+  const selectedSite = statsSelectedSiteKey === 'all'
+    ? null
+    : targetSites.find((s) => s.key === statsSelectedSiteKey);
+
+  const siteResults = selectedSite
+    ? localResults.filter((r) => isResultMatchingSite(r, selectedSite))
+    : localResults;
+
+  // 统计卡片：严格依据当前站点数据集计算
+  const total = siteResults.length;
+  const success = siteResults.filter((r) => r.result === 'success').length;
+  const skipped = siteResults.filter((r) => r.result === 'skipped').length;
+  const fail = siteResults.filter((r) => r.result === 'fail').length;
+  const noCommentBox = siteResults.filter((r) => r.result === 'no_comment_box').length;
+  const manualRequired = siteResults.filter((r) => r.result === 'manual_required').length;
   statsTotal.textContent = total;
   statsSuccess.textContent = success;
   statsSkipped.textContent = skipped;
@@ -3793,45 +4140,50 @@ function renderStats() {
   const successRate = total > 0 ? Math.round((validCount / total) * 100) : 0;
   statsRate.textContent = total > 0 ? `${successRate}%` : '—';
 
+  // 智能重试按钮文案与状态联动
   if (retryAllFailedBtn) {
     if (fail > 0) {
       retryAllFailedBtn.style.display = 'inline-flex';
       const isRetrying = status === 'running' && (pendingRetryQueue.length > 0 || retryingItemIndexes.size > 0);
+      const btnText = selectedSite ? `🔄 重试当前站点失败 (${fail})` : `🔄 重试所有失败 (${fail})`;
       if (isRetrying) {
         retryAllFailedBtn.disabled = true;
         const count = retryingItemIndexes.size > 0 ? retryingItemIndexes.size : fail;
         retryAllFailedBtn.textContent = `🔄 正在重试失败项 (${count} 条)...`;
       } else if (status === 'running') {
         retryAllFailedBtn.disabled = true;
-        retryAllFailedBtn.textContent = `🔄 重试所有失败 (${fail})`;
+        retryAllFailedBtn.textContent = btnText;
       } else {
         retryAllFailedBtn.disabled = false;
-        retryAllFailedBtn.textContent = `🔄 重试所有失败 (${fail})`;
+        retryAllFailedBtn.textContent = btnText;
       }
     } else {
       retryAllFailedBtn.style.display = 'none';
     }
   }
 
-  buildDomainOptions();
+  // 引荐域名下拉根据当前查看的数据集动态建立
+  buildDomainOptions(siteResults);
 
   const resultFilter = filterResult.value;
   const domainFilter = filterDomain.value;
   const kw = filterKeyword.value.trim().toLowerCase();
 
-  const filtered = localResults.filter((r) => {
+  const filtered = siteResults.filter((r) => {
     if (resultFilter !== 'all' && r.result !== resultFilter) return false;
     if (domainFilter !== 'all' && extractDomain(r.url) !== domainFilter) return false;
     if (!filterTimeBucket(r.elapsed)) return false;
     if (!filterPageDepthBucket(r.pageMetrics)) return false;
     if (kw) {
-      const haystack = (r.url + ' ' + (r.promotionSiteUrl || '') + ' ' + (r.aiContent || '') + ' ' + (r.errorMessage || '')).toLowerCase();
+      const haystack = (r.url + ' ' + (r.promotionSiteUrl || '') + ' ' + (r.promotionSiteName || '') + ' ' + (r.aiContent || '') + ' ' + (r.errorMessage || '')).toLowerCase();
       if (!haystack.includes(kw)) return false;
     }
     return true;
   });
 
-  statsCountLabel.textContent = `显示 ${filtered.length} / ${total} 条`;
+  statsCountLabel.textContent = selectedSite
+    ? `显示 ${filtered.length} / ${total} 条（总计 ${localResults.length} 条）`
+    : `显示 ${filtered.length} / ${total} 条`;
 
   // 渲染表格（只重建 DOM，不重新请求）
   statsTableBody.innerHTML = '';
@@ -3865,8 +4217,15 @@ function renderStats() {
       aiCell.style.color = '#d1d5db';
     }
 
+    const displayIndex = selectedSite && r.urlIndexInSite != null
+      ? (r.urlIndexInSite + 1)
+      : (r.originalIndex + 1);
+    const indexTooltip = selectedSite && r.urlIndexInSite != null
+      ? `站点内序号: #${r.urlIndexInSite + 1} (全局序号: #${r.originalIndex + 1})`
+      : `全局序号: #${r.originalIndex + 1}`;
+
     tr.innerHTML = `
-      <td style="color:#9ca3af;width:40px;text-align:center;">${r.originalIndex + 1}</td>
+      <td style="color:#9ca3af;width:40px;text-align:center;" title="${indexTooltip}">${displayIndex}</td>
       <td title="${escapeHtml(r.url)}">
         <div class="target-url-cell">
           <span class="target-url-text">${escapeHtml(shortUrl)}</span>
@@ -4181,20 +4540,31 @@ async function retrySingleRow(urlIndex) {
  * 按照用户设置的并发数和超时参数，加入并发调度池执行。
  */
 async function retryAllFailed() {
-  console.log('[batch] retryAllFailed 开始:', { status, batchId });
+  console.log('[batch] retryAllFailed 开始:', { status, batchId, statsSelectedSiteKey });
 
   if (status === 'running') {
     alert('当前批量任务正在运行中，请等待完成或终止后再重试。');
     return;
   }
 
-  const failedItems = localResults.filter((r) => r.result === 'fail');
+  const targetSites = getTargetSitesList();
+  const selectedSite = statsSelectedSiteKey === 'all'
+    ? null
+    : targetSites.find((s) => s.key === statsSelectedSiteKey);
+
+  const candidateResults = selectedSite
+    ? localResults.filter((r) => isResultMatchingSite(r, selectedSite))
+    : localResults;
+
+  const failedItems = candidateResults.filter((r) => r.result === 'fail');
   if (failedItems.length === 0) {
-    alert('当前没有失败的项目需要重试。');
+    alert(selectedSite ? `目标站点 [${selectedSite.name}] 当前没有失败的项目需要重试。` : '当前没有失败的项目需要重试。');
     return;
   }
 
-  if (!batchPromotionSite || !batchPromotionSite.url) {
+  if (selectedSite) {
+    batchPromotionSite = normalizeBatchPromotionSite(selectedSite);
+  } else if (!batchPromotionSite || !batchPromotionSite.url) {
     const site = getSelectedBatchPromotionSite();
     if (site && site.url) {
       batchPromotionSite = normalizeBatchPromotionSite(site);

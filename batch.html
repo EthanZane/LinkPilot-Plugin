@@ -514,6 +514,188 @@
       .stats-card-value.fail { color: #dc2626; }
       .stats-card-value.rate { color: #2563eb; }
 
+      /* 目标站点切换导航与标签栏 */
+      .stats-site-nav {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+
+      .stats-site-nav-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #475569;
+        white-space: nowrap;
+      }
+
+      .stats-site-tabs {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        flex: 1;
+      }
+
+      .stats-site-tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        font-size: 12px;
+        color: #334155;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        line-height: 1.4;
+        user-select: none;
+      }
+
+      .stats-site-tab:hover {
+        background: #f1f5f9;
+        border-color: #94a3b8;
+      }
+
+      .stats-site-tab.active {
+        background: #eff6ff;
+        border-color: #3b82f6;
+        color: #1d4ed8;
+        font-weight: 600;
+        box-shadow: 0 1px 2px rgba(59, 130, 246, 0.1);
+      }
+
+      .stats-site-tab .step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #e2e8f0;
+        color: #475569;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .stats-site-tab.active .step-num {
+        background: #2563eb;
+        color: #ffffff;
+      }
+
+      .stats-site-tab .tab-badge {
+        font-size: 11px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: #f1f5f9;
+        color: #64748b;
+        font-weight: 500;
+      }
+
+      .stats-site-tab.active .tab-badge {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+
+      .stats-site-tab .tab-badge.badge-high {
+        color: #059669;
+        background: #d1fae5;
+      }
+
+      .stats-site-tab .tab-badge.badge-mid {
+        color: #d97706;
+        background: #fef3c7;
+      }
+
+      .stats-site-tab .tab-badge.badge-low {
+        color: #dc2626;
+        background: #fee2e2;
+      }
+
+      /* 范围指示徽标 */
+      .stats-scope-badge {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 8px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 500;
+        background: #e0f2fe;
+        color: #0369a1;
+      }
+
+      /* 各站点统计对比表 */
+      .stats-site-overview-wrap {
+        margin-bottom: 16px;
+        padding: 10px 12px;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+
+      .stats-site-overview-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #1e293b;
+        margin-bottom: 8px;
+      }
+
+      .stats-site-overview-table-scroll {
+        max-height: 240px;
+        overflow-y: auto;
+      }
+
+      .stats-site-overview-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      .stats-site-overview-table th,
+      .stats-site-overview-table td {
+        padding: 6px 8px;
+        border-bottom: 1px solid #f1f5f9;
+        text-align: left;
+      }
+
+      .stats-site-overview-table th {
+        background: #f8fafc;
+        color: #64748b;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .stats-site-overview-table tr:hover td {
+        background: #f8fafc;
+      }
+
+      .stats-site-overview-table tr.current-site-row td {
+        background: #eff6ff;
+        font-weight: 600;
+      }
+
+      .stats-site-overview-table .site-action-btn {
+        padding: 2px 8px;
+        font-size: 11px;
+        border-radius: 4px;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        cursor: pointer;
+        color: #2563eb;
+      }
+
+      .stats-site-overview-table .site-action-btn:hover {
+        background: #eff6ff;
+        border-color: #93c5fd;
+      }
+
       .stats-filter {
         display: flex;
         align-items: center;
@@ -526,30 +708,47 @@
 
       .stats-filter input[type="text"],
       .stats-filter select {
-        padding: 5px 10px;
+        height: 32px;
+        padding: 4px 8px;
         border-radius: 6px;
         border: 1px solid #d1d5db;
         font-size: 12px;
         outline: none;
         background: #fff;
+        color: #334155;
       }
 
-      .stats-filter input[type="text"] { flex: 1; min-width: 120px; }
+      .stats-filter select {
+        width: auto;
+        max-width: 220px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+
+      .stats-filter input[type="text"] {
+        flex: 1 1 180px;
+        min-width: 130px;
+        max-width: 280px;
+        padding: 4px 10px;
+      }
+
       .stats-filter input[type="text"]:focus,
       .stats-filter select:focus { border-color: #2563eb; }
 
       .stats-filter-label {
         font-size: 12px;
-        color: #6b7280;
-        font-weight: 500;
+        color: #475569;
+        font-weight: 600;
         white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .stats-count-label {
         margin-left: auto;
-        font-size: 11px;
-        color: #9ca3af;
+        font-size: 12px;
+        color: #64748b;
         white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .stats-table-wrap {
@@ -1423,11 +1622,46 @@
       <!-- 结果统计面板 -->
       <div class="card stats-panel" id="statsPanel">
         <div class="stats-panel-header">
-          <div class="card-title">执行结果统计</div>
+          <div class="card-title">
+            执行结果统计
+            <span class="stats-scope-badge" id="statsScopeBadge" style="display:none;"></span>
+          </div>
           <div class="stats-header-actions">
+            <button class="btn btn-secondary" id="toggleSiteOverviewBtn" type="button" style="display:none;" title="查看各目标站点的统计对比汇总">📊 目标站点汇总对比</button>
             <button class="btn btn-secondary" id="retryAllFailedBtn" type="button" style="display:none;" title="重新执行当前批次中所有失败的 URL">🔄 重试所有失败</button>
           </div>
         </div>
+
+        <!-- 目标站点多维度切换栏（多站点时呈现） -->
+        <div class="stats-site-nav" id="statsSiteNav" style="display:none;">
+          <div class="stats-site-nav-label">🎯 目标站点：</div>
+          <div class="stats-site-tabs" id="statsSiteTabs"></div>
+        </div>
+
+        <!-- 各站点统计对比一览表（可折叠展开） -->
+        <div class="stats-site-overview-wrap" id="statsSiteOverviewWrap" style="display:none;">
+          <div class="stats-site-overview-title">各目标站点执行统计对比</div>
+          <div class="stats-site-overview-table-scroll">
+            <table class="stats-site-overview-table">
+              <thead>
+                <tr>
+                  <th style="width:36px;text-align:center;">#</th>
+                  <th>目标站点</th>
+                  <th>目标 URL</th>
+                  <th style="text-align:center;">总数</th>
+                  <th style="text-align:center;">成功</th>
+                  <th style="text-align:center;">已存在</th>
+                  <th style="text-align:center;">需手动</th>
+                  <th style="text-align:center;">失败</th>
+                  <th style="text-align:center;">成功率</th>
+                  <th style="text-align:center;width:90px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="statsSiteOverviewBody"></tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="stats-summary">
           <div class="stats-card">
             <div class="stats-card-label">总数</div>
@@ -1460,6 +1694,9 @@
         </div>
         <div class="stats-filter">
           <span class="stats-filter-label">筛选：</span>
+          <select id="filterTargetSite" style="display:none;" title="按目标站点筛选">
+            <option value="all">全部目标站点</option>
+          </select>
           <select id="filterResult">
             <option value="all">全部结果</option>
             <option value="success">仅成功</option>
@@ -1470,7 +1707,7 @@
             <option value="fail">仅失败</option>
           </select>
           <select id="filterDomain">
-            <option value="all">全部域名</option>
+            <option value="all">全部引荐域名</option>
           </select>
           <select id="filterTimeRange">
             <option value="all">全部时段</option>

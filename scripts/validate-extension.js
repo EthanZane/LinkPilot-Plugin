@@ -85,6 +85,7 @@ function validateOptionsPageScriptScope() {
  */
 function validateBatchUiBindings() {
   const optionsHtml = readFileSync(path.join(rootDir, 'options.html'), 'utf8');
+  const batchHtml = readFileSync(path.join(rootDir, 'batch.html'), 'utf8');
   const requiredElementIds = [
     'databasePersistence',
     'databasePersistenceMessage',
@@ -95,12 +96,21 @@ function validateBatchUiBindings() {
     'resultCsvInput',
     'batchHistoryEmpty',
     'batchHistoryWrap',
-    'batchHistoryBody'
+    'batchHistoryBody',
+    'statsSiteNav',
+    'statsSiteTabs',
+    'statsSiteOverviewWrap',
+    'statsSiteOverviewBody',
+    'toggleSiteOverviewBtn',
+    'filterTargetSite',
+    'statsScopeBadge'
   ];
   for (const elementId of requiredElementIds) {
     assert(optionsHtml.includes(`id="${elementId}"`), `options.html 缺少批量功能节点：${elementId}`);
+    assert(batchHtml.includes(`id="${elementId}"`), `batch.html 缺少批量功能节点：${elementId}`);
   }
   assert(optionsHtml.includes('src="lib/papaparse.min.js"'), 'options.html 必须引入 lib/papaparse.min.js 以支持结果 CSV 导入');
+  assert(batchHtml.includes('src="lib/papaparse.min.js"'), 'batch.html 必须引入 lib/papaparse.min.js 以支持结果 CSV 导入');
 }
 
 /**
@@ -130,11 +140,114 @@ function validateManualFormFillingAndFloatingButtons() {
   );
 }
 
+/**
+ * 校验批量核心运行逻辑，防止变量未定义（如 targetUrl、targetSites）导致启动直接阻断。
+ */
+function validateBatchRuntimeExecution() {
+  const batchCode = readFileSync(path.join(rootDir, 'batch.js'), 'utf8');
+  const domElements = new Map();
+  function makeElement(id) {
+    return {
+      id,
+      style: {},
+      classList: { add() {}, remove() {} },
+      textContent: '',
+      innerHTML: '',
+      value: 'all',
+      disabled: false,
+      appendChild() {},
+      querySelectorAll() { return []; },
+      querySelector() { return null; },
+      addEventListener() {}
+    };
+  }
+
+  const document = {
+    addEventListener() {},
+    getElementById(id) {
+      if (!domElements.has(id)) domElements.set(id, makeElement(id));
+      return domElements.get(id);
+    },
+    createElement(tag) { return makeElement(tag); },
+    body: { appendChild() {}, removeChild() {} }
+  };
+
+  const chrome = {
+    storage: {
+      local: {
+        get(keys, cb) { cb({}); },
+        set(obj, cb) { if (cb) cb(); },
+        remove(keys, cb) { if (cb) cb(); }
+      },
+      sync: {
+        get(keys, cb) { cb({}); },
+        set(obj, cb) { if (cb) cb(); }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { onMessage: { addListener() {} } },
+    tabs: { onRemoved: { addListener() {}, removeListener() {} }, create() {} }
+  };
+
+  const sandbox = {
+    document,
+    window: {
+      addEventListener() {},
+      Papa: { parse: () => ({ data: [] }) },
+      document,
+      chrome,
+      alert() {},
+      confirm() { return true; },
+      URL: globalThis.URL
+    },
+    chrome,
+    URL: globalThis.URL,
+    alert() {},
+    confirm() { return true; },
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    Date,
+    Math,
+    String,
+    Number,
+    Array,
+    Object,
+    Set,
+    Map,
+    encodeURIComponent
+  };
+
+  const unwrappedCode = batchCode
+    .replace(/^\s*\(\(\)\s*=>\s*\{\s*'use strict';/m, '')
+    .replace(/\}\)\(\);\s*$/m, '');
+
+  vm.createContext(sandbox);
+  vm.runInContext(unwrappedCode, sandbox);
+
+  // 模拟运行 saveCurrentBatchHistory，验证 targetUrl 与 targetSites 生成无 ReferenceError
+  vm.runInContext(`
+    batchId = 'validate_test_batch';
+    totalCount = 10;
+    batchTargetQueue = [{ id: 's1', name: 'Site 1', url: 'https://site1.com', content: 'c1' }];
+    saveCurrentBatchHistory('pending');
+  `, sandbox);
+
+  const saved = vm.runInContext(`batchHistory.find((r) => r.id === 'validate_test_batch')`, sandbox);
+  assert(saved, 'batchHistory 应成功记录');
+  assert(saved.targetUrl === 'https://site1.com', 'targetUrl 应正常构造，无未声明异常');
+  assert(Array.isArray(saved.targetSites) && saved.targetSites.length === 1, 'targetSites 数组应正常构造');
+}
+
 validateRequiredFiles();
 validateManifest();
 validateJavaScriptSyntax();
 validateOptionsPageScriptScope();
 validateBatchUiBindings();
 validateManualFormFillingAndFloatingButtons();
+validateBatchRuntimeExecution();
 
-console.log('扩展校验通过：manifest、核心 JS 文件及设置页组合脚本均可加载。');
+console.log('扩展校验通过：manifest、核心 JS 文件及设置页组合脚本均可加载，批量运行逻辑正常。');
+
