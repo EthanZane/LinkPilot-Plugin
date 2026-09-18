@@ -730,6 +730,8 @@
       .stats-card-value.manual-required,
       .stats-card-value.no-comment-box { color: #b45309; }
       .stats-card-value.fail { color: #dc2626; }
+      .stats-card-value.blocked-illegal { color: #e11d48; }
+      .stats-card-value.unstarted { color: #64748b; }
       .stats-card-value.rate { color: #2563eb; }
 
       /* 目标站点切换导航与标签栏 */
@@ -997,6 +999,7 @@
       .result-badge.fail { background: #fee2e2; color: #991b1b; }
       .result-badge.skipped { background: #fef3c7; color: #92400e; }
       .result-badge.blocked_illegal { background: #ffe4e6; color: #9f1239; }
+      .result-badge.unstarted { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }
 
       .ai-content-cell {
         max-width: 260px;
@@ -1480,6 +1483,7 @@
       .stats-table tr.url-manual_required td,
       .stats-table tr.url-no_comment_box td { background: #fffbeb; }
       .stats-table tr.url-blocked_illegal td { background: #fff1f2; }
+      .stats-table tr.url-unstarted td { background: #f8fafc; }
 
       .url-preview tr.url-processing { background: #dbeafe !important; }
       .url-preview tr.url-done-success { background: #d1fae5 !important; }
@@ -1953,7 +1957,10 @@
                           <th style="text-align:center;">成功</th>
                           <th style="text-align:center;">已存在</th>
                           <th style="text-align:center;">需手动</th>
+                          <th style="text-align:center;">无评论框</th>
+                          <th style="text-align:center;">非法拦截</th>
                           <th style="text-align:center;">失败</th>
+                          <th style="text-align:center;">未开始</th>
                           <th style="text-align:center;">成功率</th>
                           <th style="text-align:center;width:90px;">操作</th>
                         </tr>
@@ -1985,8 +1992,16 @@
                     <div class="stats-card-value no-comment-box" id="statsNoCommentBox">0</div>
                   </div>
                   <div class="stats-card">
+                    <div class="stats-card-label">非法拦截</div>
+                    <div class="stats-card-value blocked-illegal" id="statsBlockedIllegal">0</div>
+                  </div>
+                  <div class="stats-card">
                     <div class="stats-card-label">失败</div>
                     <div class="stats-card-value fail" id="statsFail">0</div>
+                  </div>
+                  <div class="stats-card">
+                    <div class="stats-card-label">未开始</div>
+                    <div class="stats-card-value unstarted" id="statsUnstarted">0</div>
                   </div>
                   <div class="stats-card">
                     <div class="stats-card-label">成功率</div>
@@ -2006,6 +2021,7 @@
                     <option value="no_comment_box">仅无评论框</option>
                     <option value="blocked_illegal">仅非法拦截</option>
                     <option value="fail">仅失败</option>
+                    <option value="unstarted">仅未开始</option>
                   </select>
                   <select id="filterDomain">
                     <option value="all">全部引荐域名</option>

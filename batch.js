@@ -29,6 +29,7 @@ let skippedCount = 0;
 let noCommentBoxCount = 0;
 let manualRequiredCount = 0;
 let blockedIllegalCount = 0;
+let unstartedCount = 0;
 let pendingCount = 0;
 
 // 本地结果存储
@@ -112,7 +113,9 @@ const statsSuccess = document.getElementById('statsSuccess');
 const statsSkipped = document.getElementById('statsSkipped');
 const statsManualRequired = document.getElementById('statsManualRequired');
 const statsNoCommentBox = document.getElementById('statsNoCommentBox');
+const statsBlockedIllegal = document.getElementById('statsBlockedIllegal');
 const statsFail = document.getElementById('statsFail');
+const statsUnstarted = document.getElementById('statsUnstarted');
 const statsRate = document.getElementById('statsRate');
 const filterResult = document.getElementById('filterResult');
 const filterDomain = document.getElementById('filterDomain');
@@ -1004,14 +1007,17 @@ async function syncBatchHistoryFromDatabase({ notify = false } = {}) {
  */
 function summarizeBatchResults(results) {
   const list = Array.isArray(results) ? results : [];
+  const processedList = list.filter((item) => item.result !== 'unstarted');
   return {
-    processed: list.length,
+    total: list.length,
+    processed: processedList.length,
     success: list.filter((item) => item.result === 'success').length,
     skipped: list.filter((item) => item.result === 'skipped').length,
     manualRequired: list.filter((item) => item.result === 'manual_required').length,
     noCommentBox: list.filter((item) => item.result === 'no_comment_box').length,
     blockedIllegal: list.filter((item) => item.result === 'blocked_illegal').length,
-    fail: list.filter((item) => item.result === 'fail').length
+    fail: list.filter((item) => item.result === 'fail').length,
+    unstarted: list.filter((item) => item.result === 'unstarted').length
   };
 }
 
@@ -1060,6 +1066,14 @@ async function saveCurrentBatchHistory(databaseStatus = 'pending') {
     url: s.url || '',
     content: s.content || ''
   }));
+  const referralUrls = (Array.isArray(parsedUrls) && parsedUrls.length > 0)
+    ? parsedUrls.map((p, idx) => ({
+      originalIndex: p.originalIndex != null ? p.originalIndex : idx,
+      url: p.url,
+      sourceDomain: p.sourceDomain || extractDomain(p.url),
+      originalRow: Array.isArray(p.originalRow) ? p.originalRow : []
+    }))
+    : (existing.referralUrls || []);
 
   const record = {
     ...existing,
@@ -1072,6 +1086,7 @@ async function saveCurrentBatchHistory(databaseStatus = 'pending') {
     targetUrl,
     targetName,
     targetSites: targetSites.length > 0 ? targetSites : (existing.targetSites || []),
+    referralUrls: referralUrls.length > 0 ? referralUrls : (existing.referralUrls || []),
     startedAt: batchStartedAt || existing.startedAt || Date.now(),
     completedAt: batchCompletedAt || existing.completedAt || null,
     summary: summarizeBatchResults(localResults),
@@ -1178,28 +1193,6 @@ function applyBatchHistoryRecord(record) {
   batchCompletedAt = Number(record.completedAt) || null;
   retryingItemIndexes.clear();
 
-  const sortedResults = [...localResults].sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0));
-  const urls = sortedResults.map((item) => item.url).filter(Boolean);
-  if (manualUrlsInput) {
-    manualUrlsInput.value = urls.join('\n');
-  }
-
-  // 重建 parsedUrls，保证重试、行定位及重新批量处理时拥有完整的 URL 列表
-  parsedUrls = sortedResults.map((item, idx) => ({
-    originalIndex: item.originalIndex != null ? item.originalIndex : idx,
-    url: item.url,
-    sourceDomain: item.sourceDomain || extractDomain(item.url),
-    originalRow: Array.isArray(item.originalRow) && item.originalRow.length > 0
-      ? item.originalRow
-      : buildManualOriginalRow(item.url, item.sourceDomain || extractDomain(item.url))
-  }));
-
-  if (fileInfo && fileName && fileCount) {
-    fileName.textContent = batchSourceName || `批次日志 (${record.id ? String(record.id).slice(0, 8) : '已装载'})`;
-    fileCount.textContent = `共 ${parsedUrls.length} 条 URL`;
-    fileInfo.classList.add('visible');
-  }
-
   const firstResult = localResults.find((item) => item && item.promotionSiteUrl) || {};
   const targetUrl = String(record.targetUrl || firstResult.promotionSiteUrl || '').trim();
   const configuredSite = availablePromotionSites.find((site) => site.url === targetUrl);
@@ -1212,7 +1205,7 @@ function applyBatchHistoryRecord(record) {
       content: ''
     });
 
-  // 恢复多目标站点队列信息
+  // 1. 恢复多目标站点队列信息
   if (Array.isArray(record.targetSites) && record.targetSites.length > 0) {
     batchTargetQueue = record.targetSites.map(normalizeBatchPromotionSite);
   } else {
@@ -1235,8 +1228,113 @@ function applyBatchHistoryRecord(record) {
     }
     if (inferredSites.length > 1) {
       batchTargetQueue = inferredSites;
+    } else if (batchPromotionSite && batchPromotionSite.url) {
+      batchTargetQueue = [batchPromotionSite];
     }
   }
+
+  const numSites = Math.max(1, batchTargetQueue.length);
+  const inferredM = (totalCount > 0 && totalCount % numSites === 0)
+    ? (totalCount / numSites)
+    : Math.max(1, Math.round(totalCount / numSites));
+
+  // 2. 重建 parsedUrls（引荐 URL 序列，长度 M）
+  if (Array.isArray(record.referralUrls) && record.referralUrls.length > 0) {
+    parsedUrls = record.referralUrls.map((item, idx) => ({
+      originalIndex: item.originalIndex != null ? item.originalIndex : idx,
+      url: item.url,
+      sourceDomain: item.sourceDomain || extractDomain(item.url),
+      originalRow: Array.isArray(item.originalRow) && item.originalRow.length > 0
+        ? item.originalRow
+        : buildManualOriginalRow(item.url, item.sourceDomain || extractDomain(item.url))
+    }));
+  } else {
+    // 从已有的执行明细中按 urlIndexInSite 提取 M 条原始引荐 URL
+    const referralMap = new Map();
+    for (const item of localResults) {
+      if (!item || !item.url) continue;
+      const urlIdx = item.urlIndexInSite != null
+        ? Number(item.urlIndexInSite)
+        : ((item.originalIndex != null ? Number(item.originalIndex) : 0) % inferredM);
+      if (!referralMap.has(urlIdx)) {
+        referralMap.set(urlIdx, {
+          originalIndex: urlIdx,
+          url: item.url,
+          sourceDomain: item.sourceDomain || extractDomain(item.url),
+          originalRow: Array.isArray(item.originalRow) && item.originalRow.length > 0
+            ? item.originalRow
+            : buildManualOriginalRow(item.url, item.sourceDomain || extractDomain(item.url))
+        });
+      }
+    }
+    parsedUrls = [];
+    for (let i = 0; i < inferredM; i++) {
+      if (referralMap.has(i)) {
+        parsedUrls.push(referralMap.get(i));
+      } else {
+        const fallback = Array.from(referralMap.values())[i] || {
+          originalIndex: i,
+          url: '',
+          sourceDomain: '',
+          originalRow: []
+        };
+        parsedUrls.push({ ...fallback, originalIndex: i });
+      }
+    }
+  }
+
+  const urls = parsedUrls.map((item) => item.url).filter(Boolean);
+  if (manualUrlsInput) {
+    manualUrlsInput.value = urls.join('\n');
+  }
+
+  if (fileInfo && fileName && fileCount) {
+    fileName.textContent = batchSourceName || `批次日志 (${record.id ? String(record.id).slice(0, 8) : '已装载'})`;
+    fileCount.textContent = batchTargetQueue.length > 1
+      ? `共 ${parsedUrls.length} 条 URL（${batchTargetQueue.length} 个目标站点，总计 ${totalCount} 任务）`
+      : `共 ${parsedUrls.length} 条 URL`;
+    fileInfo.classList.add('visible');
+  }
+
+  // 3. 补全所有缺失的“未开始”任务条目，确保 localResults 数量与 totalCount 完全吻合
+  const existingMap = new Map();
+  for (const r of localResults) {
+    if (r && r.originalIndex != null) {
+      existingMap.set(Number(r.originalIndex), r);
+    }
+  }
+
+  const hydratedResults = [];
+  const M = parsedUrls.length || inferredM || 1;
+  for (let taskIdx = 0; taskIdx < totalCount; taskIdx++) {
+    if (existingMap.has(taskIdx)) {
+      hydratedResults.push(existingMap.get(taskIdx));
+    } else {
+      const siteIndex = Math.min(batchTargetQueue.length - 1, Math.floor(taskIdx / M));
+      const urlIndexInSite = taskIdx % M;
+      const site = batchTargetQueue[siteIndex] || batchPromotionSite;
+      const referralItem = parsedUrls[urlIndexInSite] || { url: '', sourceDomain: '', originalRow: [] };
+      hydratedResults.push({
+        originalIndex: taskIdx,
+        urlIndexInSite,
+        siteIndex,
+        url: referralItem.url,
+        sourceDomain: referralItem.sourceDomain || extractDomain(referralItem.url),
+        result: 'unstarted',
+        aiContent: null,
+        errorMessage: null,
+        promotionSiteId: (site && site.id) || '',
+        promotionSiteName: (site && site.name) || '',
+        promotionSiteUrl: (site && site.url) || '',
+        pageMetrics: null,
+        timestamp: null,
+        elapsed: null,
+        originalRow: referralItem.originalRow || []
+      });
+    }
+  }
+  localResults = hydratedResults.sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0));
+
   statsSelectedSiteKey = 'all';
 
   const summary = summarizeBatchResults(localResults);
@@ -1246,9 +1344,10 @@ function applyBatchHistoryRecord(record) {
   noCommentBoxCount = summary.noCommentBox;
   manualRequiredCount = summary.manualRequired;
   blockedIllegalCount = summary.blockedIllegal;
+  unstartedCount = summary.unstarted;
   pendingCount = Math.max(0, totalCount - summary.processed);
   isTerminated = true;
-  setStatus(record.status === 'completed' ? 'completed' : 'terminated');
+  setStatus(record.status === 'completed' && unstartedCount === 0 ? 'completed' : 'terminated');
   updateStatsUI();
   updateUI();
   renderStats();
@@ -2334,7 +2433,19 @@ function buildLocalDatabaseRunPayload(nextStatus) {
     rawConfig: {
       autoOpenPanel: batchAutoOpenPanel ? batchAutoOpenPanel.checked : true,
       autoGenerate: batchAutoGenerate ? batchAutoGenerate.checked : true,
-      autoSubmit: batchAutoSubmit ? batchAutoSubmit.checked : true
+      autoSubmit: batchAutoSubmit ? batchAutoSubmit.checked : true,
+      targetSites: sites.map((s, idx) => ({
+        id: s.id || `site_${idx}`,
+        name: s.name || s.url || `目标站点 ${idx + 1}`,
+        url: s.url || '',
+        content: s.content || ''
+      })),
+      referralUrls: parsedUrls.map((p, idx) => ({
+        originalIndex: p.originalIndex != null ? p.originalIndex : idx,
+        url: p.url,
+        sourceDomain: p.sourceDomain || extractDomain(p.url),
+        originalRow: Array.isArray(p.originalRow) ? p.originalRow : []
+      }))
     }
   };
 }
@@ -2408,12 +2519,13 @@ async function persistLocalDatabaseRunItem(resultEntry) {
  */
 async function syncLocalDatabaseRunResults(nextStatus) {
   if (!batchId || !batchPromotionSite || !batchPromotionSite.url) return false;
-  setDatabasePersistenceState('saving', `正在将 ${localResults.length} 条执行结果写入数据库，请稍候…`);
+  const executedItems = localResults.filter((r) => r.result !== 'unstarted');
+  setDatabasePersistenceState('saving', `正在将 ${executedItems.length} 条执行结果写入数据库，请稍候…`);
   await saveCurrentBatchHistory('pending');
   try {
     const result = await requestLocalDatabase('/api/runs/sync-results', {
       run: buildLocalDatabaseRunPayload(nextStatus),
-      items: localResults.map(buildLocalDatabaseRunItemPayload),
+      items: executedItems.map(buildLocalDatabaseRunItemPayload),
       status: nextStatus
     }, { timeoutMs: LOCAL_DATABASE_SYNC_TIMEOUT_MS });
     databaseFailedItemIndexes.clear();
@@ -2549,9 +2661,36 @@ async function startBatch() {
   noCommentBoxCount = 0;
   manualRequiredCount = 0;
   blockedIllegalCount = 0;
+  unstartedCount = totalCount;
   pendingCount = totalCount;
   currentIndex = 0;
+
+  // 预置全量 M * N 任务快照为“未开始”，确保随时中断均能完整恢复所有未跑任务
   localResults = [];
+  const initM = parsedUrls.length;
+  for (let idx = 0; idx < totalCount; idx++) {
+    const siteIdx = Math.min(batchTargetQueue.length - 1, Math.floor(idx / initM));
+    const urlIdx = idx % initM;
+    const site = batchTargetQueue[siteIdx];
+    const referralItem = parsedUrls[urlIdx];
+    localResults.push({
+      originalIndex: idx,
+      urlIndexInSite: urlIdx,
+      siteIndex: siteIdx,
+      url: referralItem ? referralItem.url : '',
+      sourceDomain: referralItem ? (referralItem.sourceDomain || extractDomain(referralItem.url)) : '',
+      result: 'unstarted',
+      aiContent: null,
+      errorMessage: null,
+      promotionSiteId: (site && site.id) || '',
+      promotionSiteName: (site && site.name) || '',
+      promotionSiteUrl: (site && site.url) || '',
+      pageMetrics: null,
+      timestamp: null,
+      elapsed: null,
+      originalRow: referralItem && referralItem.originalRow ? referralItem.originalRow : []
+    });
+  }
   statsSelectedSiteKey = 'all';
   isSiteOverviewOpen = false;
   databaseFailedItemIndexes.clear();
@@ -2885,7 +3024,13 @@ async function openNextTab() {
   if (!task) return;
   const { site, item, urlIndexInSite } = task;
   const { url, sourceDomain } = item;
-  console.log('[openNextTab] 准备打开标签页', { urlIndex, urlIndexInSite, siteName: site.name, url, activeTabCount, maxConcurrent, isRetryTab });
+  if (task.siteIndex != null && task.siteIndex !== currentQueueSiteIndex) {
+    currentQueueSiteIndex = task.siteIndex;
+    batchPromotionSite = normalizeBatchPromotionSite(site);
+    updateBatchPromotionSiteSummary();
+    updateQueueBanner();
+  }
+  console.log('[openNextTab] 准备打开标签页', { urlIndex, urlIndexInSite, siteIndex: task.siteIndex, siteName: site.name, url, activeTabCount, maxConcurrent, isRetryTab });
 
   const illegalCheck = item.illegalCheck || evaluateIllegalSiteForBatchItem(url, sourceDomain);
   if (illegalCheck.blocked) {
@@ -3096,6 +3241,7 @@ function recalculateStatsCounts() {
   noCommentBoxCount = summary.noCommentBox;
   manualRequiredCount = summary.manualRequired;
   blockedIllegalCount = summary.blockedIllegal;
+  unstartedCount = summary.unstarted;
   pendingCount = Math.max(0, totalCount - summary.processed);
 }
 
@@ -3283,9 +3429,9 @@ async function checkAllCompleted(options = {}) {
   const currentSiteStart = currentQueueSiteIndex * M;
   const currentSiteEnd = Math.min(totalCount, (currentQueueSiteIndex + 1) * M);
 
-  // 统计当前目标站点已落盘的条数
+  // 统计当前目标站点已落盘的条数（排除未开始）
   const currentSiteResults = localResults.filter(
-    (r) => r.originalIndex >= currentSiteStart && r.originalIndex < currentSiteEnd
+    (r) => r.originalIndex >= currentSiteStart && r.originalIndex < currentSiteEnd && r.result !== 'unstarted'
   );
   const currentSiteAllQueued = currentIndex >= currentSiteEnd && pendingRetryQueue.length === 0;
   const noActiveTabs = activeTabCount === 0 && activeTabs.size === 0;
@@ -3297,8 +3443,31 @@ async function checkAllCompleted(options = {}) {
     currentSiteAllQueued,
     noActiveTabs,
     currentIndex,
-    totalCount
+    totalCount,
+    pendingRetries: pendingRetryQueue.length,
+    retryingCount: retryingItemIndexes.size
   });
+
+  const unstartedRemaining = localResults.filter((r) => r.result === 'unstarted').length;
+  // 如果所有任务均已执行（无未开始），且没有等待中的重试与活动标签页，全量完成
+  if (unstartedRemaining === 0 && pendingRetryQueue.length === 0 && retryingItemIndexes.size === 0 && noActiveTabs) {
+    await onAllCompleted();
+    return;
+  }
+
+  // 如果是在执行重试/未开始队列，且重试队列与活动标签已全部清空
+  if (pendingRetryQueue.length === 0 && retryingItemIndexes.size === 0 && noActiveTabs && currentIndex >= totalCount) {
+    isTerminated = true;
+    status = 'terminated';
+    setStatus('terminated');
+    updateStatsUI();
+    updateUI();
+    updateBatchPromotionSiteSummary();
+    updateQueueBanner();
+    await saveCurrentBatchHistory(databaseFailedItemIndexes.size > 0 ? 'failed' : 'pending');
+    await syncLocalDatabaseRunResults('terminated');
+    return;
+  }
 
   if (currentSiteResults.length >= (currentSiteEnd - currentSiteStart) && currentSiteAllQueued && noActiveTabs) {
     if (currentQueueSiteIndex + 1 < batchTargetQueue.length) {
@@ -3701,7 +3870,7 @@ function clearBatch() {
   batchTargetQueue = [];
   currentQueueSiteIndex = 0;
   batchId = null;
-  totalCount = successCount = failCount = skippedCount = noCommentBoxCount = manualRequiredCount = blockedIllegalCount = pendingCount = 0;
+  totalCount = successCount = failCount = skippedCount = noCommentBoxCount = manualRequiredCount = blockedIllegalCount = unstartedCount = pendingCount = 0;
   currentIndex = 0;
   localResults = [];
   batchSourceName = '';
@@ -3723,7 +3892,9 @@ function clearBatch() {
   statsSkipped.textContent = '0';
   if (statsManualRequired) statsManualRequired.textContent = '0';
   statsNoCommentBox.textContent = '0';
+  if (statsBlockedIllegal) statsBlockedIllegal.textContent = '0';
   statsFail.textContent = '0';
+  if (statsUnstarted) statsUnstarted.textContent = '0';
   statsRate.textContent = '—';
   statsPanel.classList.remove('visible');
   if (databasePersistence) {
@@ -3952,9 +4123,13 @@ function getTargetSitesList() {
     const skipped = matched.filter((r) => r.result === 'skipped').length;
     const manualRequired = matched.filter((r) => r.result === 'manual_required').length;
     const noCommentBox = matched.filter((r) => r.result === 'no_comment_box').length;
+    const blockedIllegal = matched.filter((r) => r.result === 'blocked_illegal').length;
     const fail = matched.filter((r) => r.result === 'fail').length;
+    const unstarted = matched.filter((r) => r.result === 'unstarted').length;
+    const executed = success + skipped + manualRequired + noCommentBox + blockedIllegal + fail;
     const validCount = success + skipped;
-    const rate = total > 0 ? Math.round((validCount / total) * 100) : 0;
+    const rateDenominator = executed > 0 ? executed : total;
+    const rate = rateDenominator > 0 ? Math.round((validCount / rateDenominator) * 100) : 0;
     return {
       ...site,
       total,
@@ -3962,7 +4137,10 @@ function getTargetSitesList() {
       skipped,
       manualRequired,
       noCommentBox,
+      blockedIllegal,
       fail,
+      unstarted,
+      executed,
       rate
     };
   });
@@ -4017,12 +4195,15 @@ function renderStats() {
       const overallTotal = localResults.length;
       const overallSuccess = localResults.filter((r) => r.result === 'success').length;
       const overallSkipped = localResults.filter((r) => r.result === 'skipped').length;
-      const overallRate = overallTotal > 0 ? Math.round(((overallSuccess + overallSkipped) / overallTotal) * 100) : 0;
+      const overallUnstarted = localResults.filter((r) => r.result === 'unstarted').length;
+      const overallExecuted = overallTotal - overallUnstarted;
+      const overallRateDenominator = overallExecuted > 0 ? overallExecuted : overallTotal;
+      const overallRate = overallRateDenominator > 0 ? Math.round(((overallSuccess + overallSkipped) / overallRateDenominator) * 100) : 0;
 
       let tabsHtml = `
         <button type="button" class="stats-site-tab ${statsSelectedSiteKey === 'all' ? 'active' : ''}" data-site-key="all">
           <span class="tab-title">全部目标站点</span>
-          <span class="tab-badge">${overallTotal} 条 · ${overallRate}%</span>
+          <span class="tab-badge">${overallTotal} 条 · ${overallExecuted > 0 ? overallRate + '%' : '—'}</span>
         </button>
       `;
 
@@ -4032,7 +4213,7 @@ function renderStats() {
           <button type="button" class="stats-site-tab ${statsSelectedSiteKey === s.key ? 'active' : ''}" data-site-key="${escapeHtml(s.key)}" title="${escapeHtml(s.url || s.name)}">
             <span class="step-num">${s.siteIndex + 1}</span>
             <span class="tab-title">${escapeHtml(s.name)}</span>
-            <span class="tab-badge ${rateClass}">${s.total} 条 · ${s.total > 0 ? s.rate + '%' : '—'}</span>
+            <span class="tab-badge ${rateClass}">${s.total} 条 · ${s.executed > 0 ? s.rate + '%' : '—'}</span>
           </button>
         `;
       }
@@ -4051,7 +4232,7 @@ function renderStats() {
     if (filterTargetSite) {
       let optionsHtml = `<option value="all">全部目标站点 (共 ${targetSites.length} 个站点)</option>`;
       for (const s of targetSites) {
-        optionsHtml += `<option value="${escapeHtml(s.key)}">[${s.siteIndex + 1}] ${escapeHtml(s.name)} (${s.total} 条 · 成功率 ${s.total > 0 ? s.rate + '%' : '—'})</option>`;
+        optionsHtml += `<option value="${escapeHtml(s.key)}">[${s.siteIndex + 1}] ${escapeHtml(s.name)} (${s.total} 条 · 成功率 ${s.executed > 0 ? s.rate + '%' : '—'})</option>`;
       }
       filterTargetSite.innerHTML = optionsHtml;
       filterTargetSite.value = statsSelectedSiteKey;
@@ -4074,9 +4255,12 @@ function renderStats() {
             <td style="text-align:center;color:#059669;font-weight:700;">${s.success}</td>
             <td style="text-align:center;color:#2563eb;">${s.skipped}</td>
             <td style="text-align:center;color:#b45309;">${s.manualRequired}</td>
+            <td style="text-align:center;color:#d97706;">${s.noCommentBox}</td>
+            <td style="text-align:center;color:#e11d48;">${s.blockedIllegal}</td>
             <td style="text-align:center;color:#dc2626;font-weight:700;">${s.fail}</td>
+            <td style="text-align:center;color:#64748b;font-weight:600;">${s.unstarted}</td>
             <td style="text-align:center;">
-              <span class="tab-badge ${rateClass}" style="display:inline-block;padding:2px 6px;">${s.total > 0 ? s.rate + '%' : '—'}</span>
+              <span class="tab-badge ${rateClass}" style="display:inline-block;padding:2px 6px;">${s.executed > 0 ? s.rate + '%' : '—'}</span>
             </td>
             <td style="text-align:center;white-space:nowrap;">
               <button type="button" class="site-action-btn view-site-detail-btn" data-site-key="${escapeHtml(s.key)}">查看此站点</button>
@@ -4126,30 +4310,50 @@ function renderStats() {
   const total = siteResults.length;
   const success = siteResults.filter((r) => r.result === 'success').length;
   const skipped = siteResults.filter((r) => r.result === 'skipped').length;
-  const fail = siteResults.filter((r) => r.result === 'fail').length;
-  const noCommentBox = siteResults.filter((r) => r.result === 'no_comment_box').length;
   const manualRequired = siteResults.filter((r) => r.result === 'manual_required').length;
+  const noCommentBox = siteResults.filter((r) => r.result === 'no_comment_box').length;
+  const blockedIllegal = siteResults.filter((r) => r.result === 'blocked_illegal').length;
+  const fail = siteResults.filter((r) => r.result === 'fail').length;
+  const unstarted = siteResults.filter((r) => r.result === 'unstarted').length;
+  const executed = success + skipped + manualRequired + noCommentBox + blockedIllegal + fail;
+
   statsTotal.textContent = total;
   statsSuccess.textContent = success;
   statsSkipped.textContent = skipped;
   if (statsManualRequired) statsManualRequired.textContent = manualRequired;
-  statsFail.textContent = fail;
   statsNoCommentBox.textContent = noCommentBox;
-  // 成功率 = (成功 + 已存在) / 总数
-  const validCount = success + skipped;
-  const successRate = total > 0 ? Math.round((validCount / total) * 100) : 0;
-  statsRate.textContent = total > 0 ? `${successRate}%` : '—';
+  if (statsBlockedIllegal) statsBlockedIllegal.textContent = blockedIllegal;
+  statsFail.textContent = fail;
+  if (statsUnstarted) statsUnstarted.textContent = unstarted;
 
-  // 智能重试按钮文案与状态联动
+  // 成功率计算：如果存在未开始，依据已执行量计算成功率，更加贴合现场
+  const validCount = success + skipped;
+  const rateDenominator = executed > 0 ? executed : total;
+  const successRate = rateDenominator > 0 ? Math.round((validCount / rateDenominator) * 100) : 0;
+  statsRate.textContent = executed > 0 ? `${successRate}%` : '—';
+  statsRate.title = unstarted > 0
+    ? `已执行 ${executed}/${total} 条，成功率 ${successRate}%（未开始 ${unstarted} 条）`
+    : `全部 ${total} 条已执行完毕，成功率 ${successRate}%`;
+
+  // 智能重试与未开始执行按钮文案与状态联动
+  const retryableCount = fail + unstarted;
   if (retryAllFailedBtn) {
-    if (fail > 0) {
+    if (retryableCount > 0) {
       retryAllFailedBtn.style.display = 'inline-flex';
       const isRetrying = status === 'running' && (pendingRetryQueue.length > 0 || retryingItemIndexes.size > 0);
-      const btnText = selectedSite ? `🔄 重试当前站点失败 (${fail})` : `🔄 重试所有失败 (${fail})`;
+      let btnText;
+      if (fail > 0 && unstarted > 0) {
+        btnText = selectedSite ? `🔄 重试当前站点失败与未开始 (${retryableCount})` : `🔄 重试所有失败与未开始 (${retryableCount})`;
+      } else if (unstarted > 0) {
+        btnText = selectedSite ? `▶️ 执行当前站点未开始项 (${unstarted})` : `▶️ 执行所有未开始项 (${unstarted})`;
+      } else {
+        btnText = selectedSite ? `🔄 重试当前站点失败 (${fail})` : `🔄 重试所有失败 (${fail})`;
+      }
+
       if (isRetrying) {
         retryAllFailedBtn.disabled = true;
-        const count = retryingItemIndexes.size > 0 ? retryingItemIndexes.size : fail;
-        retryAllFailedBtn.textContent = `🔄 正在重试失败项 (${count} 条)...`;
+        const count = retryingItemIndexes.size > 0 ? retryingItemIndexes.size : retryableCount;
+        retryAllFailedBtn.textContent = `🔄 正在执行中 (${count} 条)...`;
       } else if (status === 'running') {
         retryAllFailedBtn.disabled = true;
         retryAllFailedBtn.textContent = btnText;
@@ -4298,19 +4502,21 @@ function renderStats() {
     const isRetrying = retryingItemIndexes.has(r.originalIndex);
     const isRetryable = true;
 
+    const isUnstarted = r.result === 'unstarted';
+
     if (isRetrying) {
       const retryBtn = document.createElement('button');
       retryBtn.type = 'button';
       retryBtn.className = 'btn-retry-row retrying';
       retryBtn.disabled = true;
-      retryBtn.textContent = '重试中…';
+      retryBtn.textContent = isUnstarted ? '执行中…' : '重试中…';
       actionCell.appendChild(retryBtn);
     } else if (isRetryable) {
       const retryBtn = document.createElement('button');
       retryBtn.type = 'button';
       retryBtn.className = 'btn-retry-row';
-      retryBtn.title = '重试此记录并更新当前批次结果';
-      retryBtn.textContent = '重试';
+      retryBtn.title = isUnstarted ? '执行此任务并更新当前批次结果' : '重试此记录并更新当前批次结果';
+      retryBtn.textContent = isUnstarted ? '执行' : '重试';
       retryBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         retrySingleRow(r.originalIndex);
@@ -4346,34 +4552,48 @@ async function retrySingleRow(urlIndex) {
     return;
   }
 
-  if (!batchPromotionSite || !batchPromotionSite.url) {
+  const task = getBatchTaskInfo(urlIndex);
+  let targetSiteForTask = null;
+  if (task && task.site && task.site.url) {
+    targetSiteForTask = normalizeBatchPromotionSite(task.site);
+    if (task.siteIndex != null) {
+      currentQueueSiteIndex = task.siteIndex;
+    }
+  } else if (existingResult.promotionSiteUrl) {
+    targetSiteForTask = normalizeBatchPromotionSite({
+      id: existingResult.promotionSiteId || 'retry_target',
+      name: existingResult.promotionSiteName || '重试目标',
+      url: existingResult.promotionSiteUrl,
+      content: ''
+    });
+  } else if (batchPromotionSite && batchPromotionSite.url) {
+    targetSiteForTask = normalizeBatchPromotionSite(batchPromotionSite);
+  } else {
     const site = getSelectedBatchPromotionSite();
     if (site && site.url) {
-      batchPromotionSite = normalizeBatchPromotionSite(site);
-    } else if (existingResult.promotionSiteUrl) {
-      batchPromotionSite = normalizeBatchPromotionSite({
-        id: existingResult.promotionSiteId || 'retry_target',
-        name: existingResult.promotionSiteName || '重试目标',
-        url: existingResult.promotionSiteUrl,
-        content: ''
-      });
+      targetSiteForTask = normalizeBatchPromotionSite(site);
     }
   }
 
-  if (!batchPromotionSite || !batchPromotionSite.url) {
+  if (!targetSiteForTask || !targetSiteForTask.url) {
     alert('重试失败：缺少目标 URL 配置，请先选择目标 URL。');
     return;
   }
+  batchPromotionSite = targetSiteForTask;
 
-  let item = parsedUrls[urlIndex];
+  const M = parsedUrls.length || 1;
+  const urlIndexInSite = task ? task.urlIndexInSite : (existingResult.urlIndexInSite != null ? existingResult.urlIndexInSite : (urlIndex % M));
+  const siteIndex = task ? task.siteIndex : (existingResult.siteIndex != null ? existingResult.siteIndex : currentQueueSiteIndex);
+
+  let item = (task && task.item) || parsedUrls[urlIndexInSite];
   if (!item) {
     item = {
-      originalIndex: urlIndex,
+      originalIndex: urlIndexInSite,
       url: existingResult.url,
       sourceDomain: existingResult.sourceDomain || extractDomain(existingResult.url),
       originalRow: existingResult.originalRow || []
     };
-    parsedUrls[urlIndex] = item;
+    parsedUrls[urlIndexInSite] = item;
   }
 
   if (!batchId) {
@@ -4407,10 +4627,10 @@ async function retrySingleRow(urlIndex) {
 
       activeTabCount++;
       const startTime = Date.now();
-      activeTabs.set(tab.id, { urlIndex, startTime });
-      activeTabsByIndex.set(urlIndex, { urlIndex, startTime });
+      activeTabs.set(tab.id, { urlIndex, urlIndexInSite, siteIndex, startTime });
+      activeTabsByIndex.set(urlIndex, { urlIndex, urlIndexInSite, siteIndex, startTime });
 
-      highlightPreviewRow(urlIndex, 'processing');
+      highlightPreviewRow(urlIndexInSite, 'processing');
       startTimeoutChecker();
 
       // 监听标签页关闭
@@ -4432,7 +4652,7 @@ async function retrySingleRow(urlIndex) {
               await new Promise((r) => setTimeout(r, 400));
               const currentEntry2 = localResults.find((r) => r.originalIndex === urlIndex);
               if (currentEntry2 && currentEntry2.timestamp >= startTime) {
-                clearPreviewRow(urlIndex);
+                clearPreviewRow(urlIndexInSite);
                 updateStatsUI();
                 renderStats();
                 return;
@@ -4445,7 +4665,7 @@ async function retrySingleRow(urlIndex) {
               if (match && match.timestamp >= startTime) {
                 console.log('[batch] 重试标签关闭后从 storage 恢复匹配结果:', match);
                 handleTabResult(urlIndex, match.result, match.aiContent, match.errorMessage, undefined, match);
-                clearPreviewRow(urlIndex);
+                clearPreviewRow(urlIndexInSite);
                 updateStatsUI();
                 renderStats();
                 return;
@@ -4456,8 +4676,8 @@ async function retrySingleRow(urlIndex) {
               handleTabResult(urlIndex, 'fail', null, '用户手动关闭', elapsed);
             } else {
               console.log('[batch] 重试标签关闭已有新结果:', urlIndex);
-              clearPreviewRow(urlIndex);
             }
+            clearPreviewRow(urlIndexInSite);
             updateStatsUI();
             renderStats();
           };
@@ -4485,7 +4705,7 @@ async function retrySingleRow(urlIndex) {
         }
         chrome.tabs.sendMessage(tabId, { type: 'PING' }, { frameId: 0 }).then(() => {
           const isDebug = batchDebugMode ? batchDebugMode.checked : false;
-          const presetComment = isDebug ? resolveDebugCommentText(batchPromotionSite) : '';
+          const presetComment = isDebug ? resolveDebugCommentText(targetSiteForTask) : '';
 
           console.log('[batch] 重试 content.js 已就绪，发送 BATCH_HANDLE → tabId:', tab.id, { batchId, urlIndex, url: item.url });
           chrome.tabs.sendMessage(tab.id, {
@@ -4493,7 +4713,7 @@ async function retrySingleRow(urlIndex) {
             batchId,
             urlIndex,
             url: item.url,
-            promotionSite: normalizeBatchPromotionSite(batchPromotionSite),
+            promotionSite: normalizeBatchPromotionSite(targetSiteForTask),
             debugMode: isDebug,
             presetComment: presetComment,
             forceRetry: true
@@ -4556,14 +4776,22 @@ async function retryAllFailed() {
     ? localResults.filter((r) => isResultMatchingSite(r, selectedSite))
     : localResults;
 
-  const failedItems = candidateResults.filter((r) => r.result === 'fail');
-  if (failedItems.length === 0) {
-    alert(selectedSite ? `目标站点 [${selectedSite.name}] 当前没有失败的项目需要重试。` : '当前没有失败的项目需要重试。');
+  const retryableItems = candidateResults.filter((r) => r.result === 'fail' || r.result === 'unstarted');
+  if (retryableItems.length === 0) {
+    alert(selectedSite ? `目标站点 [${selectedSite.name}] 当前没有失败或未开始的项目需要执行。` : '当前没有失败或未开始的项目需要执行。');
     return;
+  }
+
+  if (batchTargetQueue.length === 0 && targetSites.length > 0) {
+    batchTargetQueue = targetSites.map(normalizeBatchPromotionSite);
   }
 
   if (selectedSite) {
     batchPromotionSite = normalizeBatchPromotionSite(selectedSite);
+    const siteIdx = batchTargetQueue.findIndex((s) => s.url === selectedSite.url || (s.id && s.id === selectedSite.id));
+    if (siteIdx !== -1) {
+      currentQueueSiteIndex = siteIdx;
+    }
   } else if (!batchPromotionSite || !batchPromotionSite.url) {
     const site = getSelectedBatchPromotionSite();
     if (site && site.url) {
@@ -4593,12 +4821,13 @@ async function retryAllFailed() {
     chrome.storage.local.remove(['batchCtx', 'batchSubmitCtx', 'batchSubmitCtxMap'], resolve);
   });
 
+  const M = parsedUrls.length || 1;
   // 保证 parsedUrls 中包含待重试项目的信息
-  for (const r of failedItems) {
-    const idx = r.originalIndex;
-    if (!parsedUrls[idx]) {
-      parsedUrls[idx] = {
-        originalIndex: idx,
+  for (const r of retryableItems) {
+    const urlIdxInSite = r.urlIndexInSite != null ? r.urlIndexInSite : (r.originalIndex % M);
+    if (!parsedUrls[urlIdxInSite]) {
+      parsedUrls[urlIdxInSite] = {
+        originalIndex: urlIdxInSite,
         url: r.url,
         sourceDomain: r.sourceDomain || extractDomain(r.url),
         originalRow: r.originalRow || []
@@ -4614,11 +4843,23 @@ async function retryAllFailed() {
   await saveBatchTaskSettings();
 
   isTerminated = false;
-  pendingRetryQueue = failedItems.map((r) => r.originalIndex);
+  pendingRetryQueue = retryableItems.map((r) => r.originalIndex).sort((a, b) => a - b);
+  currentIndex = Math.max(currentIndex, totalCount);
+
   for (const idx of pendingRetryQueue) {
     retryingItemIndexes.add(idx);
     timeoutRetryMap.delete(idx);
-    highlightPreviewRow(idx, 'pending');
+    const task = getBatchTaskInfo(idx);
+    const previewIdx = task ? task.urlIndexInSite : (idx % M);
+    highlightPreviewRow(previewIdx, 'pending');
+  }
+
+  const firstTask = getBatchTaskInfo(pendingRetryQueue[0]);
+  if (firstTask && firstTask.site) {
+    currentQueueSiteIndex = firstTask.siteIndex;
+    batchPromotionSite = normalizeBatchPromotionSite(firstTask.site);
+    updateBatchPromotionSiteSummary();
+    updateQueueBanner();
   }
 
   setStatus('running');
@@ -4785,6 +5026,7 @@ function getResultText(result) {
     case 'manual_required': return '需手动处理';
     case 'no_comment_box': return '无评论框';
     case 'blocked_illegal': return '非法拦截';
+    case 'unstarted': return '未开始';
     case 'fail': return '失败';
     default: return result;
   }

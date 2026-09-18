@@ -103,7 +103,9 @@ function validateBatchUiBindings() {
     'statsSiteOverviewBody',
     'toggleSiteOverviewBtn',
     'filterTargetSite',
-    'statsScopeBadge'
+    'statsScopeBadge',
+    'statsBlockedIllegal',
+    'statsUnstarted'
   ];
   for (const elementId of requiredElementIds) {
     assert(optionsHtml.includes(`id="${elementId}"`), `options.html 缺少批量功能节点：${elementId}`);
@@ -150,7 +152,7 @@ function validateBatchRuntimeExecution() {
     return {
       id,
       style: {},
-      classList: { add() {}, remove() {} },
+      classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
       textContent: '',
       innerHTML: '',
       value: 'all',
@@ -158,7 +160,10 @@ function validateBatchRuntimeExecution() {
       appendChild() {},
       querySelectorAll() { return []; },
       querySelector() { return null; },
-      addEventListener() {}
+      addEventListener() {},
+      setAttribute() {},
+      getAttribute() { return null; },
+      removeAttribute() {}
     };
   }
 
@@ -168,6 +173,8 @@ function validateBatchRuntimeExecution() {
       if (!domElements.has(id)) domElements.set(id, makeElement(id));
       return domElements.get(id);
     },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
     createElement(tag) { return makeElement(tag); },
     body: { appendChild() {}, removeChild() {} }
   };
@@ -239,6 +246,77 @@ function validateBatchRuntimeExecution() {
   assert(saved, 'batchHistory 应成功记录');
   assert(saved.targetUrl === 'https://site1.com', 'targetUrl 应正常构造，无未声明异常');
   assert(Array.isArray(saved.targetSites) && saved.targetSites.length === 1, 'targetSites 数组应正常构造');
+
+  // 验证未开始与拦截状态的文本映射
+  assert(vm.runInContext(`getResultText('unstarted') === '未开始'`, sandbox), 'getResultText(unstarted) 必须为 未开始');
+  assert(vm.runInContext(`getResultText('blocked_illegal') === '非法拦截'`, sandbox), 'getResultText(blocked_illegal) 必须为 非法拦截');
+
+  // 验证各状态统计加和平衡与已处理计算
+  vm.runInContext(`
+    const testResults = [
+      { originalIndex: 0, result: 'success' },
+      { originalIndex: 1, result: 'skipped' },
+      { originalIndex: 2, result: 'manual_required' },
+      { originalIndex: 3, result: 'no_comment_box' },
+      { originalIndex: 4, result: 'blocked_illegal' },
+      { originalIndex: 5, result: 'fail' },
+      { originalIndex: 6, result: 'unstarted' }
+    ];
+    testSummary = summarizeBatchResults(testResults);
+  `, sandbox);
+
+  const testSummary = vm.runInContext(`testSummary`, sandbox);
+  assert(testSummary.total === 7, '汇总总数应为 7');
+  assert(testSummary.success === 1, '成功数应为 1');
+  assert(testSummary.skipped === 1, '已存在数应为 1');
+  assert(testSummary.manualRequired === 1, '需手动处理数应为 1');
+  assert(testSummary.noCommentBox === 1, '无评论框数应为 1');
+  assert(testSummary.blockedIllegal === 1, '非法拦截数应为 1');
+  assert(testSummary.fail === 1, '失败数应为 1');
+  assert(testSummary.unstarted === 1, '未开始数应为 1');
+  assert(testSummary.processed === 6, '已处理数应为 6（排除未开始）');
+  assert(
+    testSummary.total === (testSummary.success + testSummary.skipped + testSummary.manualRequired + testSummary.noCommentBox + testSummary.blockedIllegal + testSummary.fail + testSummary.unstarted),
+    '各分类统计指标相加必须严格等于总数'
+  );
+
+  // 验证中断恢复时未开始任务的补全与恢复
+  vm.runInContext(`
+    const interruptedRecord = {
+      id: 'interrupted_batch_1',
+      status: 'terminated',
+      totalCount: 4,
+      targetSites: [
+        { id: 'site_1', name: 'Site 1', url: 'https://site1.com' },
+        { id: 'site_2', name: 'Site 2', url: 'https://site2.com' }
+      ],
+      referralUrls: [
+        { originalIndex: 0, url: 'https://ref1.com', sourceDomain: 'ref1.com', originalRow: ['ref1.com'] },
+        { originalIndex: 1, url: 'https://ref2.com', sourceDomain: 'ref2.com', originalRow: ['ref2.com'] }
+      ],
+      results: [
+        { originalIndex: 0, url: 'https://ref1.com', result: 'success', promotionSiteUrl: 'https://site1.com' }
+      ]
+    };
+    applyBatchHistoryRecord(interruptedRecord);
+  `, sandbox);
+
+  const hydratedResults = vm.runInContext(`localResults`, sandbox);
+  assert(hydratedResults.length === 4, '中断恢复后 localResults 长度应自动补齐至总任务数 4');
+  const unstartedItems = hydratedResults.filter((r) => r.result === 'unstarted');
+  assert(unstartedItems.length === 3, '中断恢复后应有 3 条未开始任务');
+  const restoredParsedUrls = vm.runInContext(`parsedUrls`, sandbox);
+  assert(restoredParsedUrls.length === 2, 'parsedUrls 应保持原始引荐 URL 数量 2 条');
+
+  const hydratedSummary = vm.runInContext(`summarizeBatchResults(localResults)`, sandbox);
+  assert(hydratedSummary.total === 4, '中断恢复后任务总数应为 4');
+  assert(hydratedSummary.success === 1, '中断恢复后成功数应为 1');
+  assert(hydratedSummary.unstarted === 3, '中断恢复后未开始数应为 3');
+  assert(hydratedSummary.processed === 1, '中断恢复后已处理数应为 1（仅已执行部分）');
+  assert(
+    hydratedSummary.total === (hydratedSummary.success + hydratedSummary.skipped + hydratedSummary.manualRequired + hydratedSummary.noCommentBox + hydratedSummary.blockedIllegal + hydratedSummary.fail + hydratedSummary.unstarted),
+    '中断恢复后各指标相加必须严格等于总数'
+  );
 }
 
 validateRequiredFiles();
