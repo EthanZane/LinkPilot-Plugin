@@ -568,7 +568,7 @@
               </select>
             </div>
             <div style="padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1e40af;">
-              💡 <strong>提示</strong>：注入成功后将自动切换至「批量自动外链」视图并渲染待处理列表，您可以直接点击「▶ 开始批量处理」进行全自动发布或探测！
+              💡 <strong>提示</strong>：注入成功后将自动切换至「博客自动外链」视图并渲染待处理列表，您可以直接点击「▶ 开始批量处理」进行全自动发布或探测！
             </div>
           </div>
           <div class="asset-modal-footer">
@@ -1479,7 +1479,7 @@
   }
 
   /**
-   * 执行将勾选的外链注入批量任务队列，并无缝跳转到「批量自动外链」Tab。
+   * 执行将勾选的外链注入批量任务队列，并无缝跳转到「博客自动外链」Tab。
    */
   async function executeSendToTask() {
     const selectedDomains = Array.from(state.selectedDomains);

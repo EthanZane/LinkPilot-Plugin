@@ -323,7 +323,7 @@ function renderBatchPromotionSitesList() {
 
   if (availablePromotionSites.length === 0) {
     if (container) {
-      container.innerHTML = '<div style="padding:10px;color:#9ca3af;font-size:12px;text-align:center;">未读取到目标 URL，请先在目标 URL 管理中添加并保存</div>';
+      container.innerHTML = '<div style="padding:10px;color:#9ca3af;font-size:12px;text-align:center;">未读取到推广页面，请先在推广页面管理中添加并保存</div>';
     }
     batchPromotionSite = null;
     batchSelectedPromotionSiteIds = [];
@@ -2634,7 +2634,7 @@ async function startBatch() {
 
   const incompleteSite = selectedSites.find((site) => !site.url || !site.content);
   if (incompleteSite) {
-    alert(`目标站点“${incompleteSite.name || incompleteSite.url}”配置不完整（缺少网站 URL 或介绍），请先在目标 URL 管理中完善`);
+    alert(`目标站点“${incompleteSite.name || incompleteSite.url}”配置不完整（缺少网站 URL 或介绍），请先在推广页面管理中完善`);
     return;
   }
 

@@ -1537,17 +1537,17 @@
           <img src="icons/icon48.png" alt="LinkPilot Logo" width="44" height="44" style="border-radius:10px;box-shadow:0 4px 12px rgba(15,23,42,0.12);" />
           <div>
             <h1>LinkPilot 设置</h1>
-            <div class="subtitle">个人本地版配置中心：AI 引擎、目标站点资料、批量自动外链与扩展设置。</div>
+            <div class="subtitle">个人本地版配置中心：AI 供应商、推广页面资料、外链资产库、博客自动外链与扩展设置。</div>
           </div>
         </div>
       </div>
 
       <div class="layout">
         <nav class="sidebar" aria-label="设置分类">
-          <button class="tab-btn active" type="button" data-tab-target="ai">AI 配置</button>
-          <button class="tab-btn" type="button" data-tab-target="site">目标 URL 管理</button>
+          <button class="tab-btn active" type="button" data-tab-target="ai">AI供应商管理</button>
+          <button class="tab-btn" type="button" data-tab-target="site">推广页面管理</button>
           <button class="tab-btn" type="button" data-tab-target="assets">外链资产库</button>
-          <button class="tab-btn" type="button" data-tab-target="batch">批量自动外链</button>
+          <button class="tab-btn" type="button" data-tab-target="batch">博客自动外链</button>
           <button class="tab-btn" type="button" data-tab-target="other">其他设置</button>
         </nav>
 
@@ -1555,7 +1555,7 @@
           <section class="tab-panel active" data-tab-panel="ai">
             <div class="section-head">
               <div>
-                <div class="section-title">AI 配置</div>
+                <div class="section-title">AI供应商管理</div>
                 <div class="section-desc">管理多个 OpenAI 兼容 Provider，测试连接并选择当前使用的模型。</div>
               </div>
             </div>
@@ -1620,23 +1620,23 @@
           <section class="tab-panel" data-tab-panel="site">
             <div class="section-head">
               <div>
-                <div class="section-title">目标 URL 管理</div>
-                <div class="section-desc">管理多个目标 URL、目标资料、锚文本池和评论表单个人信息。</div>
+                <div class="section-title">推广页面管理</div>
+                <div class="section-desc">管理多个推广页面、目标资料、锚文本池和评论表单个人信息。</div>
               </div>
             </div>
 
             <div class="site-manager-grid">
               <div class="card">
-                <div class="card-title">目标 URL 列表</div>
-                <div class="hint">这里维护可用目标 URL；具体使用哪个目标 URL，请在 AI 评论面板或批量任务里选择。</div>
+                <div class="card-title">推广页面列表</div>
+                <div class="hint">这里维护可用推广页面；具体使用哪个推广页面，请在 AI 评论面板或批量任务里选择。</div>
                 <div class="site-list" id="siteList"></div>
                 <div class="row">
-                  <button id="newSiteBtn" class="btn btn-secondary" type="button">新建目标 URL</button>
+                  <button id="newSiteBtn" class="btn btn-secondary" type="button">新建推广页面</button>
                 </div>
               </div>
 
               <div class="card">
-                <div class="card-title">目标 URL 详情</div>
+                <div class="card-title">推广页面详情</div>
                 <div class="grid-2">
                   <div>
                     <label for="siteName">目标名称</label>
@@ -1666,8 +1666,8 @@
                 </div>
 
                 <div class="row">
-                  <button id="saveSettingsBtn" class="btn btn-primary">保存目标 URL</button>
-                  <button id="deleteSiteBtn" class="btn btn-secondary" type="button">删除目标 URL</button>
+                  <button id="saveSettingsBtn" class="btn btn-primary">保存推广页面</button>
+                  <button id="deleteSiteBtn" class="btn btn-secondary" type="button">删除推广页面</button>
                   <span id="settingsStatus" class="status">已保存</span>
                 </div>
               </div>
@@ -1701,8 +1701,8 @@
           <section class="tab-panel" data-tab-panel="batch">
             <div class="section-head">
               <div>
-                <div class="section-title">批量自动外链</div>
-                <div class="section-desc">在当前设置页内上传 CSV，批量打开引荐 URL，自动识别评论表单、生成评论并记录结果。</div>
+                <div class="section-title">博客自动外链</div>
+                <div class="section-desc">在当前设置页内上传 CSV 或从外链资产库注入，批量打开引荐 URL，自动识别评论表单、生成评论并记录结果。</div>
               </div>
             </div>
 
@@ -1869,7 +1869,7 @@
                   </div>
                   <div class="local-mode-bar">
                     AI 调用来源：<span class="provider-source" id="providerSource">本机配置</span>
-                    <span id="providerHint" style="color:#9ca3af">请先在 AI 配置里保存可用的 Provider。</span>
+                    <span id="providerHint" style="color:#9ca3af">请先在 AI供应商管理 里保存可用的 Provider。</span>
                   </div>
                   <div id="costHint" class="hint warn" style="display:none; margin-top:8px;"></div>
                 </div>
