@@ -561,7 +561,7 @@
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <div style="font-weight:700;font-size:13px;color:#1e293b;">📊 导入处理结果统计：</div>
                 <button type="button" class="btn btn-secondary btn-sm" id="assetExportSkippedCsvBtn" style="display:none;font-size:11px;padding:3px 8px;">
-                  📥 导出未入库/过滤明细 (CSV)
+                  📊 导出未入库/过滤明细 (Excel)
                 </button>
               </div>
               <div class="asset-import-stat-banner" id="assetImportStatBanner">
@@ -1087,7 +1087,7 @@
       const rows = items.map((a) => {
         const typeInfo = RESOURCE_TYPES[a.resource_type] || { label: a.resource_type || '博客评论' };
         const qualityInfo = QUALITY_TIERS[a.quality_tier] || { label: a.quality_tier || '未测试' };
-        const rateNum = Number(a.success_rate || 0).toFixed(1);
+        const rateNum = Number(a.success_rate || 0);
 
         let sourceChannelLabel = '手动/表格导入';
         if (a.source_channel === 'probe_discovery') sourceChannelLabel = '博客探测入库';
@@ -1112,39 +1112,71 @@
         else if (a.last_run_result) lastResultText = String(a.last_run_result);
 
         return [
-          `"${(a.referral_domain || '').replace(/"/g, '""')}"`,
-          `"${(a.referral_url || '').replace(/"/g, '""')}"`,
-          `"${typeInfo.label}"`,
-          `"${qualityInfo.label}"`,
+          a.referral_domain || '',
+          a.referral_url || '',
+          typeInfo.label,
+          qualityInfo.label,
           rateNum,
           a.success_count || 0,
           a.skipped_count || 0,
           a.fail_count || 0,
           a.total_attempts || 0,
-          `"${depthText}"`,
-          `"${sourceChannelLabel}"`,
-          `"${tagsText.replace(/"/g, '""')}"`,
+          depthText,
+          sourceChannelLabel,
+          tagsText,
           a.domain_rating !== null && a.domain_rating !== undefined ? a.domain_rating : '',
           a.organic_traffic !== null && a.organic_traffic !== undefined ? a.organic_traffic : '',
-          `"${formatDateTime(a.last_executed_at)}"`,
-          `"${lastResultText}"`,
-          `"${coverageText.replace(/"/g, '""')}"`,
-          `"${(a.notes || '').replace(/"/g, '""')}"`,
-          `"${formatDateTime(a.created_at)}"`
+          formatDateTime(a.last_executed_at),
+          lastResultText,
+          coverageText,
+          a.notes || '',
+          formatDateTime(a.created_at)
         ];
       });
 
-      const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-
       const now = new Date();
       const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-      link.download = `外链资产库导出_${dateStr}_共${items.length}条.csv`;
-      link.click();
-      URL.revokeObjectURL(url);
+
+      if (window.XLSX && window.XLSX.utils) {
+        const aoa = [headers, ...rows];
+        const ws = window.XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = [
+          { wch: 22 }, // 引荐域名
+          { wch: 50 }, // 入口URL
+          { wch: 14 }, // 外链类型
+          { wch: 14 }, // 质量评级
+          { wch: 12 }, // 成功率(%)
+          { wch: 10 }, // 成功次数
+          { wch: 10 }, // 跳过次数
+          { wch: 10 }, // 失败次数
+          { wch: 12 }, // 总执行次数
+          { wch: 14 }, // 页面深度
+          { wch: 16 }, // 来源渠道
+          { wch: 22 }, // 标签
+          { wch: 10 }, // DR评分
+          { wch: 14 }, // 月自然流量
+          { wch: 20 }, // 最近执行时间
+          { wch: 14 }, // 最近执行状态
+          { wch: 30 }, // 目标站覆盖
+          { wch: 30 }, // 备注
+          { wch: 20 }  // 创建时间
+        ];
+        const wb = window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb, ws, '外链资产明细');
+        window.XLSX.writeFile(wb, `外链资产库导出_${dateStr}_共${items.length}条.xlsx`);
+      } else {
+        const csvRows = rows.map((r) =>
+          r.map((val) => `"${String(val ?? '').replace(/"/g, '""')}"`).join(',')
+        );
+        const csvContent = '\uFEFF' + [headers.map((h) => `"${h}"`).join(','), ...csvRows].join('\r\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `外链资产库导出_${dateStr}_共${items.length}条.csv`;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
     } catch (err) {
       alert(`导出失败：${err.message}`);
     } finally {
@@ -1412,49 +1444,60 @@
   }
 
   /**
-   * 导出未入库/过滤的明细列表为 CSV 文件
+   * 导出未入库/过滤的明细列表为 Excel (.xlsx) 表格（支持 SheetJS，降级 CSV）
    */
-  function exportSkippedOrFilteredCsv() {
+  function exportSkippedOrFilteredExcel() {
     if (!currentSkippedItemsToExport || currentSkippedItemsToExport.length === 0) {
       alert('当前没有可导出的未入库或过滤明细');
       return;
     }
 
     const headers = ['引荐域名', '入口URL', '过滤分类', '状态说明', '判定详情'];
-    const rows = [headers];
+    const rows = currentSkippedItemsToExport.map((item) => [
+      item.domain || '',
+      item.url || '',
+      item.category || '',
+      item.status || '',
+      (item.details || '').replace(/\r?\n/g, ' ')
+    ]);
 
-    for (const item of currentSkippedItemsToExport) {
-      rows.push([
-        item.domain || '',
-        item.url || '',
-        item.category || '',
-        item.status || '',
-        (item.details || '').replace(/\r?\n/g, ' ')
-      ]);
-    }
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
-    const csvContent = rows
-      .map((row) =>
+    if (window.XLSX && window.XLSX.utils) {
+      const aoa = [headers, ...rows];
+      const ws = window.XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [
+        { wch: 22 }, // 引荐域名
+        { wch: 50 }, // 入口URL
+        { wch: 18 }, // 过滤分类
+        { wch: 22 }, // 状态说明
+        { wch: 60 }  // 判定详情
+      ];
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, '未入库明细');
+      window.XLSX.writeFile(wb, `未入库外链明细_${dateStr}_共${currentSkippedItemsToExport.length}条.xlsx`);
+    } else {
+      const csvRows = rows.map((row) =>
         row
-          .map((field) => {
-            const escaped = String(field ?? '').replace(/"/g, '""');
-            return `"${escaped}"`;
-          })
+          .map((field) => `"${String(field ?? '').replace(/"/g, '""')}"`)
           .join(',')
-      )
-      .join('\r\n');
-
-    // 添加 UTF-8 BOM 确保 Excel/WPS 打开中文正常
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const blobUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.download = `未入库外链明细_${new Date().toISOString().slice(0, 10)}_${Math.random().toString(36).slice(2, 6)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(blobUrl);
+      );
+      const csvContent = '\uFEFF' + [headers.map((h) => `"${h}"`).join(','), ...csvRows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `未入库外链明细_${dateStr}_共${currentSkippedItemsToExport.length}条.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    }
   }
+
+  // 保持向后兼容别名
+  const exportSkippedOrFilteredCsv = exportSkippedOrFilteredExcel;
 
   /**
    * 打开批量导入 Modal。
@@ -1842,7 +1885,7 @@
     if (exportCsvBtn) {
       if (reportData.skippedList && reportData.skippedList.length > 0) {
         exportCsvBtn.style.display = 'inline-flex';
-        exportCsvBtn.textContent = `📥 导出未入库/过滤明细 (${reportData.skippedList.length}条 CSV)`;
+        exportCsvBtn.textContent = `📊 导出未入库/过滤明细 (${reportData.skippedList.length}条 Excel)`;
       } else {
         exportCsvBtn.style.display = 'none';
       }
@@ -1958,7 +2001,7 @@
     if (exportCsvBtn) {
       if (currentSkippedItemsToExport.length > 0) {
         exportCsvBtn.style.display = 'inline-flex';
-        exportCsvBtn.textContent = `📥 导出跳过明细 (${currentSkippedItemsToExport.length}条 CSV)`;
+        exportCsvBtn.textContent = `📊 导出跳过明细 (${currentSkippedItemsToExport.length}条 Excel)`;
       } else {
         exportCsvBtn.style.display = 'none';
       }

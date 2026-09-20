@@ -476,6 +476,7 @@ class ProbeSessionManager {
 
     const session = {
       id: sessionId,
+      title: options.title || '',
       status: 'running', // 'running' | 'completed' | 'canceled'
       total: uniqueCandidates.length,
       processed: 0,
@@ -497,7 +498,8 @@ class ProbeSessionManager {
         failed: 0
       },
       results: [],
-      cancelRequested: false
+      cancelRequested: false,
+      onComplete: typeof options.onComplete === 'function' ? options.onComplete : null
     };
 
     this.sessions.set(sessionId, session);
@@ -561,6 +563,13 @@ class ProbeSessionManager {
     if (toProbeList.length === 0) {
       session.endTime = Date.now();
       session.status = 'completed';
+      if (typeof session.onComplete === 'function') {
+        try {
+          session.onComplete(session);
+        } catch (err) {
+          console.error('[Probe] onComplete 触发异常：', err);
+        }
+      }
     } else {
       // 异步执行并发队列，不阻塞 HTTP 响应
       this._runQueue(toProbeList, session);
@@ -652,6 +661,13 @@ class ProbeSessionManager {
 
     session.endTime = Date.now();
     session.status = session.cancelRequested ? 'canceled' : 'completed';
+    if (typeof session.onComplete === 'function') {
+      try {
+        session.onComplete(session);
+      } catch (err) {
+        console.error('[Probe] onComplete 触发异常：', err);
+      }
+    }
   }
 
   /**

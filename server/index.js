@@ -75,6 +75,7 @@ const schemaSql = quoteSchemaName(config.pgSchema);
 const runsTable = `${schemaSql}.auto_comment_runs`;
 const runItemsTable = `${schemaSql}.auto_comment_run_items`;
 const assetsTable = `${schemaSql}.backlink_assets`;
+const probeHistoryTable = `${schemaSql}.probe_history`;
 
 /**
  * 将任意 URL 或域名转换成标准域名：去掉协议、路径和开头的 www.，并统一小写。
@@ -1247,6 +1248,78 @@ async function handleRequest(request, response) {
       return;
     }
 
+async function saveProbeSessionToDb(session) {
+  if (!session || !session.id) return;
+  try {
+    const stats = session.stats || {};
+    const validBlogCount =
+      (stats.validBlogCommentWithUrl || 0) +
+      (stats.validBlogCommentNoUrl || 0) +
+      (stats.bloggerComment || 0);
+    const closedOrLoginCount = (stats.commentsClosed || 0) + (stats.loginRequired || 0);
+    const notBlogCount = stats.notBlogComment || 0;
+    const failedCount = stats.failed || 0;
+    const elapsedSeconds = Math.round(((session.endTime || Date.now()) - session.startTime) / 1000);
+
+    const title =
+      session.title ||
+      `${new Date(session.startTime).toLocaleString('zh-CN', { hour12: false })} (共 ${session.total} 个待测域名)`;
+
+    await pool.query(
+      `insert into ${probeHistoryTable} (
+        id, title, status, total_count, processed_count, raw_count, dedup_count,
+        already_in_library_count, valid_blog_count, closed_or_login_count,
+        not_blog_count, failed_count, concurrency, timeout_ms, elapsed_seconds,
+        stats, results, updated_at
+      ) values (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10,
+        $11, $12, $13, $14, $15,
+        $16, $17, now()
+      )
+      on conflict (id) do update set
+        title = excluded.title,
+        status = excluded.status,
+        total_count = excluded.total_count,
+        processed_count = excluded.processed_count,
+        raw_count = excluded.raw_count,
+        dedup_count = excluded.dedup_count,
+        already_in_library_count = excluded.already_in_library_count,
+        valid_blog_count = excluded.valid_blog_count,
+        closed_or_login_count = excluded.closed_or_login_count,
+        not_blog_count = excluded.not_blog_count,
+        failed_count = excluded.failed_count,
+        concurrency = excluded.concurrency,
+        timeout_ms = excluded.timeout_ms,
+        elapsed_seconds = excluded.elapsed_seconds,
+        stats = excluded.stats,
+        results = excluded.results,
+        updated_at = now()`,
+      [
+        session.id,
+        title,
+        session.status,
+        session.total,
+        session.processed,
+        stats.rawCount || session.total,
+        stats.dedupCount || 0,
+        stats.alreadyInLibrary || 0,
+        validBlogCount,
+        closedOrLoginCount,
+        notBlogCount,
+        failedCount,
+        session.concurrency,
+        session.timeoutMs,
+        elapsedSeconds,
+        JSON.stringify(stats),
+        JSON.stringify(session.results || [])
+      ]
+    );
+  } catch (dbErr) {
+    console.warn('[Probe] 自动持久化保存探测历史失败：', dbErr.message);
+  }
+}
+
     // --- 博客外链并发探测 API ---
     if (method === 'POST' && url.pathname === '/api/probe/start') {
       const payload = await readJsonBody(request);
@@ -1255,6 +1328,7 @@ async function handleRequest(request, response) {
       const timeoutMs = payload && payload.timeoutMs;
       const skipExisting = payload && payload.skipExisting !== false;
       const sessionId = payload && payload.sessionId ? String(payload.sessionId) : undefined;
+      const title = payload && payload.title ? String(payload.title) : undefined;
 
       let existingLibraryMap = null;
       if (skipExisting) {
@@ -1274,10 +1348,14 @@ async function handleRequest(request, response) {
 
       const session = probeManager.startSession(urls, {
         sessionId,
+        title,
         concurrency,
         timeoutMs,
         existingLibraryMap,
-        skipExisting
+        skipExisting,
+        onComplete: (s) => {
+          saveProbeSessionToDb(s);
+        }
       });
       writeJson(response, 200, { ok: true, data: session });
       return;
@@ -1296,7 +1374,79 @@ async function handleRequest(request, response) {
       const payload = await readJsonBody(request).catch(() => ({}));
       const sessionId = payload && payload.sessionId ? String(payload.sessionId) : undefined;
       const res = probeManager.cancelSession(sessionId);
+      const targetSession = probeManager.sessions.get(sessionId || probeManager.latestSessionId);
+      if (targetSession) {
+        saveProbeSessionToDb(targetSession);
+      }
       writeJson(response, 200, { ok: true, data: res });
+      return;
+    }
+
+    // --- 探测历史记录 API ---
+    if (method === 'GET' && url.pathname === '/api/probe/history') {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 50)));
+      const res = await pool.query(
+        `select id, title, status, total_count, processed_count, raw_count, dedup_count,
+                already_in_library_count, valid_blog_count, closed_or_login_count,
+                not_blog_count, failed_count, concurrency, timeout_ms, elapsed_seconds,
+                stats, created_at, updated_at
+         from ${probeHistoryTable}
+         order by created_at desc
+         limit $1`,
+        [limit]
+      );
+      writeJson(response, 200, { ok: true, data: { items: res.rows, total: res.rows.length } });
+      return;
+    }
+
+    const probeHistoryDetailMatch = url.pathname.match(/^\/api\/probe\/history\/([^/]+)$/);
+    if (method === 'GET' && probeHistoryDetailMatch) {
+      const historyId = decodeURIComponent(probeHistoryDetailMatch[1]);
+      const res = await pool.query(
+        `select id, title, status, total_count, processed_count, raw_count, dedup_count,
+                already_in_library_count, valid_blog_count, closed_or_login_count,
+                not_blog_count, failed_count, concurrency, timeout_ms, elapsed_seconds,
+                stats, results, created_at, updated_at
+         from ${probeHistoryTable}
+         where id = $1`,
+        [historyId]
+      );
+      if (res.rows.length === 0) {
+        writeJson(response, 404, { ok: false, error: '探测历史记录不存在或已被删除' });
+        return;
+      }
+      const record = res.rows[0];
+      if (!probeManager.sessions.has(record.id)) {
+        probeManager.sessions.set(record.id, {
+          id: record.id,
+          title: record.title,
+          status: record.status,
+          total: record.total_count,
+          processed: record.processed_count,
+          concurrency: record.concurrency,
+          timeoutMs: record.timeout_ms,
+          startTime: new Date(record.created_at).getTime(),
+          endTime: new Date(record.updated_at).getTime(),
+          stats: record.stats || {},
+          results: record.results || [],
+          cancelRequested: false
+        });
+      }
+      writeJson(response, 200, { ok: true, data: record });
+      return;
+    }
+
+    if (method === 'DELETE' && probeHistoryDetailMatch) {
+      const historyId = decodeURIComponent(probeHistoryDetailMatch[1]);
+      await pool.query(`delete from ${probeHistoryTable} where id = $1`, [historyId]);
+      probeManager.sessions.delete(historyId);
+      writeJson(response, 200, { ok: true, data: { deletedId: historyId } });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/probe/history/clear') {
+      await pool.query(`delete from ${probeHistoryTable}`);
+      writeJson(response, 200, { ok: true, message: '探测历史记录已全部清空' });
       return;
     }
 
@@ -1340,7 +1490,14 @@ async function handleRequest(request, response) {
       );
 
       const urls = res.rows.map((r) => r.referral_url);
-      const session = probeManager.startSession(urls, { concurrency, skipExisting: false });
+      const session = probeManager.startSession(urls, {
+        title: '基准测试 (优质资产 Top 50)',
+        concurrency,
+        skipExisting: false,
+        onComplete: (s) => {
+          saveProbeSessionToDb(s);
+        }
+      });
       writeJson(response, 200, { ok: true, data: { ...session, isBenchmark: true, assetCount: urls.length } });
       return;
     }

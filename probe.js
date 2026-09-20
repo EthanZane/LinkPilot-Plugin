@@ -30,6 +30,7 @@
 
   const probeState = {
     sessionId: null,
+    activeHistoryId: null,
     status: 'idle', // 'idle' | 'running' | 'completed' | 'canceled'
     total: 0,
     processed: 0,
@@ -64,6 +65,7 @@
     renderProbeSkeleton(container);
     bindProbeEvents();
     checkCurrentProbeStatus();
+    loadHistoryBadgeCount();
   }
 
   /**
@@ -72,7 +74,7 @@
   function renderProbeSkeleton(container) {
     container.innerHTML = `
       <div class="probe-module-wrap">
-        <div class="section-head" style="margin-bottom:16px;">
+        <div class="section-head" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
           <div>
             <div class="section-title" style="display:flex;align-items:center;gap:8px;">
               <span>🔎 博客外链探测</span>
@@ -81,6 +83,12 @@
             <div class="section-desc">
               提供竞品或海量外链 URL，本地高并发探测哪些是博客评论页面并侦探表单结构。自动识别 WordPress / Blogger / 通用博客，过滤评论已关闭或强制登录页面，支持分类复核与一键入库投产。
             </div>
+          </div>
+          <div style="flex-shrink:0;">
+            <button type="button" class="btn btn-secondary btn-sm" id="probeHistoryBtn" style="display:flex;align-items:center;gap:6px;font-weight:600;padding:6px 12px;" title="查看与加载保存在数据库中的历史探测批次">
+              <span>📜 探测历史档案</span>
+              <span class="badge badge-secondary" id="probeHistoryBadge" style="background:#e2e8f0;color:#334155;font-size:10px;padding:1px 6px;border-radius:10px;">0</span>
+            </button>
           </div>
         </div>
 
@@ -185,6 +193,16 @@
 
         <!-- 结果展示表格 -->
         <div class="card probe-table-card" id="probeResultsCard" style="display:none;">
+          <!-- 历史归档查看提示横幅 -->
+          <div id="probeHistoryActiveBanner" style="display:none;margin:12px 16px 0;padding:10px 14px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;align-items:center;justify-content:space-between;">
+            <div style="font-size:12px;color:#1e1b4b;display:flex;align-items:center;gap:8px;">
+              <span style="font-size:16px;">📂</span>
+              <span>当前正在查看历史探测归档：<strong id="probeHistoryActiveTitle" style="color:#3730a3;">--</strong></span>
+              <span style="font-size:11px;color:#6366f1;">(支持自由校对、人工复核、一键入库或导出 Excel)</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="probeExitHistoryBtn" style="font-size:11px;padding:3px 10px;color:#4338ca;border-color:#c7d2fe;">✕ 退出历史查看</button>
+          </div>
+
           <div class="probe-table-header-bar">
             <!-- 分类选项卡 -->
             <div class="probe-filter-tabs" style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -200,7 +218,7 @@
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <button type="button" class="btn btn-secondary btn-sm" id="probeSelectValidBtn">勾选全部可用博客</button>
               <button type="button" class="btn btn-primary btn-sm" id="probeOpenImportModalBtn">📥 批量导入选中的外链入库 (<span id="probeSelectedCountDisplay">0</span>)</button>
-              <button type="button" class="btn btn-secondary btn-sm" id="probeExportCsvBtn">导出结果 CSV</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="probeExportExcelBtn" style="display:flex;align-items:center;gap:4px;">📊 导出结果 Excel</button>
             </div>
           </div>
 
@@ -272,6 +290,31 @@
           <div class="asset-modal-footer">
             <button type="button" class="btn btn-secondary" id="probeCancelImportModalBtn">取消</button>
             <button type="button" class="btn btn-primary" id="probeExecuteImportBtn">确认一键入库</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 探测历史档案 Modal -->
+      <div class="asset-modal-overlay" id="probeHistoryModal" style="display:none;">
+        <div class="asset-modal-dialog" style="max-width:760px;">
+          <div class="asset-modal-header">
+            <div class="asset-modal-title" style="display:flex;align-items:center;gap:8px;">
+              <span>📜 博客探测历史档案</span>
+              <span style="font-size:11px;font-weight:normal;color:#64748b;">(自动保存在本地数据库，重装或关闭插件不丢失)</span>
+            </div>
+            <button type="button" class="asset-modal-close" id="probeCloseHistoryModalBtn">×</button>
+          </div>
+          <div class="asset-modal-body" style="max-height:65vh;overflow-y:auto;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <span style="font-size:12px;color:#64748b;">本地共存储 <strong id="probeHistoryTotalCount" style="color:#2563eb;">0</strong> 个历史探测批次</span>
+              <button type="button" class="btn btn-secondary btn-sm" id="probeClearAllHistoryBtn" style="color:#b91c1c;border-color:#fecaca;font-size:11px;">🗑️ 清空全部历史记录</button>
+            </div>
+            <div id="probeHistoryListContainer" style="display:flex;flex-direction:column;gap:10px;">
+              <div style="text-align:center;padding:30px;color:#94a3b8;font-size:12px;">正在读取历史归档...</div>
+            </div>
+          </div>
+          <div class="asset-modal-footer">
+            <button type="button" class="btn btn-secondary" id="probeCancelHistoryModalBtn">关闭</button>
           </div>
         </div>
       </div>
@@ -407,8 +450,16 @@
       renderProbeResultTable();
     });
 
-    // 导出 CSV
-    document.getElementById('probeExportCsvBtn')?.addEventListener('click', exportProbeCsv);
+    // 历史档案管理
+    document.getElementById('probeHistoryBtn')?.addEventListener('click', openHistoryModal);
+    document.getElementById('probeCloseHistoryModalBtn')?.addEventListener('click', closeHistoryModal);
+    document.getElementById('probeCancelHistoryModalBtn')?.addEventListener('click', closeHistoryModal);
+    document.getElementById('probeClearAllHistoryBtn')?.addEventListener('click', clearAllHistory);
+    document.getElementById('probeExitHistoryBtn')?.addEventListener('click', exitHistoryView);
+
+    // 导出 Excel (.xlsx)
+    document.getElementById('probeExportExcelBtn')?.addEventListener('click', exportProbeExcel);
+    document.getElementById('probeExportCsvBtn')?.addEventListener('click', exportProbeExcel);
 
     // 入库弹窗
     document.getElementById('probeOpenImportModalBtn')?.addEventListener('click', openImportModal);
@@ -429,6 +480,12 @@
       return;
     }
 
+    if (probeState.activeHistoryId) {
+      probeState.activeHistoryId = null;
+      const banner = document.getElementById('probeHistoryActiveBanner');
+      if (banner) banner.style.display = 'none';
+    }
+
     const concurrency = Number(document.getElementById('probeConcurrency')?.value || 20);
     const timeoutMs = Number(document.getElementById('probeTimeout')?.value || 8000);
     const skipExisting = document.getElementById('probeSkipExisting')?.checked !== false;
@@ -438,7 +495,10 @@
     if (startBtn) startBtn.disabled = true;
 
     try {
+      const now = new Date();
+      const title = `${now.toLocaleString('zh-CN', { hour12: false })} (共 ${urls.length} 条待测)`;
       const res = await apiRequest('/api/probe/start', {
+        title,
         urls,
         concurrency,
         timeoutMs,
@@ -542,6 +602,7 @@
             statusBadge.style.background = s.status === 'completed' ? '#dcfce7' : '#fee2e2';
             statusBadge.style.color = s.status === 'completed' ? '#15803d' : '#991b1b';
           }
+          loadHistoryBadgeCount();
         }
       } catch (err) {
         console.error('获取探测进度异常：', err);
@@ -848,7 +909,87 @@
   }
 
   /**
-   * 导出 CSV
+   * 导出 Excel (.xlsx)
+   */
+  function exportProbeExcel() {
+    if (probeState.results.length === 0) {
+      alert('暂无探测结果可导出');
+      return;
+    }
+
+    const headers = [
+      '引荐域名',
+      '入口引荐URL',
+      '是否博客评论',
+      '判定状态',
+      '博客系统/表单类型',
+      '独立外链URL字段',
+      '作者姓名输入框',
+      '电子邮箱输入框',
+      '评论内容输入框',
+      'HTTP响应状态',
+      '探测耗时(ms)',
+      '资产库已存状态',
+      '判定详细说明'
+    ];
+
+    const rows = probeState.results.map((r) => {
+      let blogStatus = '否';
+      if (r.status === 'already_in_library') blogStatus = '库内已有资产';
+      else if (r.isBlogComment) blogStatus = '是 (开放博客)';
+      else if (r.status === 'comments_closed') blogStatus = '博客但评论已关闭';
+      else if (r.status === 'login_required') blogStatus = '博客但需登录';
+
+      return [
+        r.domain || '',
+        r.url || '',
+        blogStatus,
+        r.statusLabel || '',
+        r.formType || '',
+        r.hasUrlField ? '支持 (独立字段)' : '不支持 (需正文插入)',
+        r.hasAuthorField ? '有' : '无',
+        r.hasEmailField ? '有' : '无',
+        r.hasCommentField ? '有' : '无',
+        r.httpStatus || 0,
+        r.elapsedMs || 0,
+        r.status === 'already_in_library' ? '已在库内 (已跳过)' : '新发现外链',
+        (r.details || '').replace(/\r?\n/g, ' ')
+      ];
+    });
+
+    if (window.XLSX && window.XLSX.utils) {
+      const aoa = [headers, ...rows];
+      const ws = window.XLSX.utils.aoa_to_sheet(aoa);
+
+      ws['!cols'] = [
+        { wch: 22 }, // 引荐域名
+        { wch: 50 }, // 入口URL
+        { wch: 18 }, // 是否博客
+        { wch: 26 }, // 判定状态
+        { wch: 22 }, // 表单类型
+        { wch: 20 }, // 外链字段
+        { wch: 14 }, // 作者框
+        { wch: 14 }, // 邮箱框
+        { wch: 14 }, // 评论框
+        { wch: 14 }, // HTTP状态
+        { wch: 14 }, // 耗时(ms)
+        { wch: 18 }, // 库内状态
+        { wch: 60 }  // 判定详情
+      ];
+
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, '博客探测明细');
+
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      window.XLSX.writeFile(wb, `博客外链探测结果_${dateStr}_共${probeState.results.length}条.xlsx`);
+    } else {
+      exportProbeCsv();
+    }
+  }
+
+  /**
+   * 兜底回退 CSV 导出
    */
   function exportProbeCsv() {
     if (probeState.results.length === 0) {
@@ -877,6 +1018,233 @@
     link.download = `probe_results_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  // --- 历史档案相关方法 ---
+
+  /**
+   * 加载历史记录总数徽标
+   */
+  async function loadHistoryBadgeCount() {
+    try {
+      const res = await apiRequest('/api/probe/history?limit=1');
+      const badge = document.getElementById('probeHistoryBadge');
+      if (badge && res && res.total !== undefined) {
+        badge.textContent = res.total;
+      }
+    } catch (e) {
+      console.warn('获取探测历史数量失败：', e);
+    }
+  }
+
+  /**
+   * 打开历史档案弹窗
+   */
+  async function openHistoryModal() {
+    const modal = document.getElementById('probeHistoryModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+
+    const container = document.getElementById('probeHistoryListContainer');
+    const totalCountEl = document.getElementById('probeHistoryTotalCount');
+    if (container) {
+      container.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;font-size:12px;">正在读取历史归档...</div>';
+    }
+
+    try {
+      const res = await apiRequest('/api/probe/history?limit=100');
+      const items = (res && res.items) || [];
+      if (totalCountEl) totalCountEl.textContent = items.length;
+      const badge = document.getElementById('probeHistoryBadge');
+      if (badge) badge.textContent = items.length;
+
+      if (items.length === 0) {
+        if (container) {
+          container.innerHTML = `
+            <div style="text-align:center;padding:40px 20px;color:#94a3b8;font-size:13px;background:#f8fafc;border-radius:8px;">
+              <div style="font-size:32px;margin-bottom:8px;">📭</div>
+              <div>暂无历史探测归档记录</div>
+              <div style="font-size:11px;color:#cbd5e1;margin-top:4px;">每次启动并发探测完成后，系统均会自动沉淀在本地数据库中，关闭或重装插件不丢失</div>
+            </div>
+          `;
+        }
+        return;
+      }
+
+      renderHistoryList(items, container);
+    } catch (err) {
+      if (container) {
+        container.innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444;font-size:12px;">读取历史记录失败：${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
+  /**
+   * 关闭历史档案弹窗
+   */
+  function closeHistoryModal() {
+    const modal = document.getElementById('probeHistoryModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  /**
+   * 渲染历史档案列表
+   */
+  function renderHistoryList(items, container) {
+    if (!container) return;
+    container.innerHTML = items
+      .map((item) => {
+        const timeStr = new Date(item.created_at).toLocaleString('zh-CN', { hour12: false });
+        const isCurrentActive = probeState.activeHistoryId === item.id;
+        const total = item.total_count || 0;
+        const valid = item.valid_blog_count || 0;
+        const inLib = item.already_in_library_count || 0;
+        const closed = item.closed_or_login_count || 0;
+        const invalid = (item.not_blog_count || 0) + (item.failed_count || 0);
+
+        return `
+          <div class="probe-history-item" style="${isCurrentActive ? 'border-color:#6366f1;background:#eef2ff;' : ''}">
+            <div class="probe-history-meta">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <strong style="font-size:13px;color:#0f172a;">${escapeHtml(item.title || timeStr)}</strong>
+                ${isCurrentActive ? '<span class="badge badge-info" style="background:#4f46e5;color:#fff;font-size:10px;">当前正在查看</span>' : ''}
+                <span class="badge" style="background:${item.status === 'completed' ? '#ecfdf5;color:#065f46;' : '#fef2f2;color:#991b1b;'}font-size:10px;">
+                  ${item.status === 'completed' ? '已完成' : '已中止'}
+                </span>
+              </div>
+              <div style="font-size:11px;color:#64748b;">
+                探测时间：${timeStr} · 耗时：${item.elapsed_seconds || 0}秒 · 并发：${item.concurrency || 20}
+              </div>
+              <div class="probe-history-badges">
+                <span class="probe-history-pill" style="background:#f1f5f9;color:#334155;">共 ${total} 条</span>
+                <span class="probe-history-pill" style="background:#ecfdf5;color:#065f46;">🟢 ${valid} 可用博客</span>
+                <span class="probe-history-pill" style="background:#eff6ff;color:#1e40af;">⏩ ${inLib} 库内已有</span>
+                <span class="probe-history-pill" style="background:#fffbeb;color:#92400e;">🔒 ${closed} 评论关闭/需登录</span>
+                <span class="probe-history-pill" style="background:#fef2f2;color:#991b1b;">🔴 ${invalid} 非博客/失败</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button type="button" class="btn btn-primary btn-sm btn-load-history" data-history-id="${item.id}" style="padding:4px 10px;font-size:11px;">
+                📂 载入此批次校对
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm btn-delete-history" data-history-id="${item.id}" style="padding:4px 8px;font-size:11px;color:#b91c1c;border-color:#fecaca;" title="删除该批次归档">
+                🗑️
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    container.querySelectorAll('.btn-load-history').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        loadHistorySession(btn.dataset.historyId);
+      });
+    });
+
+    container.querySelectorAll('.btn-delete-history').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        deleteHistorySession(btn.dataset.historyId);
+      });
+    });
+  }
+
+  /**
+   * 载入指定历史会话到主界面进行校对
+   */
+  async function loadHistorySession(sessionId) {
+    try {
+      const res = await apiRequest(`/api/probe/history/${sessionId}`);
+      if (!res) {
+        alert('未找到该探测历史归档');
+        return;
+      }
+
+      if (probeState.pollTimer) {
+        clearInterval(probeState.pollTimer);
+        probeState.pollTimer = null;
+      }
+
+      probeState.sessionId = res.id;
+      probeState.status = res.status;
+      probeState.total = res.total_count || 0;
+      probeState.processed = res.processed_count || 0;
+      probeState.progressPercent = 100;
+      probeState.elapsedSeconds = res.elapsed_seconds || 0;
+      probeState.stats = res.stats || {};
+      probeState.results = res.results || [];
+      probeState.selectedUrls.clear();
+      probeState.activeHistoryId = res.id;
+
+      // 隐藏进度卡片，显示结果卡片
+      const progressCard = document.getElementById('probeProgressCard');
+      if (progressCard) progressCard.style.display = 'none';
+
+      const resultsCard = document.getElementById('probeResultsCard');
+      if (resultsCard) resultsCard.style.display = 'block';
+
+      // 显示历史查看横幅
+      const banner = document.getElementById('probeHistoryActiveBanner');
+      const titleEl = document.getElementById('probeHistoryActiveTitle');
+      if (banner) banner.style.display = 'flex';
+      if (titleEl) {
+        titleEl.textContent = `${res.title || new Date(res.created_at).toLocaleString('zh-CN')} (共 ${probeState.results.length} 条结果)`;
+      }
+
+      // 刷新界面数据与表格
+      updateProgressUI();
+      renderProbeResultTable();
+
+      closeHistoryModal();
+
+      resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      alert(`载入历史记录失败：${err.message}`);
+    }
+  }
+
+  /**
+   * 退出历史查看，回到初始或最新状态
+   */
+  function exitHistoryView() {
+    probeState.activeHistoryId = null;
+    const banner = document.getElementById('probeHistoryActiveBanner');
+    if (banner) banner.style.display = 'none';
+    checkCurrentProbeStatus();
+  }
+
+  /**
+   * 删除单条历史记录
+   */
+  async function deleteHistorySession(sessionId) {
+    if (!confirm('确定要删除这条探测历史记录吗？此操作不可撤销。')) return;
+    try {
+      await apiRequest(`/api/probe/history/${sessionId}`, null, { method: 'DELETE' });
+      if (probeState.activeHistoryId === sessionId) {
+        exitHistoryView();
+      }
+      openHistoryModal();
+      loadHistoryBadgeCount();
+    } catch (err) {
+      alert(`删除失败：${err.message}`);
+    }
+  }
+
+  /**
+   * 清空全部历史记录
+   */
+  async function clearAllHistory() {
+    if (!confirm('确定要清空所有的历史探测记录吗？此操作将彻底删除所有本地归档。')) return;
+    try {
+      await apiRequest('/api/probe/history/clear', {});
+      if (probeState.activeHistoryId) {
+        exitHistoryView();
+      }
+      openHistoryModal();
+      loadHistoryBadgeCount();
+    } catch (err) {
+      alert(`清空失败：${err.message}`);
+    }
   }
 
   // 页面加载就绪时初始化
