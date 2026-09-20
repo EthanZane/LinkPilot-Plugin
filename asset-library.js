@@ -307,6 +307,29 @@
               </select>
             </div>
 
+            <!-- 录入时间筛选 -->
+            <div class="filter-group">
+              <label>添加时间：</label>
+              <select id="assetFilterTimeRange">
+                <option value="all">全部时间</option>
+                <option value="today">⚡ 今天添加</option>
+                <option value="3days">近 3 天</option>
+                <option value="7days">近 7 天</option>
+                <option value="30days">近 30 天</option>
+              </select>
+            </div>
+
+            <!-- 来源渠道筛选 -->
+            <div class="filter-group">
+              <label>来源渠道：</label>
+              <select id="assetFilterSourceChannel">
+                <option value="all">全部来源</option>
+                <option value="probe_discovery">🔍 博客探测入库</option>
+                <option value="run_harvest">🤖 任务自动沉淀</option>
+                <option value="batch_import">📂 表格/手动导入</option>
+              </select>
+            </div>
+
             <!-- 核心：新网站隔离矩阵筛选 -->
             <div class="filter-group filter-target-matrix">
               <label>🎯 目标站专属隔离：</label>
@@ -592,7 +615,7 @@
     document.getElementById('assetCancelImportBtn')?.addEventListener('click', closeImportModal);
 
     // 筛选条件变化
-    ['assetFilterType', 'assetFilterQuality', 'assetFilterSuccessRate', 'assetFilterPageDepth', 'assetFilterTargetStatus', 'assetSortBy'].forEach((id) => {
+    ['assetFilterType', 'assetFilterQuality', 'assetFilterSuccessRate', 'assetFilterPageDepth', 'assetFilterTimeRange', 'assetFilterSourceChannel', 'assetFilterTargetStatus', 'assetSortBy'].forEach((id) => {
       document.getElementById(id)?.addEventListener('change', () => {
         state.page = 1;
         fetchAssets();
@@ -871,6 +894,12 @@
     if (maxRate !== null) queryParams.set('maxSuccessRate', maxRate);
     if (pageDepth && pageDepth !== 'all') queryParams.set('pageDepthRange', pageDepth);
 
+    const timeRange = document.getElementById('assetFilterTimeRange')?.value || 'all';
+    if (timeRange && timeRange !== 'all') queryParams.set('timeRange', timeRange);
+
+    const sourceChannel = document.getElementById('assetFilterSourceChannel')?.value || 'all';
+    if (sourceChannel && sourceChannel !== 'all') queryParams.set('sourceChannel', sourceChannel);
+
     try {
       const data = await apiRequest(`/api/assets?${queryParams.toString()}`);
       state.assets = data.items || [];
@@ -1001,7 +1030,9 @@
         </td>
         <td>
           <div class="notes-cell" title="${escapeHtml(asset.notes || '')}">
-            ${asset.notes ? `<span class="notes-text">${escapeHtml(asset.notes)}</span>` : '<span style="color:#cbd5e1;">—</span>'}
+            ${asset.source_channel === 'probe_discovery' ? '<span class="tag-pill" style="background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe;font-weight:600;">🔍 探测入库</span>' : ''}
+            ${asset.source_channel === 'run_harvest' ? '<span class="tag-pill" style="background:#f8fafc;color:#475569;border-color:#e2e8f0;">🤖 任务沉淀</span>' : ''}
+            ${asset.notes ? `<span class="notes-text">${escapeHtml(asset.notes)}</span>` : (!asset.source_channel && (!asset.tags || asset.tags.length === 0) ? '<span style="color:#cbd5e1;">—</span>' : '')}
             ${Array.isArray(asset.tags) && asset.tags.length > 0 ? asset.tags.map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('') : ''}
           </div>
         </td>

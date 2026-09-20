@@ -1,0 +1,198 @@
+/* LinkPilot 博客外链探测（Blog Backlink Discovery）专用样式 */
+
+.probe-module-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+/* 顶部配置操作工具栏：彻底解决换行与两端空虚问题 */
+.probe-config-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.probe-config-group-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.probe-config-group-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* 针对内部单项行内表单的严格重置，确保 label 绝不折行 */
+.probe-field-inline {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  white-space: nowrap !important;
+}
+
+.probe-field-inline label {
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #475569 !important;
+  white-space: nowrap !important;
+  display: inline-block !important;
+  line-height: 1 !important;
+}
+
+.probe-field-inline select {
+  margin: 0 !important;
+  padding: 5px 10px !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  background: #fff !important;
+  color: #1e293b !important;
+  outline: none;
+}
+
+.probe-count-badge {
+  font-size: 12px;
+  color: #2563eb;
+  background: #eff6ff;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #bfdbfe;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* 结果表格外层卡片 */
+.probe-table-card {
+  padding: 0 !important;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.probe-table-header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.probe-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.probe-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.probe-table th {
+  background: #f8fafc;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.probe-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.probe-table tr:hover td {
+  background: #fbfcfe;
+}
+
+.probe-table tr.selected td {
+  background: #f0fdf4 !important;
+}
+
+/* URL 列：消除写死 320px 限制，充分利用大宽屏空间，自然换行展示完整 URL */
+.probe-url-cell {
+  width: auto;
+  min-width: 280px;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.probe-url-link {
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.probe-url-link:hover {
+  text-decoration: underline;
+}
+
+.probe-url-details {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+/* 结论与字段徽章：严格禁止折行 */
+.probe-conclusion-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 3px 10px !important;
+  border-radius: 12px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  line-height: 1.2 !important;
+}
+
+.probe-field-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 3px 8px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  line-height: 1.2 !important;
+}
+
+.probe-status-text {
+  font-size: 11px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+/* 操作列 */
+.probe-actions-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}

@@ -2,6 +2,7 @@ import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
+import { probeManager } from './probe.js';
 
 const DEFAULT_PORT = 17321;
 const DEFAULT_PG_HOST = 'localhost';
@@ -707,6 +708,8 @@ async function listAssets(params, database = pool) {
   const targetDomain = normalizeDomain(params.targetDomain || '');
   const targetSiteStatus = String(params.targetSiteStatus || 'all').trim();
   const keyword = String(params.keyword || '').trim();
+  const sourceChannel = String(params.sourceChannel || '').trim();
+  const timeRange = String(params.timeRange || 'all').trim();
 
   const allowedSortCols = {
     success_rate: 'a.success_rate',
@@ -731,6 +734,21 @@ async function listAssets(params, database = pool) {
   if (qualityTier && qualityTier !== 'all') {
     whereConditions.push(`a.quality_tier = $${paramIndex++}`);
     values.push(qualityTier);
+  }
+
+  if (sourceChannel && sourceChannel !== 'all') {
+    whereConditions.push(`a.source_channel = $${paramIndex++}`);
+    values.push(sourceChannel);
+  }
+
+  if (timeRange === 'today') {
+    whereConditions.push(`a.created_at >= current_date`);
+  } else if (timeRange === '3days') {
+    whereConditions.push(`a.created_at >= now() - interval '3 days'`);
+  } else if (timeRange === '7days') {
+    whereConditions.push(`a.created_at >= now() - interval '7 days'`);
+  } else if (timeRange === '30days') {
+    whereConditions.push(`a.created_at >= now() - interval '30 days'`);
   }
 
   if (pageDepthRange === 'shallow') {
@@ -1193,6 +1211,76 @@ async function handleRequest(request, response) {
     if (method === 'DELETE' && assetDomainMatch) {
       const domain = decodeURIComponent(assetDomainMatch[1]);
       writeJson(response, 200, { ok: true, data: await batchDeleteAssets([domain]) });
+      return;
+    }
+
+    // --- 博客外链并发探测 API ---
+    if (method === 'POST' && url.pathname === '/api/probe/start') {
+      const payload = await readJsonBody(request);
+      const urls = Array.isArray(payload && payload.urls) ? payload.urls : [];
+      const concurrency = payload && payload.concurrency;
+      const timeoutMs = payload && payload.timeoutMs;
+      const session = probeManager.startSession(urls, { concurrency, timeoutMs });
+      writeJson(response, 200, { ok: true, data: session });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/probe/status') {
+      const limit = Number(url.searchParams.get('limit') || 500);
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const statusData = probeManager.getSessionStatus(limit, offset);
+      writeJson(response, 200, { ok: true, data: statusData });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/probe/cancel') {
+      const res = probeManager.cancelSession();
+      writeJson(response, 200, { ok: true, data: res });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/probe/import') {
+      const payload = await readJsonBody(request);
+      const items = Array.isArray(payload && payload.items) ? payload.items : [];
+      const duplicateStrategy = payload && payload.duplicateStrategy === 'update_url' ? 'update_url' : 'skip';
+      const tags = Array.isArray(payload && payload.tags) ? payload.tags : [];
+      const defaultType = (payload && payload.defaultType) || 'blog_comment';
+
+      const assetsToImport = items.map((it) => ({
+        referralUrl: it.url,
+        referralDomain: it.domain,
+        resourceType: defaultType,
+        tags: tags,
+        notes: it.notes || it.details || '来自博客外链探测'
+      }));
+
+      const importResult = await importAssets({
+        items: assetsToImport,
+        duplicateStrategy,
+        defaultType,
+        sourceChannel: 'probe_discovery'
+      });
+
+      writeJson(response, 200, { ok: true, data: importResult });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/probe/benchmark') {
+      const payload = await readJsonBody(request).catch(() => ({}));
+      const limit = Math.max(5, Math.min(100, Number(payload && payload.limit || 50)));
+      const concurrency = Math.max(5, Math.min(50, Number(payload && payload.concurrency || 20)));
+
+      const res = await pool.query(
+        `select referral_domain, referral_url from ${assetsTable}
+         where quality_tier = 'high_quality'
+         order by success_count desc, total_attempts desc
+         limit $1`,
+        [limit]
+      );
+
+      const urls = res.rows.map((r) => r.referral_url);
+      const session = probeManager.startSession(urls, { concurrency });
+      writeJson(response, 200, { ok: true, data: { ...session, isBenchmark: true, assetCount: urls.length } });
       return;
     }
 

@@ -6,6 +6,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="icons/icon32.png" />
     <link rel="icon" type="image/svg+xml" href="icons/logo.svg" />
     <link rel="stylesheet" href="asset-library.css" />
+    <link rel="stylesheet" href="probe.css" />
     <style>
       * {
         box-sizing: border-box;
@@ -1537,7 +1538,7 @@
           <img src="icons/icon48.png" alt="LinkPilot Logo" width="44" height="44" style="border-radius:10px;box-shadow:0 4px 12px rgba(15,23,42,0.12);" />
           <div>
             <h1>LinkPilot 设置</h1>
-            <div class="subtitle">个人本地版配置中心：AI 供应商、推广页面资料、外链资产库、博客自动外链与扩展设置。</div>
+            <div class="subtitle">个人本地版配置中心：AI 供应商、推广页面资料、博客外链探测、外链资产库、博客自动外链与扩展设置。</div>
           </div>
         </div>
       </div>
@@ -1546,6 +1547,7 @@
         <nav class="sidebar" aria-label="设置分类">
           <button class="tab-btn active" type="button" data-tab-target="ai">AI供应商管理</button>
           <button class="tab-btn" type="button" data-tab-target="site">推广页面管理</button>
+          <button class="tab-btn" type="button" data-tab-target="probe">博客外链探测</button>
           <button class="tab-btn" type="button" data-tab-target="assets">外链资产库</button>
           <button class="tab-btn" type="button" data-tab-target="batch">博客自动外链</button>
           <button class="tab-btn" type="button" data-tab-target="other">其他设置</button>
@@ -1692,6 +1694,10 @@
                 <span id="profileSettingsStatus" class="status">已保存</span>
               </div>
             </div>
+          </section>
+
+          <section class="tab-panel" data-tab-panel="probe">
+            <div id="probeContainer"></div>
           </section>
 
           <section class="tab-panel" data-tab-panel="assets">
@@ -2154,5 +2160,6 @@
     <script src="options.js"></script>
     <script src="batch.js"></script>
     <script src="asset-library.js"></script>
+    <script src="probe.js"></script>
   </body>
 </html>
