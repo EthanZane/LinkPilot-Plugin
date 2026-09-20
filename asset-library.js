@@ -295,6 +295,18 @@
               </select>
             </div>
 
+            <div class="filter-group">
+              <label>页面深度：</label>
+              <select id="assetFilterPageDepth">
+                <option value="all">全部深度 (全部)</option>
+                <option value="shallow">🟢 浅页面 (≤20 屏 - 推荐)</option>
+                <option value="medium">🟡 中等 (20~50 屏)</option>
+                <option value="deep">🟠 较深 (50~100 屏)</option>
+                <option value="very_deep">🔴 极深 (>100 屏 - 需换页)</option>
+                <option value="unknown">⚪ 深度未知</option>
+              </select>
+            </div>
+
             <!-- 核心：新网站隔离矩阵筛选 -->
             <div class="filter-group filter-target-matrix">
               <label>🎯 目标站专属隔离：</label>
@@ -320,6 +332,8 @@
               <label>排序方式：</label>
               <select id="assetSortBy">
                 <option value="success_rate-desc">成功率 降序</option>
+                <option value="page_depth-asc">页面深度 升序 (优先浅页)</option>
+                <option value="page_depth-desc">页面深度 降序</option>
                 <option value="total_attempts-desc">执行次数 降序</option>
                 <option value="last_executed_at-desc">最近执行 降序</option>
                 <option value="created_at-desc">录入时间 降序</option>
@@ -352,18 +366,19 @@
                     <input type="checkbox" id="assetSelectAllCheckbox" title="全选当前页" />
                   </th>
                   <th>引荐域名</th>
-                  <th style="width:110px;">外链类型</th>
+                  <th style="width:105px;">外链类型</th>
                   <th>入口引荐 URL</th>
-                  <th style="width:140px;">执行表现 / 成功率</th>
-                  <th style="width:105px;">质量评级</th>
-                  <th style="width:130px;">最近执行</th>
+                  <th style="width:115px;">页面深度</th>
+                  <th style="width:135px;">执行表现 / 成功率</th>
+                  <th style="width:95px;">质量评级</th>
+                  <th style="width:120px;">最近执行</th>
                   <th>目标站覆盖</th>
                   <th>备注 / 标签</th>
-                  <th style="width:100px;text-align:center;">操作</th>
+                  <th style="width:105px;text-align:center;">操作</th>
                 </tr>
               </thead>
               <tbody id="assetTableBody">
-                <tr><td colspan="10" style="text-align:center;padding:40px;color:#94a3b8;">正在加载外链资产...</td></tr>
+                <tr><td colspan="11" style="text-align:center;padding:40px;color:#94a3b8;">正在加载外链资产...</td></tr>
               </tbody>
             </table>
           </div>
@@ -473,21 +488,26 @@
 
       <!-- 单条资产编辑 Modal -->
       <div class="asset-modal-overlay" id="assetEditModal" style="display:none;">
-        <div class="asset-modal-dialog" style="max-width:520px;">
+        <div class="asset-modal-dialog" style="max-width:540px;">
           <div class="asset-modal-header">
             <div class="asset-modal-title">✏️ 编辑外链资产</div>
             <button type="button" class="asset-modal-close" id="assetCloseEditModalBtn">×</button>
           </div>
           <div class="asset-modal-body">
+            <div id="assetEditDepthAlert" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5;"></div>
+
             <div style="margin-bottom:10px;">
               <label style="font-size:12px;font-weight:600;">引荐域名（主键）：</label>
               <input type="text" id="assetEditDomain" readonly style="background:#f1f5f9;color:#64748b;" />
             </div>
             <div style="margin-bottom:10px;">
-              <label style="font-size:12px;font-weight:600;">入口 / 提交引荐 URL：</label>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                <label style="font-size:12px;font-weight:600;">入口 / 提交引荐 URL：</label>
+                <a id="assetEditFindShallowLink" href="#" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#2563eb;text-decoration:underline;display:none;">🔍 谷歌搜该站新页面 (找浅页)</a>
+              </div>
               <input type="url" id="assetEditUrl" placeholder="https://..." />
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
               <div>
                 <label style="font-size:12px;font-weight:600;">外链形态类型：</label>
                 <select id="assetEditType">
@@ -499,6 +519,16 @@
                 <select id="assetEditQuality">
                   ${Object.values(QUALITY_TIERS).map((q) => `<option value="${q.id}">${q.icon} ${q.label}</option>`).join('')}
                 </select>
+              </div>
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <label style="font-size:12px;font-weight:600;">页面深度：</label>
+                  <button type="button" id="assetEditResetDepthBtn" style="border:none;background:none;color:#64748b;font-size:11px;cursor:pointer;padding:0;text-decoration:underline;" title="修改URL后清空，待下次任务自动重新探测">清空</button>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;">
+                  <input type="number" step="0.1" id="assetEditPageDepth" placeholder="未测" style="width:100%;" />
+                  <span style="font-size:11px;color:#64748b;white-space:nowrap;">屏</span>
+                </div>
               </div>
             </div>
             <div style="margin-bottom:10px;">
@@ -559,7 +589,7 @@
     document.getElementById('assetCancelImportBtn')?.addEventListener('click', closeImportModal);
 
     // 筛选条件变化
-    ['assetFilterType', 'assetFilterQuality', 'assetFilterSuccessRate', 'assetFilterTargetStatus', 'assetSortBy'].forEach((id) => {
+    ['assetFilterType', 'assetFilterQuality', 'assetFilterSuccessRate', 'assetFilterPageDepth', 'assetFilterTargetStatus', 'assetSortBy'].forEach((id) => {
       document.getElementById(id)?.addEventListener('change', () => {
         state.page = 1;
         fetchAssets();
@@ -687,6 +717,10 @@
     document.getElementById('assetCloseEditModalBtn')?.addEventListener('click', closeEditModal);
     document.getElementById('assetCancelEditBtn')?.addEventListener('click', closeEditModal);
     document.getElementById('assetSaveEditBtn')?.addEventListener('click', saveEditModal);
+    document.getElementById('assetEditResetDepthBtn')?.addEventListener('click', () => {
+      const depthInput = document.getElementById('assetEditPageDepth');
+      if (depthInput) depthInput.value = '';
+    });
   }
 
   let selectedImportFile = null;
@@ -766,7 +800,14 @@
     document.getElementById('statAssetManual').textContent = summary.manualNeededCount || 0;
     document.getElementById('statAssetBroken').textContent = summary.brokenCount || 0;
     document.getElementById('statAssetUntested').textContent = summary.untestedCount || 0;
-    document.getElementById('statAssetAvgRate').textContent = `${summary.avgSuccessRate || 0}%`;
+    const avgRateEl = document.getElementById('statAssetAvgRate');
+    if (avgRateEl) {
+      avgRateEl.textContent = `${summary.avgSuccessRate || 0}%`;
+      const foot = avgRateEl.parentElement?.querySelector('.stat-foot');
+      if (foot && summary.avgPageDepth !== undefined) {
+        foot.textContent = `均深 ${summary.avgPageDepth} 屏 | 浅页 ${summary.shallowCount || 0}`;
+      }
+    }
 
     const typeSummary = Object.entries(summary.byType || {})
       .map(([k, v]) => `${(RESOURCE_TYPES[k] && RESOURCE_TYPES[k].label) || k}: ${v}`)
@@ -782,7 +823,7 @@
     if (!tbody) return;
 
     state.isLoading = true;
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#94a3b8;">正在加载资产数据...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">正在加载资产数据...</td></tr>';
 
     const sortVal = (document.getElementById('assetSortBy')?.value || 'success_rate-desc').split('-');
     const sortBy = sortVal[0];
@@ -795,6 +836,8 @@
     else if (rateVal === '60') minRate = 60;
     else if (rateVal === '40') minRate = 40;
     else if (rateVal === '0') { minRate = 0; maxRate = 0; }
+
+    const pageDepth = document.getElementById('assetFilterPageDepth')?.value || 'all';
 
     const queryParams = new URLSearchParams({
       page: state.page,
@@ -810,6 +853,7 @@
 
     if (minRate !== null) queryParams.set('minSuccessRate', minRate);
     if (maxRate !== null) queryParams.set('maxSuccessRate', maxRate);
+    if (pageDepth && pageDepth !== 'all') queryParams.set('pageDepthRange', pageDepth);
 
     try {
       const data = await apiRequest(`/api/assets?${queryParams.toString()}`);
@@ -821,7 +865,7 @@
       renderAssetTableRows();
       renderPaginationControls();
     } catch (error) {
-      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:30px;color:#dc2626;">加载失败：${escapeHtml(error.message)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:30px;color:#dc2626;">加载失败：${escapeHtml(error.message)}</td></tr>`;
     } finally {
       state.isLoading = false;
     }
@@ -837,7 +881,7 @@
     if (state.assets.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="10" style="text-align:center;padding:50px 20px;">
+          <td colspan="11" style="text-align:center;padding:50px 20px;">
             <div style="font-size:36px;margin-bottom:10px;">🔍</div>
             <div style="font-size:14px;font-weight:600;color:#475569;">暂无符合条件的外链资产</div>
             <div class="hint" style="margin-bottom:16px;">您可以调整筛选条件、批量导入新外链，或从历史任务一键回填建库。</div>
@@ -860,6 +904,29 @@
       const typeInfo = RESOURCE_TYPES[asset.resource_type] || RESOURCE_TYPES.other;
       const qualityInfo = QUALITY_TIERS[asset.quality_tier] || QUALITY_TIERS.untested;
       const rateNum = Number(asset.success_rate || 0);
+
+      // 页面深度屏数与警示
+      const rawDepth = asset.page_depth;
+      const hasDepth = rawDepth !== null && rawDepth !== undefined && rawDepth !== '';
+      const depthNum = hasDepth ? Number(rawDepth) : null;
+
+      let depthHtml = '';
+      if (!hasDepth || isNaN(depthNum)) {
+        depthHtml = '<span class="depth-badge depth-unknown" title="尚未探测该网页屏数">⚪ 未知</span>';
+      } else if (depthNum <= 20) {
+        depthHtml = `<span class="depth-badge depth-shallow" title="页面较浅（≤20屏），评论竞争小，建议优先发布">🟢 ${depthNum.toFixed(1)} 屏</span>`;
+      } else if (depthNum <= 50) {
+        depthHtml = `<span class="depth-badge depth-medium" title="页面深度中等（20~50屏）">🟡 ${depthNum.toFixed(1)} 屏</span>`;
+      } else if (depthNum <= 100) {
+        depthHtml = `<span class="depth-badge depth-deep" title="页面较深（50~100屏），已有较多评论">🟠 ${depthNum.toFixed(1)} 屏</span>`;
+      } else {
+        depthHtml = `
+          <div class="depth-cell-alert">
+            <span class="depth-badge depth-very-deep" title="页面极深（${depthNum.toFixed(1)}屏）！历史评论极度膨胀，新留言极易沉底。强烈建议换浅页！">⚠️ ${depthNum.toFixed(1)} 屏</span>
+            <button type="button" class="btn-replace-shallow" data-domain="${escapeHtml(asset.referral_domain)}" title="寻找该站评论较少的新文章并替换入口URL">🔄 换浅页</button>
+          </div>
+        `;
+      }
 
       // 覆盖标签
       const coverage = Array.isArray(asset.target_coverage) ? asset.target_coverage : [];
@@ -889,6 +956,9 @@
             </a>
             <a href="${escapeHtml(asset.referral_url)}" target="_blank" rel="noopener noreferrer" class="btn-icon-link" title="新标签页打开">↗</a>
           </div>
+        </td>
+        <td>
+          <div class="depth-cell">${depthHtml}</div>
         </td>
         <td>
           <div class="perf-cell">
@@ -943,6 +1013,12 @@
           e.target.textContent = '✓';
           setTimeout(() => { e.target.textContent = '📋'; }, 1200);
         });
+      });
+
+      // 换浅页快捷操作
+      tr.querySelector('.btn-replace-shallow')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openEditModal(asset, { promptShallow: true });
       });
 
       // 单行编辑与删除
@@ -1202,7 +1278,7 @@
   /**
    * 打开编辑单条资产 Modal。
    */
-  function openEditModal(asset) {
+  function openEditModal(asset, options = {}) {
     const modal = document.getElementById('assetEditModal');
     if (!modal) return;
     document.getElementById('assetEditDomain').value = asset.referral_domain;
@@ -1211,7 +1287,46 @@
     document.getElementById('assetEditQuality').value = asset.quality_tier || 'untested';
     document.getElementById('assetEditTags').value = Array.isArray(asset.tags) ? asset.tags.join(', ') : '';
     document.getElementById('assetEditNotes').value = asset.notes || '';
+
+    const depthInput = document.getElementById('assetEditPageDepth');
+    if (depthInput) {
+      depthInput.value = asset.page_depth != null ? asset.page_depth : '';
+    }
+
+    const alertBanner = document.getElementById('assetEditDepthAlert');
+    const findLink = document.getElementById('assetEditFindShallowLink');
+
+    if (findLink) {
+      findLink.href = `https://www.google.com/search?q=site:${encodeURIComponent(asset.referral_domain)}`;
+      findLink.style.display = 'inline-block';
+    }
+
+    const depthNum = asset.page_depth != null ? Number(asset.page_depth) : null;
+    if (alertBanner) {
+      if (options.promptShallow || (depthNum !== null && depthNum > 100)) {
+        alertBanner.style.display = 'block';
+        alertBanner.style.background = '#fef2f2';
+        alertBanner.style.border = '1px solid #fca5a5';
+        alertBanner.style.color = '#991b1b';
+        alertBanner.innerHTML = `
+          <strong>⚠️ 该网页当前深度达 ${depthNum != null ? depthNum.toFixed(1) : ''} 屏（历史评论极多）！</strong><br/>
+          评论极易被淹没沉底。建议点击右上角搜索该站评论少的新文章，替换下方入口 URL。保存后可清空深度，由自动化任务下次运行时自动探测写入。
+        `;
+      } else {
+        alertBanner.style.display = 'none';
+        alertBanner.innerHTML = '';
+      }
+    }
+
     modal.style.display = 'flex';
+
+    if (options.promptShallow) {
+      const urlInput = document.getElementById('assetEditUrl');
+      if (urlInput) {
+        urlInput.focus();
+        urlInput.select();
+      }
+    }
   }
 
   function closeEditModal() {
@@ -1226,6 +1341,8 @@
     const qualityTier = document.getElementById('assetEditQuality').value;
     const tags = document.getElementById('assetEditTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const notes = document.getElementById('assetEditNotes').value.trim();
+    const pageDepthRaw = document.getElementById('assetEditPageDepth')?.value.trim();
+    const pageDepth = pageDepthRaw !== '' ? Number(pageDepthRaw) : null;
 
     if (!referralUrl) {
       alert('入口 URL 不能为空');
@@ -1238,7 +1355,8 @@
         resourceType,
         qualityTier,
         tags,
-        notes
+        notes,
+        pageDepth
       }, { method: 'PATCH' });
 
       closeEditModal();

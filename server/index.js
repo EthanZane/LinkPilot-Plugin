@@ -444,11 +444,20 @@ async function refreshAssetsForDomains(domains, database = pool) {
         referral_domain, referral_url, resource_type, quality_tier, source_channel,
         total_attempts, success_count, fail_count, skipped_count, manual_count,
         no_box_count, blocked_count, success_rate, last_run_result, last_run_message,
-        last_executed_at, updated_at
+        page_depth, last_executed_at, updated_at
       )
       with latest_items as (
         select distinct on (referral_domain)
-          referral_domain, referral_url, result, result_message, executed_at
+          referral_domain,
+          referral_url,
+          result,
+          result_message,
+          case
+            when (page_metrics->>'pageDepthScreens') ~ '^[0-9]+(\.[0-9]+)?$'
+            then round((page_metrics->>'pageDepthScreens')::numeric, 1)
+            else null
+          end as page_depth,
+          executed_at
         from ${runItemsTable}
         where referral_domain = any($1::text[])
         order by referral_domain, executed_at desc, id desc
@@ -491,6 +500,7 @@ async function refreshAssetsForDomains(domains, database = pool) {
         round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
         l.result as last_run_result,
         coalesce(l.result_message, '') as last_run_message,
+        l.page_depth as page_depth,
         coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
         now() as updated_at
       from agg_stats s
@@ -507,6 +517,7 @@ async function refreshAssetsForDomains(domains, database = pool) {
         success_rate = excluded.success_rate,
         last_run_result = excluded.last_run_result,
         last_run_message = excluded.last_run_message,
+        page_depth = coalesce(excluded.page_depth, ${assetsTable}.page_depth),
         last_executed_at = excluded.last_executed_at,
         quality_tier = case
           when ${assetsTable}.quality_tier = 'blacklisted' then 'blacklisted'
@@ -529,11 +540,20 @@ async function bootstrapAssets(database = pool) {
         referral_domain, referral_url, resource_type, quality_tier, source_channel,
         total_attempts, success_count, fail_count, skipped_count, manual_count,
         no_box_count, blocked_count, success_rate, last_run_result, last_run_message,
-        last_executed_at, created_at, updated_at
+        page_depth, last_executed_at, created_at, updated_at
       )
       with latest_items as (
         select distinct on (referral_domain)
-          referral_domain, referral_url, result, result_message, executed_at
+          referral_domain,
+          referral_url,
+          result,
+          result_message,
+          case
+            when (page_metrics->>'pageDepthScreens') ~ '^[0-9]+(\.[0-9]+)?$'
+            then round((page_metrics->>'pageDepthScreens')::numeric, 1)
+            else null
+          end as page_depth,
+          executed_at
         from ${runItemsTable}
         where referral_domain <> ''
         order by referral_domain, executed_at desc, id desc
@@ -577,6 +597,7 @@ async function bootstrapAssets(database = pool) {
         round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
         l.result as last_run_result,
         coalesce(l.result_message, '') as last_run_message,
+        l.page_depth as page_depth,
         coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
         coalesce(s.first_seen_at, now()) as created_at,
         now() as updated_at
@@ -594,6 +615,7 @@ async function bootstrapAssets(database = pool) {
         success_rate = excluded.success_rate,
         last_run_result = excluded.last_run_result,
         last_run_message = excluded.last_run_message,
+        page_depth = coalesce(excluded.page_depth, ${assetsTable}.page_depth),
         last_executed_at = excluded.last_executed_at,
         quality_tier = case
           when ${assetsTable}.quality_tier = 'blacklisted' then 'blacklisted'
@@ -618,6 +640,9 @@ async function getAssetsSummary(database = pool) {
         count(case when quality_tier = 'broken' then 1 end)::integer as broken_count,
         count(case when quality_tier = 'untested' then 1 end)::integer as untested_count,
         count(case when quality_tier = 'blacklisted' then 1 end)::integer as blacklisted_count,
+        count(case when page_depth is not null and page_depth <= 20 then 1 end)::integer as shallow_count,
+        count(case when page_depth > 100 then 1 end)::integer as very_deep_count,
+        coalesce(round(avg(page_depth), 1), 0)::numeric as avg_page_depth,
         coalesce(round(avg(case when total_attempts > 0 then success_rate end), 1), 0)::numeric as avg_success_rate
       from ${assetsTable}
     `
@@ -644,6 +669,9 @@ async function getAssetsSummary(database = pool) {
     brokenCount: Number(row.broken_count || 0),
     untestedCount: Number(row.untested_count || 0),
     blacklistedCount: Number(row.blacklisted_count || 0),
+    shallowCount: Number(row.shallow_count || 0),
+    veryDeepCount: Number(row.very_deep_count || 0),
+    avgPageDepth: Number(row.avg_page_depth || 0),
     avgSuccessRate: Number(row.avg_success_rate || 0),
     byType
   };
@@ -659,8 +687,11 @@ async function listAssets(params, database = pool) {
 
   const resourceType = String(params.resourceType || 'all').trim();
   const qualityTier = String(params.qualityTier || 'all').trim();
+  const pageDepthRange = String(params.pageDepthRange || 'all').trim();
   const minSuccessRate = numberOrNull(params.minSuccessRate);
   const maxSuccessRate = numberOrNull(params.maxSuccessRate);
+  const minPageDepth = numberOrNull(params.minPageDepth);
+  const maxPageDepth = numberOrNull(params.maxPageDepth);
   const targetDomain = normalizeDomain(params.targetDomain || '');
   const targetSiteStatus = String(params.targetSiteStatus || 'all').trim();
   const keyword = String(params.keyword || '').trim();
@@ -670,7 +701,8 @@ async function listAssets(params, database = pool) {
     total_attempts: 'a.total_attempts',
     last_executed_at: 'a.last_executed_at',
     created_at: 'a.created_at',
-    referral_domain: 'a.referral_domain'
+    referral_domain: 'a.referral_domain',
+    page_depth: 'a.page_depth'
   };
   const sortByCol = allowedSortCols[params.sortBy] || 'a.success_rate';
   const sortOrder = String(params.sortOrder || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
@@ -687,6 +719,28 @@ async function listAssets(params, database = pool) {
   if (qualityTier && qualityTier !== 'all') {
     whereConditions.push(`a.quality_tier = $${paramIndex++}`);
     values.push(qualityTier);
+  }
+
+  if (pageDepthRange === 'shallow') {
+    whereConditions.push('a.page_depth is not null and a.page_depth <= 20');
+  } else if (pageDepthRange === 'medium') {
+    whereConditions.push('a.page_depth > 20 and a.page_depth <= 50');
+  } else if (pageDepthRange === 'deep') {
+    whereConditions.push('a.page_depth > 50 and a.page_depth <= 100');
+  } else if (pageDepthRange === 'very_deep') {
+    whereConditions.push('a.page_depth > 100');
+  } else if (pageDepthRange === 'unknown') {
+    whereConditions.push('a.page_depth is null');
+  }
+
+  if (minPageDepth !== null) {
+    whereConditions.push(`a.page_depth >= $${paramIndex++}`);
+    values.push(minPageDepth);
+  }
+
+  if (maxPageDepth !== null) {
+    whereConditions.push(`a.page_depth <= $${paramIndex++}`);
+    values.push(maxPageDepth);
   }
 
   if (minSuccessRate !== null) {
@@ -937,6 +991,10 @@ async function updateAsset(domain, payload, database = pool) {
   if (payload.tags !== undefined) {
     fields.push(`tags = $${idx++}`);
     values.push(Array.isArray(payload.tags) ? payload.tags : []);
+  }
+  if (payload.pageDepth !== undefined) {
+    fields.push(`page_depth = $${idx++}`);
+    values.push(numberOrNull(payload.pageDepth));
   }
 
   if (fields.length === 0) return null;
