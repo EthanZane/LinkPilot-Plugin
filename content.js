@@ -5860,7 +5860,60 @@
   }
 
   /**
-   * 采集当前页面的总深度。使用多个根节点高度的最大值，兼容标准文档、怪异模式和动态内容页面。
+   * 采集当前页面的语言代码（基于 DOM html/meta 标签、Unicode 脚本特征及 URL，0 额外网络开销）
+   */
+  function detectCurrentPageLanguage() {
+    try {
+      // 1. <html lang="xx"> 或 xml:lang="xx"
+      const root = document.documentElement;
+      const htmlLang = (root ? (root.getAttribute('lang') || root.getAttribute('xml:lang') || '') : '').trim();
+      if (htmlLang) {
+        const code = htmlLang.split(/[-_]/)[0].toLowerCase();
+        if (code && code.length >= 2) return code;
+      }
+
+      // 2. meta content-language / language / dc.language
+      const metaLang = document.querySelector('meta[http-equiv="content-language" i], meta[name="language" i], meta[name="dc.language" i]');
+      if (metaLang && metaLang.content) {
+        const code = metaLang.content.trim().split(/[-_]/)[0].toLowerCase();
+        if (code && code.length >= 2) return code;
+      }
+
+      // 3. meta property="og:locale"
+      const ogLocale = document.querySelector('meta[property="og:locale" i]');
+      if (ogLocale && ogLocale.content) {
+        const code = ogLocale.content.trim().split(/[-_]/)[0].toLowerCase();
+        if (code && code.length >= 2) return code;
+      }
+
+      // 4. Unicode 脚本特征：检查网页标题及首屏正文样片
+      const sampleText = ((document.title || '') + ' ' + ((document.body && document.body.innerText) || '').slice(0, 500)).trim();
+      if (/[\u3040-\u309F\u30A0-\u30FF]/.test(sampleText)) return 'ja';
+      if (/[\uAC00-\uD7AF]/.test(sampleText)) return 'ko';
+      if (/[\u0400-\u04FF]/.test(sampleText)) return 'ru';
+      if (/[\u0600-\u06FF]/.test(sampleText)) return 'ar';
+      if (/[\u0E00-\u0E7F]/.test(sampleText)) return 'th';
+      if (/[\u4E00-\u9FFF]/.test(sampleText)) return 'zh';
+
+      // 5. 域名后缀与路径特征
+      const host = (window.location && window.location.hostname ? window.location.hostname.toLowerCase() : '');
+      const pathname = (window.location && window.location.pathname ? window.location.pathname.toLowerCase() : '');
+      if (host.endsWith('.jp') || pathname.startsWith('/ja/')) return 'ja';
+      if (host.endsWith('.es') || pathname.startsWith('/es/')) return 'es';
+      if (host.endsWith('.de') || pathname.startsWith('/de/')) return 'de';
+      if (host.endsWith('.fr') || pathname.startsWith('/fr/')) return 'fr';
+      if (host.endsWith('.ru') || pathname.startsWith('/ru/')) return 'ru';
+      if (host.endsWith('.kr') || pathname.startsWith('/ko/')) return 'ko';
+      if (host.endsWith('.cn') || pathname.startsWith('/zh/')) return 'zh';
+      if (host.endsWith('.br') || host.endsWith('.pt') || pathname.startsWith('/pt/')) return 'pt';
+      if (host.endsWith('.it') || pathname.startsWith('/it/')) return 'it';
+    } catch (_) {}
+
+    return 'en';
+  }
+
+  /**
+   * 采集当前页面的总深度与页面语言。使用多个根节点高度的最大值，兼容标准文档、怪异模式和动态内容页面。
    */
   function collectPageDepthMetrics() {
     const root = document.documentElement;
@@ -5875,10 +5928,12 @@
     );
     const viewportHeightPx = Math.max(window.innerHeight || 0, root ? root.clientHeight : 0, 1);
     const pageDepthScreens = Number((documentHeightPx / viewportHeightPx).toFixed(1));
+    const language = detectCurrentPageLanguage();
     return {
       documentHeightPx,
       viewportHeightPx,
       pageDepthScreens,
+      language,
       measuredAt: Date.now()
     };
   }

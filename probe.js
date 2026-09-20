@@ -271,6 +271,7 @@
                 <tr>
                   <th style="width:38px;text-align:center;"><input type="checkbox" id="probeSelectAllCheckbox" /></th>
                   <th style="width:160px;">引荐域名</th>
+                  <th style="width:105px;">页面语言</th>
                   <th style="width:200px;">网页标题 (Title)</th>
                   <th>入口引荐 URL</th>
                   <th style="width:190px;">博客系统 / 识别结论</th>
@@ -280,7 +281,7 @@
                 </tr>
               </thead>
               <tbody id="probeResultTableBody">
-                <tr><td colspan="8" style="text-align:center;padding:40px;color:#94a3b8;">暂无探测数据</td></tr>
+                <tr><td colspan="9" style="text-align:center;padding:40px;color:#94a3b8;">暂无探测数据</td></tr>
               </tbody>
             </table>
           </div>
@@ -1112,12 +1113,14 @@
         if (isOther) return false;
       }
 
-      // 2. 搜索关键字多字段模糊匹配 (URL / 域名 / 网页标题 / 识别结论 / 命中规则 / 详情说明 / HTTP状态码)
+      // 2. 搜索关键字多字段模糊匹配 (URL / 域名 / 页面语言 / 网页标题 / 识别结论 / 命中规则 / 详情说明 / HTTP状态码)
       if (kwTokens.length > 0) {
         const textToSearch = [
           r.domain || '',
           r.title || '',
           r.url || '',
+          r.language || '',
+          r.languageLabel || '',
           r.formType || '',
           r.statusLabel || '',
           r.matchedRule || '',
@@ -1156,7 +1159,7 @@
       const emptyTip = probeState.searchKeyword
         ? `未找到与 “<strong style="color:#2563eb;">${escapeHtml(probeState.searchKeyword)}</strong>” 相关的结果，可尝试更换关键词或清空搜索。`
         : '当前分类下无结果';
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#94a3b8;">${emptyTip}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:#94a3b8;">${emptyTip}</td></tr>`;
       return;
     }
 
@@ -1221,6 +1224,11 @@
         </td>
         <td>
           <div style="font-weight:700;color:#1e293b;font-size:13px;">${escapeHtml(item.domain)}</div>
+        </td>
+        <td style="white-space:nowrap;">
+          <span class="probe-lang-badge" title="${escapeHtml(item.languageLabel || item.language || '英语')} (${escapeHtml(item.language || 'en')})">
+            ${escapeHtml(item.languageFlag || '🌐')} ${escapeHtml(item.languageLabel || item.language || '英语')}
+          </span>
         </td>
         <td class="probe-title-cell" title="${escapeHtml(item.title || '')}">
           ${item.title ? escapeHtml(item.title) : '<span style="color:#94a3b8;font-size:11px;">—</span>'}
@@ -1330,6 +1338,7 @@
       .map((r) => ({
         url: r.url,
         domain: r.domain,
+        language: r.language || 'en',
         details: r.details || r.formType || '博客外链探测'
       }));
 
@@ -1402,6 +1411,7 @@
 
     const headers = [
       '引荐域名',
+      '页面语言',
       '网页标题',
       '入口引荐URL',
       '是否博客评论',
@@ -1426,8 +1436,11 @@
       else if (r.status === 'comments_closed') blogStatus = '博客但评论已关闭';
       else if (r.status === 'login_required') blogStatus = '博客但需登录';
 
+      const langText = `${r.languageFlag || ''} ${r.languageLabel || r.language || '英语'} (${r.language || 'en'})`.trim();
+
       return [
         r.domain || '',
+        langText,
         r.title || '',
         r.url || '',
         blogStatus,
@@ -1451,6 +1464,7 @@
 
       ws['!cols'] = [
         { wch: 22 }, // 引荐域名
+        { wch: 16 }, // 页面语言
         { wch: 30 }, // 网页标题
         { wch: 50 }, // 入口URL
         { wch: 18 }, // 是否博客

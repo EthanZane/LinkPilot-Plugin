@@ -118,6 +118,28 @@
     }
   };
 
+  // 网站语言字典
+  const SUPPORTED_LANGUAGES = {
+    en: { code: 'en', label: '英语', flag: '🇺🇸' },
+    ja: { code: 'ja', label: '日语', flag: '🇯🇵' },
+    es: { code: 'es', label: '西语', flag: '🇪🇸' },
+    de: { code: 'de', label: '德语', flag: '🇩🇪' },
+    fr: { code: 'fr', label: '法语', flag: '🇫🇷' },
+    zh: { code: 'zh', label: '中文', flag: '🇨🇳' },
+    ru: { code: 'ru', label: '俄语', flag: '🇷🇺' },
+    pt: { code: 'pt', label: '葡语', flag: '🇵🇹' },
+    it: { code: 'it', label: '意语', flag: '🇮🇹' },
+    ko: { code: 'ko', label: '韩语', flag: '🇰🇷' },
+    ar: { code: 'ar', label: '阿语', flag: '🇸🇦' },
+    vi: { code: 'vi', label: '越语', flag: '🇻🇳' },
+    th: { code: 'th', label: '泰语', flag: '🇹🇭' },
+    id: { code: 'id', label: '印尼', flag: '🇮🇩' },
+    nl: { code: 'nl', label: '荷语', flag: '🇳🇱' },
+    pl: { code: 'pl', label: '波兰', flag: '🇵🇱' },
+    tr: { code: 'tr', label: '土语', flag: '🇹🇷' },
+    other: { code: 'other', label: '其他', flag: '🌐' }
+  };
+
   const DEFAULT_LOCAL_SERVER_BASE = 'http://127.0.0.1:17321';
 
   /**
@@ -278,6 +300,14 @@
             </div>
 
             <div class="filter-group">
+              <label>网站语种：</label>
+              <select id="assetFilterLanguage">
+                <option value="all">全部语种 (全部)</option>
+                ${Object.values(SUPPORTED_LANGUAGES).map((l) => `<option value="${l.code}">${l.flag} ${l.label} (${l.code})</option>`).join('')}
+              </select>
+            </div>
+
+            <div class="filter-group">
               <label>质量评级：</label>
               <select id="assetFilterQuality">
                 <option value="all">全部评级 (全部)</option>
@@ -390,6 +420,7 @@
                     <input type="checkbox" id="assetSelectAllCheckbox" title="全选当前页" />
                   </th>
                   <th>引荐域名</th>
+                  <th style="width:85px;">语种</th>
                   <th style="width:105px;">外链类型</th>
                   <th>入口引荐 URL</th>
                   <th style="width:115px;">页面深度</th>
@@ -402,7 +433,7 @@
                 </tr>
               </thead>
               <tbody id="assetTableBody">
-                <tr><td colspan="11" style="text-align:center;padding:40px;color:#94a3b8;">正在加载外链资产...</td></tr>
+                <tr><td colspan="12" style="text-align:center;padding:40px;color:#94a3b8;">正在加载外链资产...</td></tr>
               </tbody>
             </table>
           </div>
@@ -607,7 +638,13 @@
                 💡 检测到入口 URL 已变更，页面深度已自动重置为空（未知），待下次自动化任务重新探测实际深度。
               </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+              <div>
+                <label style="font-size:12px;font-weight:600;">网站语种：</label>
+                <select id="assetEditLanguage">
+                  ${Object.values(SUPPORTED_LANGUAGES).map((l) => `<option value="${l.code}">${l.flag} ${l.label} (${l.code})</option>`).join('')}
+                </select>
+              </div>
               <div>
                 <label style="font-size:12px;font-weight:600;">外链形态类型：</label>
                 <select id="assetEditType">
@@ -691,7 +728,7 @@
     document.getElementById('assetCancelImportBtn')?.addEventListener('click', closeImportModal);
 
     // 筛选条件变化
-    ['assetFilterType', 'assetFilterQuality', 'assetFilterSuccessRate', 'assetFilterPageDepth', 'assetFilterTimeRange', 'assetFilterSourceChannel', 'assetFilterTargetStatus', 'assetSortBy'].forEach((id) => {
+    ['assetFilterType', 'assetFilterLanguage', 'assetFilterQuality', 'assetFilterSuccessRate', 'assetFilterPageDepth', 'assetFilterTimeRange', 'assetFilterSourceChannel', 'assetFilterTargetStatus', 'assetSortBy'].forEach((id) => {
       document.getElementById(id)?.addEventListener('change', () => {
         state.page = 1;
         fetchAssets();
@@ -960,6 +997,7 @@
     const params = {
       resourceType: document.getElementById('assetFilterType')?.value || 'all',
       qualityTier: document.getElementById('assetFilterQuality')?.value || 'all',
+      language: document.getElementById('assetFilterLanguage')?.value || 'all',
       targetDomain: document.getElementById('assetFilterTargetDomain')?.value || '',
       targetSiteStatus: document.getElementById('assetFilterTargetStatus')?.value || 'all',
       keyword: document.getElementById('assetFilterKeyword')?.value?.trim() || '',
@@ -1065,6 +1103,7 @@
       const headers = [
         '引荐域名',
         '入口引荐URL',
+        '网站语种',
         '外链类型',
         '质量评级',
         '成功率(%)',
@@ -1085,6 +1124,8 @@
       ];
 
       const rows = items.map((a) => {
+        const langInfo = SUPPORTED_LANGUAGES[a.language] || { code: a.language || 'en', label: a.language || '英语', flag: '🌐' };
+        const langText = `${langInfo.flag} ${langInfo.label} (${langInfo.code})`;
         const typeInfo = RESOURCE_TYPES[a.resource_type] || { label: a.resource_type || '博客评论' };
         const qualityInfo = QUALITY_TIERS[a.quality_tier] || { label: a.quality_tier || '未测试' };
         const rateNum = Number(a.success_rate || 0);
@@ -1114,6 +1155,7 @@
         return [
           a.referral_domain || '',
           a.referral_url || '',
+          langText,
           typeInfo.label,
           qualityInfo.label,
           rateNum,
@@ -1143,6 +1185,7 @@
         ws['!cols'] = [
           { wch: 22 }, // 引荐域名
           { wch: 50 }, // 入口URL
+          { wch: 16 }, // 网站语种
           { wch: 14 }, // 外链类型
           { wch: 14 }, // 质量评级
           { wch: 12 }, // 成功率(%)
@@ -1201,7 +1244,7 @@
     if (state.assets.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="11" style="text-align:center;padding:50px 20px;">
+          <td colspan="12" style="text-align:center;padding:50px 20px;">
             <div style="font-size:36px;margin-bottom:10px;">🔍</div>
             <div style="font-size:14px;font-weight:600;color:#475569;">暂无符合条件的外链资产</div>
             <div class="hint" style="margin-bottom:16px;">您可以调整筛选条件、批量导入新外链，或从历史任务一键回填建库。</div>
@@ -1221,6 +1264,7 @@
       const isSelected = state.selectedDomains.has(asset.referral_domain);
       if (isSelected) tr.classList.add('selected-row');
 
+      const langInfo = SUPPORTED_LANGUAGES[asset.language] || { code: asset.language || 'en', label: asset.language || '英语', flag: '🌐' };
       const typeInfo = RESOURCE_TYPES[asset.resource_type] || RESOURCE_TYPES.other;
       const qualityInfo = QUALITY_TIERS[asset.quality_tier] || QUALITY_TIERS.untested;
       const rateNum = Number(asset.success_rate || 0);
@@ -1263,6 +1307,11 @@
             <span class="domain-text" title="${escapeHtml(asset.referral_domain)}">${escapeHtml(asset.referral_domain)}</span>
             <button type="button" class="btn-icon-copy" data-copy="${escapeHtml(asset.referral_domain)}" title="复制域名">📋</button>
           </div>
+        </td>
+        <td>
+          <span class="asset-lang-badge" title="${escapeHtml(langInfo.label)} (${escapeHtml(langInfo.code)})">
+            ${escapeHtml(langInfo.flag)} ${escapeHtml(langInfo.code.toUpperCase())}
+          </span>
         </td>
         <td>
           <span class="type-badge ${typeInfo.badgeClass}" style="background:${typeInfo.bg};color:${typeInfo.color};border:1px solid ${typeInfo.border};">
@@ -2110,6 +2159,10 @@
     document.getElementById('assetEditUrl').value = asset.referral_url;
     document.getElementById('assetEditType').value = asset.resource_type || 'blog_comment';
     document.getElementById('assetEditQuality').value = asset.quality_tier || 'untested';
+    const langSelect = document.getElementById('assetEditLanguage');
+    if (langSelect) {
+      langSelect.value = asset.language || 'en';
+    }
     document.getElementById('assetEditTags').value = Array.isArray(asset.tags) ? asset.tags.join(', ') : '';
     document.getElementById('assetEditNotes').value = asset.notes || '';
 
@@ -2165,6 +2218,7 @@
     const referralUrl = document.getElementById('assetEditUrl').value.trim();
     const resourceType = document.getElementById('assetEditType').value;
     const qualityTier = document.getElementById('assetEditQuality').value;
+    const language = document.getElementById('assetEditLanguage')?.value || 'en';
     const tags = document.getElementById('assetEditTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const notes = document.getElementById('assetEditNotes').value.trim();
     const pageDepthRaw = document.getElementById('assetEditPageDepth')?.value.trim();
@@ -2183,6 +2237,7 @@
         referralUrl,
         resourceType,
         qualityTier,
+        language,
         tags,
         notes,
         pageDepth

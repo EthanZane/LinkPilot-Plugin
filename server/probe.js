@@ -17,6 +17,145 @@ export function normalizeDomain(value) {
 }
 
 /**
+ * 标准 ISO 639-1 语言字典与国旗标识
+ */
+export const SUPPORTED_LANGUAGES = {
+  en: { code: 'en', label: '英语', flag: '🇺🇸' },
+  ja: { code: 'ja', label: '日语', flag: '🇯🇵' },
+  es: { code: 'es', label: '西班牙语', flag: '🇪🇸' },
+  de: { code: 'de', label: '德语', flag: '🇩🇪' },
+  fr: { code: 'fr', label: '法语', flag: '🇫🇷' },
+  zh: { code: 'zh', label: '中文', flag: '🇨🇳' },
+  ru: { code: 'ru', label: '俄语', flag: '🇷🇺' },
+  pt: { code: 'pt', label: '葡萄牙语', flag: '🇵🇹' },
+  it: { code: 'it', label: '意大利语', flag: '🇮🇹' },
+  ko: { code: 'ko', label: '韩语', flag: '🇰🇷' },
+  ar: { code: 'ar', label: '阿拉伯语', flag: '🇸🇦' },
+  vi: { code: 'vi', label: '越南语', flag: '🇻🇳' },
+  th: { code: 'th', label: '泰语', flag: '🇹🇭' },
+  id: { code: 'id', label: '印尼语', flag: '🇮🇩' },
+  nl: { code: 'nl', label: '荷兰语', flag: '🇳🇱' },
+  pl: { code: 'pl', label: '波兰语', flag: '🇵🇱' },
+  tr: { code: 'tr', label: '土耳其语', flag: '🇹🇷' },
+  other: { code: 'other', label: '其他', flag: '🌐' }
+};
+
+/**
+ * 从页面 HTML、页面标题与 URL 中高精度嗅探页面所属语言
+ * 顺序：1. html lang/xml:lang -> 2. meta content-language -> 3. og:locale -> 4. Unicode 脚本特征 -> 5. 顶级域名与路径 -> 6. 默认英语
+ */
+export function detectPageLanguage(html = '', title = '', url = '') {
+  const cleanHtml = String(html || '');
+  const cleanTitle = String(title || '');
+  const cleanUrl = String(url || '');
+
+  // 1. 优先提取 <html ... lang="xx"> 或 xml:lang="xx"
+  const htmlTagMatch = cleanHtml.match(/<html[^>]+(?:lang|xml:lang)=["']([a-zA-Z_-]+)["']/i);
+  if (htmlTagMatch && htmlTagMatch[1]) {
+    const rawCode = htmlTagMatch[1].split(/[-_]/)[0].toLowerCase();
+    if (SUPPORTED_LANGUAGES[rawCode]) {
+      return {
+        code: rawCode,
+        label: SUPPORTED_LANGUAGES[rawCode].label,
+        flag: SUPPORTED_LANGUAGES[rawCode].flag,
+        source: 'html_lang'
+      };
+    }
+  }
+
+  // 2. 检查 meta content-language
+  const metaLangMatch =
+    cleanHtml.match(/<meta[^>]+http-equiv=["']content-language["'][^>]*content=["']([a-zA-Z_-]+)["']/i) ||
+    cleanHtml.match(/<meta[^>]+content=["']([a-zA-Z_-]+)["'][^>]*http-equiv=["']content-language["']/i);
+  if (metaLangMatch && metaLangMatch[1]) {
+    const rawCode = metaLangMatch[1].split(/[-_]/)[0].toLowerCase();
+    if (SUPPORTED_LANGUAGES[rawCode]) {
+      return {
+        code: rawCode,
+        label: SUPPORTED_LANGUAGES[rawCode].label,
+        flag: SUPPORTED_LANGUAGES[rawCode].flag,
+        source: 'meta_content_language'
+      };
+    }
+  }
+
+  // 3. 检查 OpenGraph og:locale (例如 ja_JP, es_ES, fr_FR, en_US)
+  const ogLocaleMatch =
+    cleanHtml.match(/<meta[^>]+property=["']og:locale["'][^>]*content=["']([a-zA-Z_-]+)["']/i) ||
+    cleanHtml.match(/<meta[^>]+content=["']([a-zA-Z_-]+)["'][^>]*property=["']og:locale["']/i);
+  if (ogLocaleMatch && ogLocaleMatch[1]) {
+    const rawCode = ogLocaleMatch[1].split(/[-_]/)[0].toLowerCase();
+    if (SUPPORTED_LANGUAGES[rawCode]) {
+      return {
+        code: rawCode,
+        label: SUPPORTED_LANGUAGES[rawCode].label,
+        flag: SUPPORTED_LANGUAGES[rawCode].flag,
+        source: 'og_locale'
+      };
+    }
+  }
+
+  // 4. Unicode 脚本特征兜底嗅探（针对日语假名、韩文谚文、俄语字母、汉字等）
+  const textSample = `${cleanTitle} ${cleanHtml.slice(0, 3000).replace(/<[^>]+>/g, ' ')}`;
+
+  // 日语（含平假名或片假名）
+  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(textSample)) {
+    return { code: 'ja', label: '日语', flag: '🇯🇵', source: 'script_japanese' };
+  }
+  // 韩语（含谚文音节）
+  if (/[\uAC00-\uD7AF]/.test(textSample)) {
+    return { code: 'ko', label: '韩语', flag: '🇰🇷', source: 'script_korean' };
+  }
+  // 俄语（西里尔字母）
+  if (/[\u0400-\u04FF]/.test(textSample)) {
+    return { code: 'ru', label: '俄语', flag: '🇷🇺', source: 'script_cyrillic' };
+  }
+  // 阿拉伯语
+  if (/[\u0600-\u06FF]/.test(textSample)) {
+    return { code: 'ar', label: '阿拉伯语', flag: '🇸🇦', source: 'script_arabic' };
+  }
+  // 中文（纯汉字且无日文假名）
+  if (/[\u4E00-\u9FFF]/.test(textSample)) {
+    return { code: 'zh', label: '中文', flag: '🇨🇳', source: 'script_chinese' };
+  }
+
+  // 5. 域名后缀与路径特征提示
+  try {
+    const parsed = new URL(cleanUrl);
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+
+    if (/\.(jp|co\.jp)$/.test(host) || pathname.startsWith('/ja/') || pathname.startsWith('/jp/')) {
+      return { code: 'ja', label: '日语', flag: '🇯🇵', source: 'url_hint' };
+    }
+    if (/\.(es|com\.es)$/.test(host) || pathname.startsWith('/es/')) {
+      return { code: 'es', label: '西班牙语', flag: '🇪🇸', source: 'url_hint' };
+    }
+    if (/\.(de|at|ch)$/.test(host) || pathname.startsWith('/de/')) {
+      return { code: 'de', label: '德语', flag: '🇩🇪', source: 'url_hint' };
+    }
+    if (/\.(fr)$/.test(host) || pathname.startsWith('/fr/')) {
+      return { code: 'fr', label: '法语', flag: '🇫🇷', source: 'url_hint' };
+    }
+    if (/\.(ru)$/.test(host) || pathname.startsWith('/ru/')) {
+      return { code: 'ru', label: '俄语', flag: '🇷🇺', source: 'url_hint' };
+    }
+    if (/\.(it)$/.test(host) || pathname.startsWith('/it/')) {
+      return { code: 'it', label: '意大利语', flag: '🇮🇹', source: 'url_hint' };
+    }
+    if (/\.(pt|com\.br)$/.test(host) || pathname.startsWith('/pt/')) {
+      return { code: 'pt', label: '葡萄牙语', flag: '🇵🇹', source: 'url_hint' };
+    }
+    if (/\.(kr|co\.kr)$/.test(host) || pathname.startsWith('/ko/')) {
+      return { code: 'ko', label: '韩语', flag: '🇰🇷', source: 'url_hint' };
+    }
+  } catch (_) {}
+
+  // 6. 兜底回退为英语
+  return { code: 'en', label: '英语', flag: '🇺🇸', source: 'default_english' };
+}
+
+/**
  * 常见博客系统与评论表单指纹库
  */
 const BLOG_DETECTION_PATTERNS = {
@@ -440,10 +579,14 @@ export async function probeSingleUrl(targetUrl, options = {}) {
       const errorText = await response.text().catch(() => '');
       const isCloudflare = /cloudflare|attention required|challenge-running/i.test(errorText);
       const pageTitle = extractPageTitle(errorText);
+      const langInfo = detectPageLanguage(errorText, pageTitle, normalizedUrl);
       return {
         url: normalizedUrl,
         domain,
         title: pageTitle,
+        language: langInfo.code,
+        languageLabel: langInfo.label,
+        languageFlag: langInfo.flag,
         httpStatus,
         elapsedMs,
         isBlogComment: false,
@@ -466,10 +609,14 @@ export async function probeSingleUrl(targetUrl, options = {}) {
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
       const pageTitle = extractPageTitle(errorText);
+      const langInfo = detectPageLanguage(errorText, pageTitle, normalizedUrl);
       return {
         url: normalizedUrl,
         domain,
         title: pageTitle,
+        language: langInfo.code,
+        languageLabel: langInfo.label,
+        languageFlag: langInfo.flag,
         httpStatus,
         elapsedMs,
         isBlogComment: false,
@@ -495,8 +642,9 @@ export async function probeSingleUrl(targetUrl, options = {}) {
       truncatedHtml = html.slice(0, 5 * 1024 * 1024) + '\n' + html.slice(-15 * 1024 * 1024);
     }
 
-    // 阶段 2：HTML 响应后，优先提取页面 <title>
+    // 阶段 2：HTML 响应后，提取页面 <title> 与页面语言 (Language)
     const pageTitle = extractPageTitle(truncatedHtml);
+    const langInfo = detectPageLanguage(truncatedHtml, pageTitle, normalizedUrl);
 
     // 检查网页标题黑名单规则熔断
     const titleRules = options.filterRules?.titleBlacklist || options.titleBlacklist || null;
@@ -507,6 +655,9 @@ export async function probeSingleUrl(targetUrl, options = {}) {
           url: normalizedUrl,
           domain,
           title: pageTitle,
+          language: langInfo.code,
+          languageLabel: langInfo.label,
+          languageFlag: langInfo.flag,
           httpStatus,
           elapsedMs,
           isBlogComment: false,
@@ -534,6 +685,9 @@ export async function probeSingleUrl(targetUrl, options = {}) {
       url: normalizedUrl,
       domain,
       title: pageTitle,
+      language: langInfo.code,
+      languageLabel: langInfo.label,
+      languageFlag: langInfo.flag,
       httpStatus,
       elapsedMs,
       ...analysis
@@ -541,10 +695,14 @@ export async function probeSingleUrl(targetUrl, options = {}) {
   } catch (err) {
     const elapsedMs = Date.now() - startTime;
     const isTimeout = err.name === 'AbortError' || /timeout|aborted/i.test(err.message);
+    const langInfo = detectPageLanguage('', '', normalizedUrl);
     return {
       url: normalizedUrl,
       domain,
       title: '',
+      language: langInfo.code,
+      languageLabel: langInfo.label,
+      languageFlag: langInfo.flag,
       httpStatus: 0,
       elapsedMs,
       isBlogComment: false,
@@ -693,10 +851,14 @@ class ProbeSessionManager {
       if (isUrlRuleEnabled) {
         const matchedRule = findMatchingRule(item.url, urlRules.rules);
         if (matchedRule) {
+          const langInfo = detectPageLanguage('', '', item.url);
           session.results.push({
             url: item.url,
             domain: item.domain,
             title: '',
+            language: langInfo.code,
+            languageLabel: langInfo.label,
+            languageFlag: langInfo.flag,
             httpStatus: 0,
             elapsedMs: 0,
             isBlogComment: false,
@@ -743,10 +905,16 @@ class ProbeSessionManager {
             ? `${Number(existing.success_rate || 0)}% (${existing.success_count}/${existing.total_attempts}次成功)`
             : '无历史运行数据';
 
+        const existingLang = existing.language || detectPageLanguage('', '', item.url).code || 'en';
+        const langDef = SUPPORTED_LANGUAGES[existingLang] || SUPPORTED_LANGUAGES.en;
+
         session.results.push({
           url: item.url,
           domain: item.domain,
           title: '',
+          language: existingLang,
+          languageLabel: langDef.label,
+          languageFlag: langDef.flag,
           httpStatus: 200,
           elapsedMs: 0,
           isBlogComment: false,
@@ -853,10 +1021,14 @@ class ProbeSessionManager {
         } catch (err) {
           session.processed++;
           session.stats.failed++;
+          const langInfo = detectPageLanguage('', '', targetUrl);
           session.results.push({
             url: targetUrl,
             domain: normalizeDomain(targetUrl),
             title: '',
+            language: langInfo.code,
+            languageLabel: langInfo.label,
+            languageFlag: langInfo.flag,
             httpStatus: 0,
             elapsedMs: 0,
             isBlogComment: false,
@@ -920,14 +1092,19 @@ class ProbeSessionManager {
     let limit = 200;
     let offset = 0;
 
-    if (typeof sessionIdOrLimit === 'string') {
-      targetSessionId = sessionIdOrLimit;
+    if (typeof sessionIdOrLimit === 'string' && sessionIdOrLimit.trim()) {
+      targetSessionId = sessionIdOrLimit.trim();
       if (typeof limitOrOffset === 'number') limit = limitOrOffset;
       if (typeof offsetVal === 'number') offset = offsetVal;
     } else {
       targetSessionId = this.latestSessionId;
-      if (typeof sessionIdOrLimit === 'number') limit = sessionIdOrLimit;
-      if (typeof limitOrOffset === 'number') offset = limitOrOffset;
+      if (typeof sessionIdOrLimit === 'number') {
+        limit = sessionIdOrLimit;
+        if (typeof limitOrOffset === 'number') offset = limitOrOffset;
+      } else {
+        if (typeof limitOrOffset === 'number') limit = limitOrOffset;
+        if (typeof offsetVal === 'number') offset = offsetVal;
+      }
     }
 
     if (!targetSessionId || !this.sessions.has(targetSessionId)) {

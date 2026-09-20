@@ -4423,6 +4423,10 @@ function renderStats() {
       ? `页面高度 ${r.pageMetrics.documentHeightPx || 0}px，视口高度 ${r.pageMetrics.viewportHeightPx || 0}px`
       : '未采集到页面深度';
 
+    const langCode = (r.pageMetrics && r.pageMetrics.language) ? String(r.pageMetrics.language).toLowerCase() : '';
+    const langFlagMap = { en: '🇺🇸', ja: '🇯🇵', es: '🇪🇸', de: '🇩🇪', fr: '🇫🇷', zh: '🇨🇳', ru: '🇷🇺', pt: '🇵🇹', it: '🇮🇹', ko: '🇰🇷', ar: '🇸🇦' };
+    const langBadge = langCode ? ` <span style="font-size:10px;padding:1px 4px;border-radius:4px;background:#f1f5f9;color:#475569;margin-left:4px;" title="检测到页面语言: ${langCode}">${langFlagMap[langCode] || '🌐'} ${langCode.toUpperCase()}</span>` : '';
+
     const aiCell = document.createElement('td');
     if (r.aiContent) {
       aiCell.className = 'ai-content-cell';
@@ -4453,7 +4457,7 @@ function renderStats() {
         </div>
       </td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(promotionSiteUrl)}">${escapeHtml(shortPromotionSiteUrl)}</td>
-      <td style="white-space:nowrap;" title="${escapeHtml(pageDepthTitle)}">${pageDepthStr}</td>
+      <td style="white-space:nowrap;" title="${escapeHtml(pageDepthTitle)}">${pageDepthStr}${langBadge}</td>
       <td><span class="result-badge ${r.result}">${getResultText(r.result)}</span></td>
     `;
     tr.className = `url-${r.result}`;

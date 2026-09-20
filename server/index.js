@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
-import { probeManager, DEFAULT_FILTER_RULES } from './probe.js';
+import { probeManager, DEFAULT_FILTER_RULES, SUPPORTED_LANGUAGES } from './probe.js';
 
 const DEFAULT_PORT = 17321;
 const DEFAULT_PG_HOST = 'localhost';
@@ -447,7 +447,7 @@ async function refreshAssetsForDomains(domains, database = pool) {
         referral_domain, referral_url, resource_type, quality_tier, source_channel,
         total_attempts, success_count, fail_count, skipped_count, manual_count,
         no_box_count, blocked_count, success_rate, last_run_result, last_run_message,
-        page_depth, last_executed_at, updated_at
+        page_depth, language, last_executed_at, updated_at
       )
       with latest_items as (
         select distinct on (referral_domain)
@@ -460,6 +460,11 @@ async function refreshAssetsForDomains(domains, database = pool) {
             then round((page_metrics->>'pageDepthScreens')::numeric, 1)
             else null
           end as page_depth,
+          case
+            when coalesce(page_metrics->>'language', '') <> ''
+            then lower(trim(page_metrics->>'language'))
+            else null
+          end as language,
           executed_at
         from ${runItemsTable}
         where referral_domain = any($1::text[])
@@ -510,6 +515,7 @@ async function refreshAssetsForDomains(domains, database = pool) {
         l.result as last_run_result,
         coalesce(l.result_message, '') as last_run_message,
         l.page_depth as page_depth,
+        coalesce(l.language, 'en') as language,
         coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
         now() as updated_at
       from agg_stats s
@@ -527,6 +533,13 @@ async function refreshAssetsForDomains(domains, database = pool) {
         last_run_result = excluded.last_run_result,
         last_run_message = excluded.last_run_message,
         page_depth = coalesce(excluded.page_depth, ${assetsTable}.page_depth),
+        language = case
+          when excluded.language is not null and excluded.language <> '' and excluded.language <> 'en'
+            then excluded.language
+          when ${assetsTable}.language is not null and ${assetsTable}.language <> '' and ${assetsTable}.language <> 'en'
+            then ${assetsTable}.language
+          else coalesce(excluded.language, ${assetsTable}.language, 'en')
+        end,
         last_executed_at = excluded.last_executed_at,
         quality_tier = case
           when ${assetsTable}.quality_tier = 'blacklisted' then 'blacklisted'
@@ -549,7 +562,7 @@ async function bootstrapAssets(database = pool) {
         referral_domain, referral_url, resource_type, quality_tier, source_channel,
         total_attempts, success_count, fail_count, skipped_count, manual_count,
         no_box_count, blocked_count, success_rate, last_run_result, last_run_message,
-        page_depth, last_executed_at, created_at, updated_at
+        page_depth, language, last_executed_at, created_at, updated_at
       )
       with latest_items as (
         select distinct on (referral_domain)
@@ -562,6 +575,11 @@ async function bootstrapAssets(database = pool) {
             then round((page_metrics->>'pageDepthScreens')::numeric, 1)
             else null
           end as page_depth,
+          case
+            when coalesce(page_metrics->>'language', '') <> ''
+            then lower(trim(page_metrics->>'language'))
+            else null
+          end as language,
           executed_at
         from ${runItemsTable}
         where referral_domain <> ''
@@ -613,6 +631,7 @@ async function bootstrapAssets(database = pool) {
         l.result as last_run_result,
         coalesce(l.result_message, '') as last_run_message,
         l.page_depth as page_depth,
+        coalesce(l.language, 'en') as language,
         coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
         coalesce(s.first_seen_at, now()) as created_at,
         now() as updated_at
@@ -631,6 +650,13 @@ async function bootstrapAssets(database = pool) {
         last_run_result = excluded.last_run_result,
         last_run_message = excluded.last_run_message,
         page_depth = coalesce(excluded.page_depth, ${assetsTable}.page_depth),
+        language = case
+          when excluded.language is not null and excluded.language <> '' and excluded.language <> 'en'
+            then excluded.language
+          when ${assetsTable}.language is not null and ${assetsTable}.language <> '' and ${assetsTable}.language <> 'en'
+            then ${assetsTable}.language
+          else coalesce(excluded.language, ${assetsTable}.language, 'en')
+        end,
         last_executed_at = excluded.last_executed_at,
         quality_tier = case
           when ${assetsTable}.quality_tier = 'blacklisted' then 'blacklisted'
@@ -676,6 +702,20 @@ async function getAssetsSummary(database = pool) {
     byType[row.resource_type] = row.count;
   });
 
+  const langResult = await database.query(
+    `
+      select coalesce(language, 'en') as language, count(*)::integer as count
+      from ${assetsTable}
+      group by coalesce(language, 'en')
+      order by count desc
+    `
+  );
+
+  const byLanguage = {};
+  langResult.rows.forEach((row) => {
+    byLanguage[row.language] = row.count;
+  });
+
   const row = summaryResult.rows[0] || {};
   return {
     total: Number(row.total || 0),
@@ -688,7 +728,8 @@ async function getAssetsSummary(database = pool) {
     veryDeepCount: Number(row.very_deep_count || 0),
     avgPageDepth: Number(row.avg_page_depth || 0),
     avgSuccessRate: Number(row.avg_success_rate || 0),
-    byType
+    byType,
+    byLanguage
   };
 }
 
@@ -702,6 +743,7 @@ async function listAssets(params, database = pool) {
 
   const resourceType = String(params.resourceType || 'all').trim();
   const qualityTier = String(params.qualityTier || 'all').trim();
+  const language = String(params.language || 'all').trim().toLowerCase();
   const pageDepthRange = String(params.pageDepthRange || 'all').trim();
   const minSuccessRate = numberOrNull(params.minSuccessRate);
   const maxSuccessRate = numberOrNull(params.maxSuccessRate);
@@ -736,6 +778,11 @@ async function listAssets(params, database = pool) {
   if (qualityTier && qualityTier !== 'all') {
     whereConditions.push(`a.quality_tier = $${paramIndex++}`);
     values.push(qualityTier);
+  }
+
+  if (language && language !== 'all') {
+    whereConditions.push(`a.language = $${paramIndex++}`);
+    values.push(language);
   }
 
   if (sourceChannel && sourceChannel !== 'all') {
@@ -927,6 +974,7 @@ async function importAssets(payload, database = pool) {
       referral_domain: normalizedDomain,
       referral_url: fullUrl,
       resource_type: String(item.resourceType || defaultType || 'blog_comment').trim(),
+      language: String(item.language || payload.defaultLanguage || 'en').trim().toLowerCase(),
       source_channel: sourceChannel,
       domain_rating: numberOrNull(item.domainRating || item.asScore),
       organic_traffic: numberOrNull(item.organicTraffic),
@@ -977,7 +1025,7 @@ async function importAssets(payload, database = pool) {
       let idx = 1;
 
       chunk.forEach((item) => {
-        valuePlaceholders.push(`($${idx++}, $${idx++}, $${idx++}, 'untested', $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+        valuePlaceholders.push(`($${idx++}, $${idx++}, $${idx++}, 'untested', $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
         queryValues.push(
           item.referral_domain,
           item.referral_url,
@@ -986,7 +1034,8 @@ async function importAssets(payload, database = pool) {
           item.domain_rating,
           item.organic_traffic,
           item.tags,
-          item.notes
+          item.notes,
+          item.language || 'en'
         );
       });
 
@@ -994,7 +1043,7 @@ async function importAssets(payload, database = pool) {
         `
           insert into ${assetsTable} (
             referral_domain, referral_url, resource_type, quality_tier,
-            source_channel, domain_rating, organic_traffic, tags, notes
+            source_channel, domain_rating, organic_traffic, tags, notes, language
           )
           values ${valuePlaceholders.join(', ')}
           on conflict (referral_domain) do nothing
@@ -1023,6 +1072,10 @@ async function importAssets(payload, database = pool) {
                 array(select distinct unnest(array_cat(coalesce(tags, array[]::text[]), $5::text[])))
               else tags
             end,
+            language = case
+              when $6 is not null and $6 <> '' and $6 <> 'en' then $6
+              else coalesce(language, 'en')
+            end,
             updated_at = now()
           where referral_domain = $1
         `,
@@ -1031,7 +1084,8 @@ async function importAssets(payload, database = pool) {
           item.referral_url,
           item.domain_rating,
           item.organic_traffic,
-          item.tags
+          item.tags,
+          item.language || null
         ]
       );
     }
@@ -1089,6 +1143,10 @@ async function updateAsset(domain, payload, database = pool) {
   if (payload.tags !== undefined) {
     fields.push(`tags = $${idx++}`);
     values.push(Array.isArray(payload.tags) ? payload.tags : []);
+  }
+  if (payload.language !== undefined) {
+    fields.push(`language = $${idx++}`);
+    values.push(String(payload.language).trim().toLowerCase() || 'en');
   }
 
   // 页面深度处理：
@@ -1440,7 +1498,7 @@ async function resetProbeRulesInDb() {
         existingLibraryMap = new Map();
         try {
           const rowsRes = await pool.query(
-            `select referral_domain, referral_url, quality_tier, success_rate, success_count, total_attempts, resource_type
+            `select referral_domain, referral_url, quality_tier, success_rate, success_count, total_attempts, resource_type, language
              from ${assetsTable}`
           );
           for (const row of rowsRes.rows) {
@@ -1473,7 +1531,7 @@ async function resetProbeRulesInDb() {
     }
 
     if (method === 'GET' && url.pathname === '/api/probe/status') {
-      const sessionId = url.searchParams.get('sessionId') || undefined;
+      const sessionId = url.searchParams.get('sessionId') || probeManager.latestSessionId;
       const limit = Number(url.searchParams.get('limit') || 500);
       const offset = Number(url.searchParams.get('offset') || 0);
       const statusData = probeManager.getSessionStatus(sessionId, limit, offset);
@@ -1572,6 +1630,7 @@ async function resetProbeRulesInDb() {
         referralUrl: it.url,
         referralDomain: it.domain,
         resourceType: defaultType,
+        language: it.language || 'en',
         tags: tags,
         notes: it.notes || it.details || '来自博客外链探测'
       }));
