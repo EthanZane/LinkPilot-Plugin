@@ -3,6 +3,20 @@ import https from 'node:https';
 import { URL } from 'node:url';
 
 /**
+ * 将任意 URL 或域名转换成标准域名：去掉协议、路径和开头的 www.，并统一小写。
+ */
+export function normalizeDomain(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    const url = /^https?:\/\//i.test(text) ? text : `https://${text}`;
+    return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
+  } catch (_) {
+    return text.replace(/^https?:\/\//i, '').split('/')[0].replace(/^www\./i, '').toLowerCase();
+  }
+}
+
+/**
  * 常见博客系统与评论表单指纹库
  */
 const BLOG_DETECTION_PATTERNS = {
@@ -261,12 +275,7 @@ export async function probeSingleUrl(targetUrl, options = {}) {
     normalizedUrl = `https://${normalizedUrl}`;
   }
 
-  let domain = '';
-  try {
-    domain = new URL(normalizedUrl).hostname.replace(/^www\./i, '').toLowerCase();
-  } catch (_) {
-    domain = normalizedUrl.split('/')[0].replace(/^www\./i, '').toLowerCase();
-  }
+  const domain = normalizeDomain(normalizedUrl);
 
   const startTime = Date.now();
 
@@ -391,39 +400,66 @@ class ProbeSessionManager {
   /**
    * 启动一次批量探测任务
    * @param {string[]} urls 待探测的 URL 列表
-   * @param {object} options 并发度、超时等
+   * @param {object} options 并发度、超时、库内已有映射等
    */
   startSession(urls, options = {}) {
     if (this.currentSession && this.currentSession.status === 'running') {
       throw new Error('已有正在执行的探测任务，请等待完成或先点击中止');
     }
 
-    const cleanUrls = Array.from(
-      new Set(
-        (urls || [])
-          .map((u) => String(u || '').trim())
-          .filter((u) => u && !u.startsWith('#') && !u.startsWith('//'))
-      )
-    );
+    const rawList = (urls || [])
+      .map((u) => String(u || '').trim())
+      .filter((u) => u && !u.startsWith('#') && !u.startsWith('//'));
 
-    if (cleanUrls.length === 0) {
+    const rawCount = rawList.length;
+    if (rawCount === 0) {
       throw new Error('待探测 URL 列表为空');
     }
 
+    // 1. 输入列表去重：精准过滤重复 URL 及同一批次内的同域名多个 URL（优先保留每域名首条代表 URL）
+    const seenDomains = new Set();
+    const uniqueCandidates = [];
+
+    for (const rawUrl of rawList) {
+      const fullUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+      const domain = normalizeDomain(fullUrl);
+      if (!domain || !domain.includes('.') || domain === 'localhost') {
+        continue;
+      }
+      if (seenDomains.has(domain)) {
+        continue;
+      }
+      seenDomains.add(domain);
+      uniqueCandidates.push({
+        url: fullUrl,
+        domain
+      });
+    }
+
+    if (uniqueCandidates.length === 0) {
+      throw new Error('没有提取到有效合法的域名 URL');
+    }
+
+    const dedupCount = rawCount - uniqueCandidates.length;
     const concurrency = Math.max(1, Math.min(50, Number(options.concurrency || 20)));
     const timeoutMs = Math.max(2000, Math.min(30000, Number(options.timeoutMs || 8000)));
+    const existingLibraryMap = options.existingLibraryMap || null;
+    const skipExisting = options.skipExisting !== false && Boolean(existingLibraryMap);
 
     const sessionId = `probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const session = {
       id: sessionId,
       status: 'running', // 'running' | 'completed' | 'canceled'
-      total: cleanUrls.length,
+      total: uniqueCandidates.length,
       processed: 0,
       concurrency,
       timeoutMs,
       startTime: Date.now(),
       endTime: null,
       stats: {
+        rawCount,
+        dedupCount,
+        alreadyInLibrary: 0,
         validBlogCommentWithUrl: 0,
         validBlogCommentNoUrl: 0,
         bloggerComment: 0,
@@ -439,20 +475,83 @@ class ProbeSessionManager {
 
     this.currentSession = session;
 
-    // 异步执行并发队列，不阻塞 HTTP 响应
-    this._runQueue(cleanUrls, session);
+    // 2. 检查资产库：已存在的引荐域名直接跳过网络探测，并计入独立分类
+    const toProbeList = [];
+
+    for (const item of uniqueCandidates) {
+      if (skipExisting && existingLibraryMap.has(item.domain)) {
+        const existing = existingLibraryMap.get(item.domain);
+        const tierName =
+          existing.quality_tier === 'high_quality'
+            ? '优质外链'
+            : existing.quality_tier === 'medium_quality'
+            ? '普通外链'
+            : existing.quality_tier === 'low_quality'
+            ? '低质外链'
+            : '未跑批';
+        const rateText =
+          existing.total_attempts > 0
+            ? `${Number(existing.success_rate || 0)}% (${existing.success_count}/${existing.total_attempts}次成功)`
+            : '无历史运行数据';
+
+        session.results.push({
+          url: item.url,
+          domain: item.domain,
+          httpStatus: 200,
+          elapsedMs: 0,
+          isBlogComment: false,
+          alreadyInLibrary: true,
+          status: 'already_in_library',
+          statusLabel: '资产库已存在 (跳过)',
+          confidence: 'high',
+          formType: '库内已有资产',
+          hasUrlField: false,
+          hasAuthorField: false,
+          hasEmailField: false,
+          hasCommentField: false,
+          loginRequired: false,
+          commentsClosed: false,
+          existingAsset: {
+            referralDomain: existing.referral_domain,
+            referralUrl: existing.referral_url,
+            qualityTier: existing.quality_tier,
+            successRate: existing.success_rate,
+            successCount: existing.success_count,
+            totalAttempts: existing.total_attempts,
+            resourceType: existing.resource_type
+          },
+          details: `引荐域名已在资产库中（评级: ${tierName}，成功率: ${rateText}，库内URL: ${existing.referral_url}）。已自动跳过网络探测。`
+        });
+        session.stats.alreadyInLibrary++;
+        session.processed++;
+      } else {
+        toProbeList.push(item);
+      }
+    }
+
+    // 若全部都在资产库中已存在，则直接完成
+    if (toProbeList.length === 0) {
+      session.endTime = Date.now();
+      session.status = 'completed';
+    } else {
+      // 异步执行并发队列，不阻塞 HTTP 响应
+      this._runQueue(toProbeList, session);
+    }
 
     return {
       sessionId: session.id,
       total: session.total,
+      rawCount: session.stats.rawCount,
+      dedupCount: session.stats.dedupCount,
+      alreadyInLibrary: session.stats.alreadyInLibrary,
       concurrency: session.concurrency,
       status: session.status
     };
   }
 
-  async _runQueue(urls, session) {
+  async _runQueue(items, session) {
     let index = 0;
-    const total = urls.length;
+    const total = items.length;
 
     const worker = async () => {
       while (index < total) {
@@ -460,7 +559,8 @@ class ProbeSessionManager {
           break;
         }
         const currentIndex = index++;
-        const targetUrl = urls[currentIndex];
+        const currentItem = items[currentIndex];
+        const targetUrl = typeof currentItem === 'object' ? currentItem.url : currentItem;
 
         try {
           const result = await probeSingleUrl(targetUrl, {
@@ -493,7 +593,7 @@ class ProbeSessionManager {
           session.stats.failed++;
           session.results.push({
             url: targetUrl,
-            domain: '',
+            domain: normalizeDomain(targetUrl),
             httpStatus: 0,
             elapsedMs: 0,
             isBlogComment: false,

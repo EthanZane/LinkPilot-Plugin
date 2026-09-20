@@ -36,6 +36,9 @@
     progressPercent: 0,
     elapsedSeconds: 0,
     stats: {
+      rawCount: 0,
+      dedupCount: 0,
+      alreadyInLibrary: 0,
       validBlogCommentWithUrl: 0,
       validBlogCommentNoUrl: 0,
       bloggerComment: 0,
@@ -47,7 +50,7 @@
     },
     results: [],
     selectedUrls: new Set(),
-    activeTab: 'all', // 'all' | 'valid' | 'review' | 'closed' | 'invalid'
+    activeTab: 'all', // 'all' | 'valid' | 'review' | 'closed' | 'in_library' | 'invalid'
     pollTimer: null
   };
 
@@ -86,7 +89,7 @@
           <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
             <span>📋 输入待测外链列表</span>
             <div style="font-size:12px;font-weight:normal;color:#64748b;">
-              支持粘贴 URL 列表，或上传 .txt / .csv 文件
+              支持粘贴 URL 列表，或上传 .txt / .csv 文件（自动按引荐域名去重）
             </div>
           </div>
 
@@ -98,6 +101,7 @@
             <div class="probe-config-group-left">
               <button type="button" class="btn btn-secondary btn-sm" id="probeUploadFileBtn">📂 上传 TXT/CSV 文件</button>
               <input type="file" id="probeFileInput" accept=".txt,.csv" style="display:none;" />
+              <button type="button" class="btn btn-secondary btn-sm" id="probeCleanDedupBtn" title="对输入框内的待测 URL 立即按域名去重整理">🧹 去重整理</button>
               
               <div class="probe-field-inline">
                 <label for="probeConcurrency">并发线程：</label>
@@ -118,7 +122,12 @@
                 </select>
               </div>
 
-              <span id="probeInputCountDisplay" class="probe-count-badge">待测数量：0 条</span>
+              <label class="probe-field-inline" style="cursor:pointer;" title="开启后，若引荐域名已在外链资产库中，直接免测跳过，节省请求与时间并保留库内历史表现">
+                <input type="checkbox" id="probeSkipExisting" checked style="cursor:pointer;" />
+                <span style="font-size:12px;font-weight:600;color:#475569;">跳过资产库已存域名</span>
+              </label>
+
+              <span id="probeInputCountDisplay" class="probe-count-badge">待测域名：0 个</span>
             </div>
 
             <div class="probe-config-group-right">
@@ -163,6 +172,10 @@
               <div style="font-size:11px;color:#991b1b;">🔒 评论关闭 / 需登录</div>
               <div id="statProbeClosedOrLogin" style="font-size:18px;font-weight:700;color:#b91c1c;margin-top:2px;">0</div>
             </div>
+            <div class="probe-stat-item" style="padding:10px 12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;">
+              <div style="font-size:11px;color:#6d28d9;">⏩ 资产库已存在 (跳过)</div>
+              <div id="statProbeAlreadyInLibrary" style="font-size:18px;font-weight:700;color:#6d28d9;margin-top:2px;">0</div>
+            </div>
             <div class="probe-stat-item" style="padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
               <div style="font-size:11px;color:#475569;">🔴 非博客 / 超时失败</div>
               <div id="statProbeInvalidOrFailed" style="font-size:18px;font-weight:700;color:#475569;margin-top:2px;">0</div>
@@ -179,6 +192,7 @@
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="valid" style="color:#15803d;">🟢 可用博客外链 (<span id="probeTabCountValid">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="review" style="color:#b45309;">🟡 待人工复核 (<span id="probeTabCountReview">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="closed" style="color:#b91c1c;">🔒 已关闭/需登录 (<span id="probeTabCountClosed">0</span>)</button>
+              <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="in_library" style="color:#6d28d9;">⏩ 资产库已存在 (<span id="probeTabCountInLibrary">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="invalid" style="color:#64748b;">🔴 非博客/失败 (<span id="probeTabCountInvalid">0</span>)</button>
             </div>
 
@@ -264,18 +278,72 @@
     `;
   }
 
+  function normalizeDomain(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    try {
+      const url = /^https?:\/\//i.test(text) ? text : `https://${text}`;
+      return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
+    } catch (_) {
+      return text.replace(/^https?:\/\//i, '').split('/')[0].replace(/^www\./i, '').toLowerCase();
+    }
+  }
+
+  function parseUrlsFromText(text) {
+    if (!text) return { urls: [], rawCount: 0, dedupCount: 0 };
+    const rawLines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith('//'));
+
+    const seenDomains = new Set();
+    const uniqueUrls = [];
+
+    for (const line of rawLines) {
+      const fullUrl = /^https?:\/\//i.test(line) ? line : `https://${line}`;
+      const domain = normalizeDomain(fullUrl);
+      if (!domain || !domain.includes('.') || domain === 'localhost') continue;
+      if (seenDomains.has(domain)) continue;
+      seenDomains.add(domain);
+      uniqueUrls.push(fullUrl);
+    }
+
+    return {
+      urls: uniqueUrls,
+      rawCount: rawLines.length,
+      dedupCount: rawLines.length - uniqueUrls.length
+    };
+  }
+
+  function updateInputCountDisplay() {
+    const urlsTextarea = document.getElementById('probeUrlsTextarea');
+    const inputCountDisplay = document.getElementById('probeInputCountDisplay');
+    if (!urlsTextarea || !inputCountDisplay) return;
+    const { urls, rawCount, dedupCount } = parseUrlsFromText(urlsTextarea.value);
+    if (rawCount === 0) {
+      inputCountDisplay.innerHTML = '待测域名：0 个';
+    } else if (dedupCount > 0) {
+      inputCountDisplay.innerHTML = `待测有效域名：<strong style="color:#2563eb;">${urls.length}</strong> 个 <span style="font-size:11px;color:#64748b;font-weight:normal;">(原始 ${rawCount} 条，已去重 ${dedupCount} 条)</span>`;
+    } else {
+      inputCountDisplay.innerHTML = `待测有效域名：<strong style="color:#2563eb;">${urls.length}</strong> 个`;
+    }
+  }
+
   /**
    * 绑定事件监听器
    */
   function bindProbeEvents() {
     const urlsTextarea = document.getElementById('probeUrlsTextarea');
-    const inputCountDisplay = document.getElementById('probeInputCountDisplay');
 
-    urlsTextarea?.addEventListener('input', () => {
-      const urls = parseUrlsFromText(urlsTextarea.value);
-      if (inputCountDisplay) {
-        inputCountDisplay.textContent = `待测数量：${urls.length} 条`;
-      }
+    urlsTextarea?.addEventListener('input', updateInputCountDisplay);
+
+    // 清理去重
+    document.getElementById('probeCleanDedupBtn')?.addEventListener('click', () => {
+      if (!urlsTextarea) return;
+      const { urls, rawCount, dedupCount } = parseUrlsFromText(urlsTextarea.value);
+      if (rawCount === 0) return;
+      urlsTextarea.value = urls.join('\n');
+      updateInputCountDisplay();
     });
 
     // 上传文件
@@ -290,10 +358,10 @@
       const reader = new FileReader();
       reader.onload = (event) => {
         const text = event.target.result;
-        const parsed = parseUrlsFromText(text);
+        const { urls } = parseUrlsFromText(text);
         if (urlsTextarea) {
-          urlsTextarea.value = parsed.join('\n');
-          urlsTextarea.dispatchEvent(new Event('input'));
+          urlsTextarea.value = urls.join('\n');
+          updateInputCountDisplay();
         }
       };
       reader.readAsText(file);
@@ -328,10 +396,10 @@
       renderProbeResultTable();
     });
 
-    // 一键勾选可用
+    // 一键勾选可用（排除已在资产库的条目）
     document.getElementById('probeSelectValidBtn')?.addEventListener('click', () => {
       probeState.results.forEach((r) => {
-        if (r.isBlogComment) {
+        if (r.isBlogComment && r.status !== 'already_in_library') {
           probeState.selectedUrls.add(r.url);
         }
       });
@@ -349,24 +417,12 @@
     document.getElementById('probeExecuteImportBtn')?.addEventListener('click', executeImport);
   }
 
-  function parseUrlsFromText(text) {
-    if (!text) return [];
-    return Array.from(
-      new Set(
-        text
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter((l) => l && !l.startsWith('#') && (l.startsWith('http://') || l.startsWith('https://') || l.includes('.')))
-      )
-    );
-  }
-
   /**
    * 启动批量探测任务
    */
   async function startProbe() {
     const urlsTextarea = document.getElementById('probeUrlsTextarea');
-    const urls = parseUrlsFromText(urlsTextarea?.value || '');
+    const { urls } = parseUrlsFromText(urlsTextarea?.value || '');
 
     if (urls.length === 0) {
       alert('请先输入或上传待探测的 URL 列表');
@@ -375,6 +431,7 @@
 
     const concurrency = Number(document.getElementById('probeConcurrency')?.value || 20);
     const timeoutMs = Number(document.getElementById('probeTimeout')?.value || 8000);
+    const skipExisting = document.getElementById('probeSkipExisting')?.checked !== false;
 
     const startBtn = document.getElementById('probeStartBtn');
     const cancelBtn = document.getElementById('probeCancelBtn');
@@ -384,7 +441,8 @@
       const res = await apiRequest('/api/probe/start', {
         urls,
         concurrency,
-        timeoutMs
+        timeoutMs,
+        skipExisting
       });
 
       probeState.sessionId = res.sessionId;
@@ -527,7 +585,8 @@
     const elapsed = document.getElementById('probeElapsedSeconds');
     const statusBadge = document.getElementById('probeStatusBadge');
 
-    if (counter) counter.textContent = `${s.processed} / ${s.total} (${s.progressPercent}%)`;
+    const dedupText = s.stats && s.stats.dedupCount > 0 ? ` · 去重 ${s.stats.dedupCount} 条` : '';
+    if (counter) counter.textContent = `${s.processed} / ${s.total} (${s.progressPercent}%)${dedupText}`;
     if (progressBar) progressBar.style.width = `${s.progressPercent}%`;
     if (elapsed) elapsed.textContent = s.elapsedSeconds;
 
@@ -548,14 +607,17 @@
     document.getElementById('statProbeValidNoUrl').textContent = s.stats.validBlogCommentNoUrl;
     document.getElementById('statProbeNeedReview').textContent = s.stats.needReview;
     document.getElementById('statProbeClosedOrLogin').textContent = s.stats.commentsClosed + s.stats.loginRequired;
+    document.getElementById('statProbeAlreadyInLibrary').textContent = s.stats.alreadyInLibrary || 0;
     document.getElementById('statProbeInvalidOrFailed').textContent = s.stats.notBlogComment + s.stats.failed;
 
     // 选项卡统计
     const validCount = s.stats.validBlogCommentWithUrl + s.stats.validBlogCommentNoUrl + s.stats.bloggerComment;
+    const inLibCount = s.stats.alreadyInLibrary || 0;
     document.getElementById('probeTabCountAll').textContent = s.results.length;
     document.getElementById('probeTabCountValid').textContent = validCount;
     document.getElementById('probeTabCountReview').textContent = s.stats.needReview;
     document.getElementById('probeTabCountClosed').textContent = s.stats.commentsClosed + s.stats.loginRequired;
+    document.getElementById('probeTabCountInLibrary').textContent = inLibCount;
     document.getElementById('probeTabCountInvalid').textContent = s.stats.notBlogComment + s.stats.failed;
   }
 
@@ -563,10 +625,11 @@
     const tab = probeState.activeTab;
     return probeState.results.filter((r) => {
       if (tab === 'all') return true;
-      if (tab === 'valid') return r.isBlogComment;
+      if (tab === 'valid') return r.isBlogComment && r.status !== 'already_in_library';
+      if (tab === 'in_library') return r.status === 'already_in_library';
       if (tab === 'review') return r.status === 'suspect_need_review' || r.status === 'blocked_challenge';
       if (tab === 'closed') return r.status === 'comments_closed' || r.status === 'login_required';
-      if (tab === 'invalid') return !r.isBlogComment && r.status !== 'suspect_need_review' && r.status !== 'blocked_challenge' && r.status !== 'comments_closed' && r.status !== 'login_required';
+      if (tab === 'invalid') return !r.isBlogComment && r.status !== 'already_in_library' && r.status !== 'suspect_need_review' && r.status !== 'blocked_challenge' && r.status !== 'comments_closed' && r.status !== 'login_required';
       return true;
     });
   }
@@ -588,7 +651,9 @@
       if (isSelected) tr.style.background = '#f0fdf4';
 
       let conclusionBadge = '';
-      if (item.isBlogComment) {
+      if (item.status === 'already_in_library') {
+        conclusionBadge = `<span class="probe-conclusion-badge" style="background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe;">⏩ 资产库已存在</span>`;
+      } else if (item.isBlogComment) {
         conclusionBadge = `<span class="probe-conclusion-badge" style="background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;">🟢 ${escapeHtml(item.formType || '开放博客评论')}</span>`;
       } else if (item.status === 'suspect_need_review' || item.status === 'blocked_challenge') {
         conclusionBadge = `<span class="probe-conclusion-badge" style="background:#fef9c3;color:#854d0e;border:1px solid #fef08a;">🟡 ${escapeHtml(item.statusLabel || '待人工复核')}</span>`;
@@ -602,7 +667,9 @@
 
       // 外链字段能力标签
       let fieldCapHtml = '';
-      if (item.hasUrlField) {
+      if (item.status === 'already_in_library') {
+        fieldCapHtml = `<span class="probe-field-badge" style="color:#6d28d9;background:#f5f3ff;border:1px solid #ddd6fe;" title="该域名已在外链资产库中，本次免测跳过">⏩ 库内已有资产</span>`;
+      } else if (item.hasUrlField) {
         fieldCapHtml = `<span class="probe-field-badge" style="color:#15803d;background:#ecfdf5;border:1px solid #a7f3d0;" title="页面含有独立的 Website/URL 网址输入框">🔗 独立外链URL</span>`;
       } else if (item.hasCommentField) {
         fieldCapHtml = `<span class="probe-field-badge" style="color:#0284c7;background:#f0f9ff;border:1px solid #bae6fd;" title="页面有评论框与姓名邮箱，外链需通过 AI 生成在评论正文里">📝 正文插入外链</span>`;
@@ -612,7 +679,9 @@
 
       // 响应耗时与状态
       let httpBadge = '';
-      if (item.httpStatus === 200) {
+      if (item.status === 'already_in_library') {
+        httpBadge = `<span class="probe-status-text" style="color:#6d28d9;">⚡ 免测跳过 (0ms)</span>`;
+      } else if (item.httpStatus === 200) {
         httpBadge = `<span class="probe-status-text" style="color:#059669;">200 OK (${item.elapsedMs}ms)</span>`;
       } else if (item.httpStatus > 0) {
         httpBadge = `<span class="probe-status-text" style="color:#dc2626;">HTTP ${item.httpStatus}</span>`;
@@ -642,7 +711,11 @@
         <td style="text-align:center;">
           <div class="probe-actions-cell">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs" style="text-decoration:none;padding:3px 8px;white-space:nowrap;" title="在浏览器新标签页打开核验">🔗 验证</a>
-            <button type="button" class="btn btn-secondary btn-xs btn-probe-single-import" data-url="${escapeHtml(item.url)}" data-domain="${escapeHtml(item.domain)}" style="padding:3px 8px;white-space:nowrap;">📥 入库</button>
+            ${
+              item.status === 'already_in_library'
+                ? `<button type="button" class="btn btn-secondary btn-xs btn-probe-view-asset" data-domain="${escapeHtml(item.domain)}" style="padding:3px 8px;white-space:nowrap;color:#6d28d9;" title="前往外链资产库查看此域名的历史沉淀">👁️ 查资产</button>`
+                : `<button type="button" class="btn btn-secondary btn-xs btn-probe-single-import" data-url="${escapeHtml(item.url)}" data-domain="${escapeHtml(item.domain)}" style="padding:3px 8px;white-space:nowrap;">📥 入库</button>`
+            }
           </div>
         </td>
       `;
@@ -660,6 +733,21 @@
         probeState.selectedUrls.add(item.url);
         updateSelectedCountDisplay();
         openImportModal();
+      });
+
+      tr.querySelector('.btn-probe-view-asset')?.addEventListener('click', () => {
+        const assetsTabBtn = document.querySelector('[data-tab-target="assets"]');
+        if (assetsTabBtn) {
+          assetsTabBtn.click();
+          setTimeout(() => {
+            const kwInput = document.getElementById('assetFilterKeyword');
+            if (kwInput) {
+              kwInput.value = item.domain;
+              kwInput.dispatchEvent(new Event('input'));
+              document.getElementById('assetSearchBtn')?.click();
+            }
+          }, 250);
+        }
       });
 
       tbody.appendChild(tr);
@@ -772,7 +860,7 @@
     const rows = probeState.results.map((r) => [
       `"${(r.domain || '').replace(/"/g, '""')}"`,
       `"${(r.url || '').replace(/"/g, '""')}"`,
-      r.isBlogComment ? '是' : '否',
+      r.status === 'already_in_library' ? '库内已有' : (r.isBlogComment ? '是' : '否'),
       `"${(r.statusLabel || '').replace(/"/g, '""')}"`,
       `"${(r.formType || '').replace(/"/g, '""')}"`,
       r.hasUrlField ? '支持' : '不支持',

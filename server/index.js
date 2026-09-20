@@ -1220,7 +1220,30 @@ async function handleRequest(request, response) {
       const urls = Array.isArray(payload && payload.urls) ? payload.urls : [];
       const concurrency = payload && payload.concurrency;
       const timeoutMs = payload && payload.timeoutMs;
-      const session = probeManager.startSession(urls, { concurrency, timeoutMs });
+      const skipExisting = payload && payload.skipExisting !== false;
+
+      let existingLibraryMap = null;
+      if (skipExisting) {
+        existingLibraryMap = new Map();
+        try {
+          const rowsRes = await pool.query(
+            `select referral_domain, referral_url, quality_tier, success_rate, success_count, total_attempts, resource_type
+             from ${assetsTable}`
+          );
+          for (const row of rowsRes.rows) {
+            existingLibraryMap.set(row.referral_domain, row);
+          }
+        } catch (dbErr) {
+          console.warn('查询资产库已存域名失败，将不进行库内跳过：', dbErr.message);
+        }
+      }
+
+      const session = probeManager.startSession(urls, {
+        concurrency,
+        timeoutMs,
+        existingLibraryMap,
+        skipExisting
+      });
       writeJson(response, 200, { ok: true, data: session });
       return;
     }
@@ -1279,7 +1302,7 @@ async function handleRequest(request, response) {
       );
 
       const urls = res.rows.map((r) => r.referral_url);
-      const session = probeManager.startSession(urls, { concurrency });
+      const session = probeManager.startSession(urls, { concurrency, skipExisting: false });
       writeJson(response, 200, { ok: true, data: { ...session, isBenchmark: true, assetCount: urls.length } });
       return;
     }

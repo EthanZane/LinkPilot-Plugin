@@ -12,7 +12,8 @@ function parseArgs() {
     concurrency: 20,
     timeoutMs: 8000,
     out: null,
-    benchmark: false
+    benchmark: false,
+    skipExisting: true
   };
 
   for (const arg of args) {
@@ -28,6 +29,8 @@ function parseArgs() {
       options.out = arg.slice(6);
     } else if (arg === '--benchmark') {
       options.benchmark = true;
+    } else if (arg === '--no-skip-existing' || arg === '--skip-existing=false') {
+      options.skipExisting = false;
     }
   }
 
@@ -54,7 +57,8 @@ async function runBenchmark(options) {
     const urls = res.rows.map((r) => r.referral_url);
     const session = probeManager.startSession(urls, {
       concurrency: options.concurrency,
-      timeoutMs: options.timeoutMs
+      timeoutMs: options.timeoutMs,
+      skipExisting: false
     });
 
     // 轮询打印控制台进度
@@ -129,25 +133,57 @@ LinkPilot 博客外链探测 CLI 工具
   node scripts/probe-backlinks.js --file=urls.txt --concurrency=25 --out=results.json
   node scripts/probe-backlinks.js --urls="https://a.com/blog/1,https://b.com/post/2"
   node scripts/probe-backlinks.js --benchmark
+  node scripts/probe-backlinks.js --file=urls.txt --no-skip-existing
     `);
     process.exit(0);
   }
 
-  console.log(`🚀 开始探测 ${urls.length} 条外链，并发度: ${options.concurrency}...`);
+  let existingLibraryMap = null;
+  if (options.skipExisting) {
+    try {
+      const pool = new Pool({
+        connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5499/bi'
+      });
+      const res = await pool.query(
+        'select referral_domain, referral_url, quality_tier, success_rate, success_count, total_attempts, resource_type from dw.backlink_assets'
+      );
+      existingLibraryMap = new Map();
+      for (const row of res.rows) {
+        existingLibraryMap.set(row.referral_domain, row);
+      }
+      await pool.end();
+      console.log(`📚 已载入资产库 ${existingLibraryMap.size} 个已知域名，将自动跳过已有资产探测。`);
+    } catch (dbErr) {
+      console.warn('⚠️ 读取外链资产库失败，将全量探测：', dbErr.message);
+    }
+  }
+
+  console.log(`🚀 开始探测 ${urls.length} 条原始输入，并发度: ${options.concurrency}...`);
   const session = probeManager.startSession(urls, {
     concurrency: options.concurrency,
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    existingLibraryMap,
+    skipExisting: options.skipExisting
   });
+
+  if (session.dedupCount > 0) {
+    console.log(`🧹 批次去重：原始输入 ${session.rawCount} 条，去重后有效域名 ${session.total} 个（已过滤 ${session.dedupCount} 条重复）。`);
+  }
+  if (session.alreadyInLibrary > 0) {
+    console.log(`⏩ 资产库已有：自动跳过 ${session.alreadyInLibrary} 个库内域名，实际发起网络探测 ${session.total - session.alreadyInLibrary} 个。`);
+  }
 
   while (true) {
     await new Promise((r) => setTimeout(r, 800));
     const statusRes = probeManager.getSessionStatus(1000);
     const s = statusRes.session;
-    process.stdout.write(`\r[进度] ${s.processed}/${s.total} (${s.progressPercent}%) | 耗时: ${s.elapsedSeconds}s`);
+    process.stdout.write(`\r[进度] ${s.processed}/${s.total} (${s.progressPercent}%) | ⏩ 库内已存: ${s.stats.alreadyInLibrary || 0} | 耗时: ${s.elapsedSeconds}s`);
 
     if (s.status === 'completed' || s.status === 'canceled') {
       console.log('\n\n====== 探测完成 ======');
-      console.log(`总数: ${s.total}, 完成: ${s.processed}, 耗时: ${s.elapsedSeconds}s`);
+      console.log(`输入总数: ${s.stats.rawCount || s.total}, 去重条数: ${s.stats.dedupCount || 0}, 有效独立域名: ${s.total}`);
+      console.log(`完成探测: ${s.processed}, 耗时: ${s.elapsedSeconds}s`);
+      console.log(`⏩ 资产库已存在 (跳过): ${s.stats.alreadyInLibrary || 0}`);
       console.log(`✅ 开放评论外链: ${s.stats.validBlogCommentWithUrl + s.stats.validBlogCommentNoUrl + s.stats.bloggerComment}`);
       console.log(`⚠️ 需人工复核: ${s.stats.needReview}`);
       console.log(`🔒 关闭或需登录: ${s.stats.commentsClosed + s.stats.loginRequired}`);
