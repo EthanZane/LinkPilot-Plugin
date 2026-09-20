@@ -28,6 +28,11 @@
       .replace(/'/g, '&#39;');
   }
 
+  let probeFilterRules = {
+    urlBlacklist: { enabled: true, rules: [] },
+    titleBlacklist: { enabled: true, rules: [] }
+  };
+
   const probeState = {
     sessionId: null,
     activeHistoryId: null,
@@ -40,6 +45,9 @@
       rawCount: 0,
       dedupCount: 0,
       alreadyInLibrary: 0,
+      spamFilteredUrl: 0,
+      spamFilteredTitle: 0,
+      spamFilteredTotal: 0,
       validBlogCommentWithUrl: 0,
       validBlogCommentNoUrl: 0,
       bloggerComment: 0,
@@ -51,7 +59,7 @@
     },
     results: [],
     selectedUrls: new Set(),
-    activeTab: 'all', // 'all' | 'valid' | 'review' | 'closed' | 'in_library' | 'invalid'
+    activeTab: 'all', // 'all' | 'valid' | 'spam_filtered' | 'review' | 'closed' | 'in_library' | 'invalid'
     pollTimer: null
   };
 
@@ -66,6 +74,7 @@
     bindProbeEvents();
     checkCurrentProbeStatus();
     loadHistoryBadgeCount();
+    loadProbeRules();
   }
 
   /**
@@ -84,7 +93,11 @@
               提供竞品或海量外链 URL，本地高并发探测哪些是博客评论页面并侦探表单结构。自动识别 WordPress / Blogger / 通用博客，过滤评论已关闭或强制登录页面，支持分类复核与一键入库投产。
             </div>
           </div>
-          <div style="flex-shrink:0;">
+          <div style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
+            <button type="button" class="btn btn-secondary btn-sm" id="probeRulesBtn" style="display:flex;align-items:center;gap:6px;font-weight:600;padding:6px 12px;" title="配置垃圾外链与黑名单过滤规则（URL/域名黑名单、页面标题黑名单等）">
+              <span>⚙️ 过滤规则</span>
+              <span class="badge badge-secondary" id="probeRulesBadge" style="background:#f1f5f9;color:#0f172a;font-size:10px;padding:1px 6px;border-radius:10px;">--</span>
+            </button>
             <button type="button" class="btn btn-secondary btn-sm" id="probeHistoryBtn" style="display:flex;align-items:center;gap:6px;font-weight:600;padding:6px 12px;" title="查看与加载保存在数据库中的历史探测批次">
               <span>📜 探测历史档案</span>
               <span class="badge badge-secondary" id="probeHistoryBadge" style="background:#e2e8f0;color:#334155;font-size:10px;padding:1px 6px;border-radius:10px;">0</span>
@@ -180,6 +193,10 @@
               <div style="font-size:11px;color:#991b1b;">🔒 评论关闭 / 需登录</div>
               <div id="statProbeClosedOrLogin" style="font-size:18px;font-weight:700;color:#b91c1c;margin-top:2px;">0</div>
             </div>
+            <div class="probe-stat-item" style="padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;">
+              <div style="font-size:11px;color:#9f1239;">🚫 垃圾规则过滤</div>
+              <div id="statProbeSpamFiltered" style="font-size:18px;font-weight:700;color:#e11d48;margin-top:2px;">0</div>
+            </div>
             <div class="probe-stat-item" style="padding:10px 12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;">
               <div style="font-size:11px;color:#6d28d9;">⏩ 资产库已存在 (跳过)</div>
               <div id="statProbeAlreadyInLibrary" style="font-size:18px;font-weight:700;color:#6d28d9;margin-top:2px;">0</div>
@@ -208,6 +225,7 @@
             <div class="probe-filter-tabs" style="display:flex;gap:6px;flex-wrap:wrap;">
               <button type="button" class="btn btn-secondary btn-sm probe-tab active" data-tab="all">全部 (<span id="probeTabCountAll">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="valid" style="color:#15803d;">🟢 可用博客外链 (<span id="probeTabCountValid">0</span>)</button>
+              <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="spam_filtered" style="color:#e11d48;">🚫 垃圾过滤 (<span id="probeTabCountSpam">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="review" style="color:#b45309;">🟡 待人工复核 (<span id="probeTabCountReview">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="closed" style="color:#b91c1c;">🔒 已关闭/需登录 (<span id="probeTabCountClosed">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm probe-tab" data-tab="in_library" style="color:#6d28d9;">⏩ 资产库已存在 (<span id="probeTabCountInLibrary">0</span>)</button>
@@ -228,15 +246,16 @@
                 <tr>
                   <th style="width:38px;text-align:center;"><input type="checkbox" id="probeSelectAllCheckbox" /></th>
                   <th style="width:160px;">引荐域名</th>
+                  <th style="width:200px;">网页标题 (Title)</th>
                   <th>入口引荐 URL</th>
                   <th style="width:190px;">博客系统 / 识别结论</th>
-                  <th style="width:130px;">外链字段能力</th>
-                  <th style="width:120px;">响应状态</th>
-                  <th style="width:120px;text-align:center;">操作</th>
+                  <th style="width:125px;">外链字段能力</th>
+                  <th style="width:115px;">响应状态</th>
+                  <th style="width:115px;text-align:center;">操作</th>
                 </tr>
               </thead>
               <tbody id="probeResultTableBody">
-                <tr><td colspan="7" style="text-align:center;padding:40px;color:#94a3b8;">暂无探测数据</td></tr>
+                <tr><td colspan="8" style="text-align:center;padding:40px;color:#94a3b8;">暂无探测数据</td></tr>
               </tbody>
             </table>
           </div>
@@ -315,6 +334,99 @@
           </div>
           <div class="asset-modal-footer">
             <button type="button" class="btn btn-secondary" id="probeCancelHistoryModalBtn">关闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 垃圾外链过滤规则配置 Modal -->
+      <div class="asset-modal-overlay" id="probeRulesModal" style="display:none;">
+        <div class="asset-modal-dialog" style="max-width:720px;">
+          <div class="asset-modal-header">
+            <div class="asset-modal-title" style="display:flex;align-items:center;gap:8px;">
+              <span>⚙️ 垃圾外链与黑名单过滤规则配置</span>
+              <span style="font-size:11px;font-weight:normal;color:#64748b;">(支持子串模糊包含、通配符与正则)</span>
+            </div>
+            <button type="button" class="asset-modal-close" id="probeCloseRulesModalBtn">×</button>
+          </div>
+          <div class="asset-modal-body" style="max-height:70vh;overflow-y:auto;">
+            <div style="font-size:12px;color:#475569;line-height:1.6;margin-bottom:14px;background:#f8fafc;padding:10px 14px;border-radius:8px;border:1px solid #e2e8f0;">
+              <div style="font-weight:700;color:#1e293b;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+                <span>📖 规则怎么写？（3 种模式说明与示例对照）</span>
+              </div>
+              <div style="color:#64748b;font-size:11px;margin-bottom:8px;">
+                系统采用分层过滤：<strong>URL 黑名单</strong>在发网络请求前（0ms）即时拦截；<strong>网页标题黑名单</strong>在抓取后嗅探 <code>&lt;title&gt;</code> 立即熔断。
+              </div>
+              <table style="width:100%;font-size:11px;border-collapse:collapse;background:#fff;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">
+                <thead>
+                  <tr style="background:#f1f5f9;color:#334155;text-align:left;">
+                    <th style="padding:6px 10px;border-bottom:1px solid #e2e8f0;width:24%;">匹配模式</th>
+                    <th style="padding:6px 10px;border-bottom:1px solid #e2e8f0;width:30%;">写法示例</th>
+                    <th style="padding:6px 10px;border-bottom:1px solid #e2e8f0;">匹配逻辑与效果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-weight:600;color:#15803d;">① 默认模糊包含<br/><span style="font-size:10px;color:#64748b;font-weight:normal;">(最常用，推荐直接写)</span></td>
+                    <td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-family:monospace;color:#0f172a;">seo<br/>pay.<br/>8coint.com</td>
+                    <td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#475569;"><strong>直接写关键词即可，前后无需加 * 符号</strong>。等同于 SQL <code>LIKE '%词%'</code>，只要 URL 或标题中出现该字样（忽略大小写）即被拦截。</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-weight:600;color:#2563eb;">② 通配符 *<br/><span style="font-size:10px;color:#64748b;font-weight:normal;">(跨词/组合匹配)</span></td>
+                    <td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-family:monospace;color:#0f172a;">buy*online<br/>/tag/*</td>
+                    <td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#475569;"><code>*</code> 代表中间可以间隔任意字符。例如 <code>buy*online</code> 可匹配标题 <code>Buy Backlinks Online</code>（中间隔了单词）。</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:6px 10px;font-weight:600;color:#7c3aed;">③ 正则表达式<br/><span style="font-size:10px;color:#64748b;font-weight:normal;">(专家模式，/开头/结尾)</span></td>
+                    <td style="padding:6px 10px;font-family:monospace;color:#0f172a;">/\.(top|xyz|loan)$/i<br/>/\d{4,}\.com/i</td>
+                    <td style="padding:6px 10px;color:#475569;">以 <code>/</code> 包裹。例如 <code>/\.(top|xyz)$/i</code> 一次性拦截多种指定后缀；<code>/\d{4,}\.com/i</code> 拦截4位以上纯数字泛滥垃圾域名。</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 卡片 1: URL / 域名黑名单 -->
+            <div class="probe-rules-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <label style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px;color:#1e293b;cursor:pointer;">
+                  <input type="checkbox" id="probeRuleUrlEnabled" checked />
+                  <span>启用 URL / 域名黑名单过滤（网络请求前 0ms 拦截）</span>
+                </label>
+                <span style="font-size:11px;color:#64748b;" id="probeRuleUrlCountDisplay">0 条规则</span>
+              </div>
+              <textarea id="probeRuleUrlTextarea" class="probe-rules-textarea" rows="4" placeholder="每行一条，例如：&#10;yahoo.com&#10;8coint.com&#10;gridinsoft.com&#10;ready.pro&#10;linkz.us&#10;pay.&#10;trackitonline&#10;seo&#10;links&#10;yandex.com"></textarea>
+              <div class="hint" style="margin-top:4px;">每行一条。直接输入关键词即可（默认全模糊包含，前后无需加 *）。以 # 开头的行视为注释。</div>
+            </div>
+
+            <!-- 卡片 2: 网页标题 (<title>) 黑名单 -->
+            <div class="probe-rules-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <label style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px;color:#1e293b;cursor:pointer;">
+                  <input type="checkbox" id="probeRuleTitleEnabled" checked />
+                  <span>启用 网页标题 (&lt;title&gt;) 黑名单过滤（抓取后嗅探熔断）</span>
+                </label>
+                <span style="font-size:11px;color:#64748b;" id="probeRuleTitleCountDisplay">0 条规则</span>
+              </div>
+              <textarea id="probeRuleTitleTextarea" class="probe-rules-textarea" rows="4" placeholder="每行一条，例如：&#10;backlink&#10;domain&#10;buy&#10;url shared&#10;seo&#10;links"></textarea>
+              <div class="hint" style="margin-top:4px;">每行一条。直接输入标题关键词（如 backlink、domain、buy 等）。网页标题中包含上述词汇时立即熔断剔除。</div>
+            </div>
+
+            <!-- 卡片 3: 实时规则命中测试小工具 -->
+            <div class="probe-rule-test-box">
+              <div style="font-weight:700;font-size:12px;color:#334155;margin-bottom:8px;">🔍 规则实时匹配测试工具</div>
+              <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+                <input type="text" id="probeRuleTestUrl" placeholder="测试 URL（如 https://8coint.com/blog 或 https://test.org/seo）" style="flex:1;min-width:200px;font-size:12px;padding:4px 8px;border:1px solid #cbd5e1;border-radius:4px;" />
+                <input type="text" id="probeRuleTestTitle" placeholder="测试网页标题（如 Best Free Backlinks 2026）" style="flex:1;min-width:200px;font-size:12px;padding:4px 8px;border:1px solid #cbd5e1;border-radius:4px;" />
+                <button type="button" class="btn btn-secondary btn-sm" id="probeRuleRunTestBtn">测试匹配</button>
+              </div>
+              <div id="probeRuleTestResult" style="font-size:12px;display:none;padding:6px 10px;border-radius:6px;line-height:1.4;"></div>
+            </div>
+          </div>
+          <div class="asset-modal-footer" style="display:flex;justify-content:space-between;align-items:center;">
+            <button type="button" class="btn btn-secondary btn-sm" id="probeRuleResetBtn" style="color:#b91c1c;border-color:#fecaca;" title="恢复系统内置默认过滤规则">↺ 恢复推荐默认规则</button>
+            <div style="display:flex;gap:8px;">
+              <button type="button" class="btn btn-secondary" id="probeCancelRulesModalBtn">取消</button>
+              <button type="button" class="btn btn-primary" id="probeSaveRulesBtn">💾 保存过滤规则</button>
+            </div>
           </div>
         </div>
       </div>
@@ -450,6 +562,16 @@
       renderProbeResultTable();
     });
 
+    // 垃圾过滤规则管理
+    document.getElementById('probeRulesBtn')?.addEventListener('click', openRulesModal);
+    document.getElementById('probeCloseRulesModalBtn')?.addEventListener('click', closeRulesModal);
+    document.getElementById('probeCancelRulesModalBtn')?.addEventListener('click', closeRulesModal);
+    document.getElementById('probeSaveRulesBtn')?.addEventListener('click', saveProbeRules);
+    document.getElementById('probeRuleResetBtn')?.addEventListener('click', resetProbeRules);
+    document.getElementById('probeRuleRunTestBtn')?.addEventListener('click', testProbeRulesLocally);
+    document.getElementById('probeRuleUrlTextarea')?.addEventListener('input', updateRuleModalCounts);
+    document.getElementById('probeRuleTitleTextarea')?.addEventListener('input', updateRuleModalCounts);
+
     // 历史档案管理
     document.getElementById('probeHistoryBtn')?.addEventListener('click', openHistoryModal);
     document.getElementById('probeCloseHistoryModalBtn')?.addEventListener('click', closeHistoryModal);
@@ -466,6 +588,188 @@
     document.getElementById('probeCloseImportModalBtn')?.addEventListener('click', closeImportModal);
     document.getElementById('probeCancelImportModalBtn')?.addEventListener('click', closeImportModal);
     document.getElementById('probeExecuteImportBtn')?.addEventListener('click', executeImport);
+  }
+
+  /**
+   * 加载过滤规则
+   */
+  async function loadProbeRules() {
+    try {
+      const res = await apiRequest('/api/probe/rules');
+      if (res && (res.urlBlacklist || res.titleBlacklist)) {
+        probeFilterRules = res;
+      }
+    } catch (err) {
+      console.warn('获取过滤规则失败：', err.message);
+    }
+    updateRulesBadge();
+  }
+
+  function updateRulesBadge() {
+    const badge = document.getElementById('probeRulesBadge');
+    if (!badge) return;
+    const urlCount = (probeFilterRules.urlBlacklist?.enabled ? probeFilterRules.urlBlacklist?.rules?.length : 0) || 0;
+    const titleCount = (probeFilterRules.titleBlacklist?.enabled ? probeFilterRules.titleBlacklist?.rules?.length : 0) || 0;
+    badge.textContent = `${urlCount + titleCount}条`;
+  }
+
+  function openRulesModal() {
+    const modal = document.getElementById('probeRulesModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+
+    // 填充数据
+    const urlCb = document.getElementById('probeRuleUrlEnabled');
+    const titleCb = document.getElementById('probeRuleTitleEnabled');
+    const urlTa = document.getElementById('probeRuleUrlTextarea');
+    const titleTa = document.getElementById('probeRuleTitleTextarea');
+
+    if (urlCb) urlCb.checked = probeFilterRules.urlBlacklist?.enabled !== false;
+    if (titleCb) titleCb.checked = probeFilterRules.titleBlacklist?.enabled !== false;
+    if (urlTa) urlTa.value = (probeFilterRules.urlBlacklist?.rules || []).join('\n');
+    if (titleTa) titleTa.value = (probeFilterRules.titleBlacklist?.rules || []).join('\n');
+
+    updateRuleModalCounts();
+
+    const testRes = document.getElementById('probeRuleTestResult');
+    if (testRes) testRes.style.display = 'none';
+  }
+
+  function closeRulesModal() {
+    const modal = document.getElementById('probeRulesModal');
+    if (!modal) return;
+    modal.style.display = 'none';
+  }
+
+  function updateRuleModalCounts() {
+    const urlTa = document.getElementById('probeRuleUrlTextarea');
+    const titleTa = document.getElementById('probeRuleTitleTextarea');
+    const urlCountEl = document.getElementById('probeRuleUrlCountDisplay');
+    const titleCountEl = document.getElementById('probeRuleTitleCountDisplay');
+
+    const urlList = (urlTa?.value || '').split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#') && !s.startsWith('//'));
+    const titleList = (titleTa?.value || '').split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#') && !s.startsWith('//'));
+
+    if (urlCountEl) urlCountEl.textContent = `${urlList.length} 条规则`;
+    if (titleCountEl) titleCountEl.textContent = `${titleList.length} 条规则`;
+  }
+
+  async function saveProbeRules() {
+    const urlCb = document.getElementById('probeRuleUrlEnabled');
+    const titleCb = document.getElementById('probeRuleTitleEnabled');
+    const urlTa = document.getElementById('probeRuleUrlTextarea');
+    const titleTa = document.getElementById('probeRuleTitleTextarea');
+
+    const urlRules = (urlTa?.value || '').split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#') && !s.startsWith('//'));
+    const titleRules = (titleTa?.value || '').split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#') && !s.startsWith('//'));
+
+    const payload = {
+      urlBlacklist: {
+        enabled: Boolean(urlCb?.checked),
+        rules: urlRules
+      },
+      titleBlacklist: {
+        enabled: Boolean(titleCb?.checked),
+        rules: titleRules
+      }
+    };
+
+    try {
+      const saved = await apiRequest('/api/probe/rules', payload);
+      if (saved) probeFilterRules = saved;
+      updateRulesBadge();
+      closeRulesModal();
+      alert('✅ 过滤规则保存成功！下次探测或资产库导入将立即按新规则执行。');
+    } catch (err) {
+      alert(`保存规则失败：${err.message}`);
+    }
+  }
+
+  async function resetProbeRules() {
+    if (!confirm('确定将过滤规则恢复为系统内置的推荐默认规则吗？')) return;
+    try {
+      const reset = await apiRequest('/api/probe/rules/reset', {});
+      if (reset) probeFilterRules = reset;
+      openRulesModal();
+      updateRulesBadge();
+    } catch (err) {
+      alert(`重置规则失败：${err.message}`);
+    }
+  }
+
+  function testProbeRulesLocally() {
+    const testUrl = (document.getElementById('probeRuleTestUrl')?.value || '').trim();
+    const testTitle = (document.getElementById('probeRuleTestTitle')?.value || '').trim();
+    const resultBox = document.getElementById('probeRuleTestResult');
+    if (!resultBox) return;
+
+    if (!testUrl && !testTitle) {
+      alert('请至少输入一个测试 URL 或网页标题');
+      return;
+    }
+
+    const urlCb = document.getElementById('probeRuleUrlEnabled');
+    const titleCb = document.getElementById('probeRuleTitleEnabled');
+    const urlTa = document.getElementById('probeRuleUrlTextarea');
+    const titleTa = document.getElementById('probeRuleTitleTextarea');
+
+    const urlRules = (urlTa?.value || '').split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#') && !s.startsWith('//'));
+    const titleRules = (titleTa?.value || '').split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#') && !s.startsWith('//'));
+
+    function matchSingle(text, ruleStr) {
+      const trimmed = ruleStr.trim();
+      if (trimmed.startsWith('/') && trimmed.lastIndexOf('/') > 0) {
+        const lastSlash = trimmed.lastIndexOf('/');
+        try {
+          const re = new RegExp(trimmed.slice(1, lastSlash), trimmed.slice(lastSlash + 1) || 'i');
+          return re.test(text);
+        } catch (_) {}
+      }
+      if (trimmed.includes('*')) {
+        const escaped = trimmed.replace(/[-[\]{}()+?.,\\^$|#\s]/g, '\\$&');
+        const re = new RegExp(escaped.replace(/\\\*/g, '.*'), 'i');
+        return re.test(text);
+      }
+      return text.toLowerCase().includes(trimmed.toLowerCase());
+    }
+
+    let matchedUrlRule = null;
+    if (urlCb?.checked && testUrl) {
+      for (const r of urlRules) {
+        if (matchSingle(testUrl, r)) {
+          matchedUrlRule = r;
+          break;
+        }
+      }
+    }
+
+    let matchedTitleRule = null;
+    if (titleCb?.checked && testTitle) {
+      for (const r of titleRules) {
+        if (matchSingle(testTitle, r)) {
+          matchedTitleRule = r;
+          break;
+        }
+      }
+    }
+
+    resultBox.style.display = 'block';
+    if (matchedUrlRule) {
+      resultBox.style.background = '#fee2e2';
+      resultBox.style.color = '#991b1b';
+      resultBox.style.border = '1px solid #fca5a5';
+      resultBox.innerHTML = `🚫 <strong>命中 URL 黑名单规则</strong>：包含 <code>"${escapeHtml(matchedUrlRule)}"</code>（将在发起请求前 0ms 直接前置剔除）`;
+    } else if (matchedTitleRule) {
+      resultBox.style.background = '#ffedd5';
+      resultBox.style.color = '#9a3412';
+      resultBox.style.border = '1px solid #fdba74';
+      resultBox.innerHTML = `🚫 <strong>命中 网页标题 黑名单规则</strong>：包含 <code>"${escapeHtml(matchedTitleRule)}"</code>（抓取后嗅探标题立即熔断剔除）`;
+    } else {
+      resultBox.style.background = '#f0fdf4';
+      resultBox.style.color = '#166534';
+      resultBox.style.border = '1px solid #bbf7d0';
+      resultBox.innerHTML = `🟢 <strong>安全通过</strong>：未命中当前配置的任何黑名单规则，允许正常抓取并分析博客表单。`;
+    }
   }
 
   /**
@@ -668,6 +972,9 @@
     document.getElementById('statProbeValidNoUrl').textContent = s.stats.validBlogCommentNoUrl;
     document.getElementById('statProbeNeedReview').textContent = s.stats.needReview;
     document.getElementById('statProbeClosedOrLogin').textContent = s.stats.commentsClosed + s.stats.loginRequired;
+    const spamCount = (s.stats && s.stats.spamFilteredTotal) || 0;
+    const spamElem = document.getElementById('statProbeSpamFiltered');
+    if (spamElem) spamElem.textContent = spamCount;
     document.getElementById('statProbeAlreadyInLibrary').textContent = s.stats.alreadyInLibrary || 0;
     document.getElementById('statProbeInvalidOrFailed').textContent = s.stats.notBlogComment + s.stats.failed;
 
@@ -676,6 +983,8 @@
     const inLibCount = s.stats.alreadyInLibrary || 0;
     document.getElementById('probeTabCountAll').textContent = s.results.length;
     document.getElementById('probeTabCountValid').textContent = validCount;
+    const tabSpamElem = document.getElementById('probeTabCountSpam');
+    if (tabSpamElem) tabSpamElem.textContent = spamCount;
     document.getElementById('probeTabCountReview').textContent = s.stats.needReview;
     document.getElementById('probeTabCountClosed').textContent = s.stats.commentsClosed + s.stats.loginRequired;
     document.getElementById('probeTabCountInLibrary').textContent = inLibCount;
@@ -687,10 +996,11 @@
     return probeState.results.filter((r) => {
       if (tab === 'all') return true;
       if (tab === 'valid') return r.isBlogComment && r.status !== 'already_in_library';
+      if (tab === 'spam_filtered') return r.status === 'filtered_url_rule' || r.status === 'filtered_title_rule' || r.spamFiltered;
       if (tab === 'in_library') return r.status === 'already_in_library';
       if (tab === 'review') return r.status === 'suspect_need_review' || r.status === 'blocked_challenge';
       if (tab === 'closed') return r.status === 'comments_closed' || r.status === 'login_required';
-      if (tab === 'invalid') return !r.isBlogComment && r.status !== 'already_in_library' && r.status !== 'suspect_need_review' && r.status !== 'blocked_challenge' && r.status !== 'comments_closed' && r.status !== 'login_required';
+      if (tab === 'invalid') return !r.isBlogComment && !r.spamFiltered && r.status !== 'already_in_library' && r.status !== 'suspect_need_review' && r.status !== 'blocked_challenge' && r.status !== 'comments_closed' && r.status !== 'login_required' && r.status !== 'filtered_url_rule' && r.status !== 'filtered_title_rule';
       return true;
     });
   }
@@ -701,7 +1011,7 @@
 
     const visibleItems = getFilteredResults();
     if (visibleItems.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:#94a3b8;">当前分类下无结果</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#94a3b8;">当前分类下无结果</td></tr>`;
       return;
     }
 
@@ -714,6 +1024,10 @@
       let conclusionBadge = '';
       if (item.status === 'already_in_library') {
         conclusionBadge = `<span class="probe-conclusion-badge" style="background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe;">⏩ 资产库已存在</span>`;
+      } else if (item.status === 'filtered_url_rule') {
+        conclusionBadge = `<span class="probe-conclusion-badge probe-pill-rule-url">🚫 命中URL黑名单 [${escapeHtml(item.matchedRule || '')}]</span>`;
+      } else if (item.status === 'filtered_title_rule') {
+        conclusionBadge = `<span class="probe-conclusion-badge probe-pill-rule-title">🚫 命中标题黑名单 [${escapeHtml(item.matchedRule || '')}]</span>`;
       } else if (item.isBlogComment) {
         conclusionBadge = `<span class="probe-conclusion-badge" style="background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;">🟢 ${escapeHtml(item.formType || '开放博客评论')}</span>`;
       } else if (item.status === 'suspect_need_review' || item.status === 'blocked_challenge') {
@@ -730,6 +1044,8 @@
       let fieldCapHtml = '';
       if (item.status === 'already_in_library') {
         fieldCapHtml = `<span class="probe-field-badge" style="color:#6d28d9;background:#f5f3ff;border:1px solid #ddd6fe;" title="该域名已在外链资产库中，本次免测跳过">⏩ 库内已有资产</span>`;
+      } else if (item.spamFiltered) {
+        fieldCapHtml = `<span class="probe-field-badge" style="color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;" title="命中过滤规则，已剔除">🚫 规则剔除</span>`;
       } else if (item.hasUrlField) {
         fieldCapHtml = `<span class="probe-field-badge" style="color:#15803d;background:#ecfdf5;border:1px solid #a7f3d0;" title="页面含有独立的 Website/URL 网址输入框">🔗 独立外链URL</span>`;
       } else if (item.hasCommentField) {
@@ -742,6 +1058,10 @@
       let httpBadge = '';
       if (item.status === 'already_in_library') {
         httpBadge = `<span class="probe-status-text" style="color:#6d28d9;">⚡ 免测跳过 (0ms)</span>`;
+      } else if (item.status === 'filtered_url_rule') {
+        httpBadge = `<span class="probe-status-text" style="color:#b91c1c;">⚡ 前置拦截 (0ms)</span>`;
+      } else if (item.status === 'filtered_title_rule') {
+        httpBadge = `<span class="probe-status-text" style="color:#ea580c;">🛑 标题熔断 (${item.elapsedMs}ms)</span>`;
       } else if (item.httpStatus === 200) {
         httpBadge = `<span class="probe-status-text" style="color:#059669;">200 OK (${item.elapsedMs}ms)</span>`;
       } else if (item.httpStatus > 0) {
@@ -756,6 +1076,9 @@
         </td>
         <td>
           <div style="font-weight:700;color:#1e293b;font-size:13px;">${escapeHtml(item.domain)}</div>
+        </td>
+        <td class="probe-title-cell" title="${escapeHtml(item.title || '')}">
+          ${item.title ? escapeHtml(item.title) : '<span style="color:#94a3b8;font-size:11px;">—</span>'}
         </td>
         <td class="probe-url-cell">
           <div>
@@ -919,6 +1242,7 @@
 
     const headers = [
       '引荐域名',
+      '网页标题',
       '入口引荐URL',
       '是否博客评论',
       '判定状态',
@@ -930,18 +1254,21 @@
       'HTTP响应状态',
       '探测耗时(ms)',
       '资产库已存状态',
+      '命中黑名单规则',
       '判定详细说明'
     ];
 
     const rows = probeState.results.map((r) => {
       let blogStatus = '否';
       if (r.status === 'already_in_library') blogStatus = '库内已有资产';
+      else if (r.status === 'filtered_url_rule' || r.status === 'filtered_title_rule' || r.spamFiltered) blogStatus = '垃圾黑名单剔除';
       else if (r.isBlogComment) blogStatus = '是 (开放博客)';
       else if (r.status === 'comments_closed') blogStatus = '博客但评论已关闭';
       else if (r.status === 'login_required') blogStatus = '博客但需登录';
 
       return [
         r.domain || '',
+        r.title || '',
         r.url || '',
         blogStatus,
         r.statusLabel || '',
@@ -952,7 +1279,8 @@
         r.hasCommentField ? '有' : '无',
         r.httpStatus || 0,
         r.elapsedMs || 0,
-        r.status === 'already_in_library' ? '已在库内 (已跳过)' : '新发现外链',
+        r.status === 'already_in_library' ? '已在库内 (已跳过)' : (r.spamFiltered ? '垃圾规则拦截' : '新发现外链'),
+        r.matchedRule ? `命中 [${r.matchedRule}]` : '—',
         (r.details || '').replace(/\r?\n/g, ' ')
       ];
     });
@@ -963,6 +1291,7 @@
 
       ws['!cols'] = [
         { wch: 22 }, // 引荐域名
+        { wch: 30 }, // 网页标题
         { wch: 50 }, // 入口URL
         { wch: 18 }, // 是否博客
         { wch: 26 }, // 判定状态
@@ -974,6 +1303,7 @@
         { wch: 14 }, // HTTP状态
         { wch: 14 }, // 耗时(ms)
         { wch: 18 }, // 库内状态
+        { wch: 20 }, // 命中黑名单规则
         { wch: 60 }  // 判定详情
       ];
 

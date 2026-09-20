@@ -100,7 +100,7 @@ const NON_BLOG_FALSE_POSITIVES = {
  * @param {string} url 页面 URL
  * @returns {object} 判定详情
  */
-export function analyzeBlogCommentPage(html, url) {
+export function analyzeBlogCommentPage(html, url, pageTitle = '') {
   if (!html || typeof html !== 'string') {
     return {
       isBlogComment: false,
@@ -114,6 +114,7 @@ export function analyzeBlogCommentPage(html, url) {
       hasCommentField: false,
       loginRequired: false,
       commentsClosed: false,
+      title: pageTitle || '',
       details: '页面未返回可解析的 HTML 内容'
     };
   }
@@ -254,14 +255,147 @@ export function analyzeBlogCommentPage(html, url) {
     hasCommentField,
     loginRequired,
     commentsClosed,
+    title: pageTitle || '',
     details
   };
 }
 
 /**
+ * 默认过滤规则预置配置
+ */
+export const DEFAULT_FILTER_RULES = {
+  urlBlacklist: {
+    enabled: true,
+    rules: [
+      'yahoo.com',
+      '8coint.com',
+      'gridinsoft.com',
+      'ready.pro',
+      'linkz.us',
+      'pay.',
+      'trackitonline',
+      'seo',
+      'links',
+      'yandex.com'
+    ]
+  },
+  titleBlacklist: {
+    enabled: true,
+    rules: [
+      'backlink',
+      'domain',
+      'buy',
+      'url shared',
+      'seo',
+      'links'
+    ]
+  }
+};
+
+/**
+ * HTML 字符实体反转义
+ */
+export function decodeHtmlEntities(text) {
+  if (!text) return '';
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#8211;|&ndash;/g, '–')
+    .replace(/&#8212;|&mdash;/g, '—')
+    .replace(/&#8216;|&lsquo;/g, '‘')
+    .replace(/&#8217;|&rsquo;/g, '’')
+    .replace(/&#8220;|&ldquo;/g, '“')
+    .replace(/&#8221;|&rdquo;/g, '”')
+    .replace(/&#8230;|&hellip;/g, '…')
+    .replace(/&#(\d+);/g, (_, dec) => {
+      try {
+        return String.fromCharCode(Number(dec));
+      } catch (_) {
+        return '';
+      }
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      try {
+        return String.fromCharCode(parseInt(hex, 16));
+      } catch (_) {
+        return '';
+      }
+    });
+}
+
+/**
+ * 从 HTML 中安全提取网页 <title>
+ */
+export function extractPageTitle(html) {
+  if (!html || typeof html !== 'string') return '';
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match) return '';
+  return decodeHtmlEntities(match[1]).trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * 编译单条规则（支持正则表达式、*通配符、普通字符串模糊包含）
+ */
+export function compileRule(rawRule) {
+  const trimmed = String(rawRule || '').trim();
+  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) {
+    return null;
+  }
+  // 正则模式: /pattern/flags
+  if (trimmed.startsWith('/') && trimmed.lastIndexOf('/') > 0) {
+    const lastSlash = trimmed.lastIndexOf('/');
+    const pattern = trimmed.slice(1, lastSlash);
+    const flags = trimmed.slice(lastSlash + 1) || 'i';
+    try {
+      return { raw: trimmed, type: 'regex', regex: new RegExp(pattern, flags) };
+    } catch (_) {}
+  }
+  // 通配符模式: 包含 *
+  if (trimmed.includes('*')) {
+    const escaped = trimmed.replace(/[-[\]{}()+?.,\\^$|#\s]/g, '\\$&');
+    const regex = new RegExp(escaped.replace(/\\\*/g, '.*'), 'i');
+    return { raw: trimmed, type: 'wildcard', regex };
+  }
+  // 普通关键词模糊包含（大小写不敏感）
+  return { raw: trimmed, type: 'substring', needle: trimmed.toLowerCase() };
+}
+
+/**
+ * 校验文本是否命中已编译的规则
+ */
+export function matchRule(text, compiledRule) {
+  if (!text || !compiledRule) return false;
+  if (compiledRule.type === 'substring') {
+    return text.toLowerCase().includes(compiledRule.needle);
+  }
+  if (compiledRule.type === 'regex' || compiledRule.type === 'wildcard') {
+    return compiledRule.regex.test(text);
+  }
+  return false;
+}
+
+/**
+ * 在一组规则中查找第一条命中的规则（返回匹配到的原始规则文本，未命中返回 null）
+ */
+export function findMatchingRule(text, ruleList) {
+  if (!text || !Array.isArray(ruleList)) return null;
+  for (const raw of ruleList) {
+    const compiled = compileRule(raw);
+    if (compiled && matchRule(text, compiled)) {
+      return compiled.raw;
+    }
+  }
+  return null;
+}
+
+/**
  * 针对单条 URL 执行 HTTP 抓取与分析
  * @param {string} targetUrl 目标 URL
- * @param {object} [options] 抓取配置（超时、User-Agent 等）
+ * @param {object} [options] 抓取配置（超时、User-Agent、filterRules 等）
  * @returns {Promise<object>}
  */
 export async function probeSingleUrl(targetUrl, options = {}) {
@@ -305,9 +439,11 @@ export async function probeSingleUrl(targetUrl, options = {}) {
     if (httpStatus === 403 || httpStatus === 503) {
       const errorText = await response.text().catch(() => '');
       const isCloudflare = /cloudflare|attention required|challenge-running/i.test(errorText);
+      const pageTitle = extractPageTitle(errorText);
       return {
         url: normalizedUrl,
         domain,
+        title: pageTitle,
         httpStatus,
         elapsedMs,
         isBlogComment: false,
@@ -328,9 +464,12 @@ export async function probeSingleUrl(targetUrl, options = {}) {
     }
 
     if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      const pageTitle = extractPageTitle(errorText);
       return {
         url: normalizedUrl,
         domain,
+        title: pageTitle,
         httpStatus,
         elapsedMs,
         isBlogComment: false,
@@ -356,11 +495,45 @@ export async function probeSingleUrl(targetUrl, options = {}) {
       truncatedHtml = html.slice(0, 5 * 1024 * 1024) + '\n' + html.slice(-15 * 1024 * 1024);
     }
 
-    const analysis = analyzeBlogCommentPage(truncatedHtml, normalizedUrl);
+    // 阶段 2：HTML 响应后，优先提取页面 <title>
+    const pageTitle = extractPageTitle(truncatedHtml);
+
+    // 检查网页标题黑名单规则熔断
+    const titleRules = options.filterRules?.titleBlacklist || options.titleBlacklist || null;
+    if (titleRules && titleRules.enabled !== false && Array.isArray(titleRules.rules) && pageTitle) {
+      const matchedRule = findMatchingRule(pageTitle, titleRules.rules);
+      if (matchedRule) {
+        return {
+          url: normalizedUrl,
+          domain,
+          title: pageTitle,
+          httpStatus,
+          elapsedMs,
+          isBlogComment: false,
+          spamFiltered: true,
+          status: 'filtered_title_rule',
+          statusLabel: '命中标题黑名单',
+          confidence: 'high',
+          formType: '标题黑名单熔断',
+          hasUrlField: false,
+          hasAuthorField: false,
+          hasEmailField: false,
+          hasCommentField: false,
+          loginRequired: false,
+          commentsClosed: false,
+          matchedRule,
+          filterCategory: 'title_rule',
+          details: `命中网页标题黑名单规则: 包含 "${matchedRule}"（页面标题: "${pageTitle}"）。已熔断拦截，避免误报为外链博客。`
+        };
+      }
+    }
+
+    const analysis = analyzeBlogCommentPage(truncatedHtml, normalizedUrl, pageTitle);
 
     return {
       url: normalizedUrl,
       domain,
+      title: pageTitle,
       httpStatus,
       elapsedMs,
       ...analysis
@@ -371,6 +544,7 @@ export async function probeSingleUrl(targetUrl, options = {}) {
     return {
       url: normalizedUrl,
       domain,
+      title: '',
       httpStatus: 0,
       elapsedMs,
       isBlogComment: false,
@@ -488,6 +662,9 @@ class ProbeSessionManager {
         rawCount,
         dedupCount,
         alreadyInLibrary: 0,
+        spamFilteredUrl: 0,
+        spamFilteredTitle: 0,
+        spamFilteredTotal: 0,
         validBlogCommentWithUrl: 0,
         validBlogCommentNoUrl: 0,
         bloggerComment: 0,
@@ -505,10 +682,52 @@ class ProbeSessionManager {
     this.sessions.set(sessionId, session);
     this.latestSessionId = sessionId;
 
-    // 2. 检查资产库：已存在的引荐域名直接跳过网络探测，并计入独立分类
-    const toProbeList = [];
+    const filterRules = options.filterRules || DEFAULT_FILTER_RULES;
+
+    // 2. 阶段 1：网络请求前，URL / 域名黑名单规则前置拦截（0毫秒快速剔除，免发网络请求）
+    const urlRules = filterRules && filterRules.urlBlacklist;
+    const isUrlRuleEnabled = urlRules && urlRules.enabled !== false && Array.isArray(urlRules.rules) && urlRules.rules.length > 0;
+    const candidatesAfterUrlRules = [];
 
     for (const item of uniqueCandidates) {
+      if (isUrlRuleEnabled) {
+        const matchedRule = findMatchingRule(item.url, urlRules.rules);
+        if (matchedRule) {
+          session.results.push({
+            url: item.url,
+            domain: item.domain,
+            title: '',
+            httpStatus: 0,
+            elapsedMs: 0,
+            isBlogComment: false,
+            spamFiltered: true,
+            status: 'filtered_url_rule',
+            statusLabel: '命中URL黑名单',
+            confidence: 'high',
+            formType: 'URL黑名单拦截',
+            hasUrlField: false,
+            hasAuthorField: false,
+            hasEmailField: false,
+            hasCommentField: false,
+            loginRequired: false,
+            commentsClosed: false,
+            matchedRule,
+            filterCategory: 'url_rule',
+            details: `命中 URL/域名黑名单规则: 包含 "${matchedRule}"。已前置拦截，免发网络请求。`
+          });
+          session.stats.spamFilteredUrl++;
+          session.stats.spamFilteredTotal++;
+          session.processed++;
+          continue;
+        }
+      }
+      candidatesAfterUrlRules.push(item);
+    }
+
+    // 3. 检查资产库：已存在的引荐域名直接跳过网络探测，并计入独立分类
+    const toProbeList = [];
+
+    for (const item of candidatesAfterUrlRules) {
       if (skipExisting && existingLibraryMap.has(item.domain)) {
         const existing = existingLibraryMap.get(item.domain);
         const tierName =
@@ -527,6 +746,7 @@ class ProbeSessionManager {
         session.results.push({
           url: item.url,
           domain: item.domain,
+          title: '',
           httpStatus: 200,
           elapsedMs: 0,
           isBlogComment: false,
@@ -559,7 +779,7 @@ class ProbeSessionManager {
       }
     }
 
-    // 若全部都在资产库中已存在，则直接完成
+    // 若全部都在规则拦截或资产库中已存在，则直接完成
     if (toProbeList.length === 0) {
       session.endTime = Date.now();
       session.status = 'completed';
@@ -572,7 +792,7 @@ class ProbeSessionManager {
       }
     } else {
       // 异步执行并发队列，不阻塞 HTTP 响应
-      this._runQueue(toProbeList, session);
+      this._runQueue(toProbeList, session, filterRules);
     }
 
     return {
@@ -581,12 +801,13 @@ class ProbeSessionManager {
       rawCount: session.stats.rawCount,
       dedupCount: session.stats.dedupCount,
       alreadyInLibrary: session.stats.alreadyInLibrary,
+      spamFilteredTotal: session.stats.spamFilteredTotal,
       concurrency: session.concurrency,
       status: session.status
     };
   }
 
-  async _runQueue(items, session) {
+  async _runQueue(items, session, filterRules) {
     let index = 0;
     const total = items.length;
 
@@ -601,7 +822,8 @@ class ProbeSessionManager {
 
         try {
           const result = await probeSingleUrl(targetUrl, {
-            timeoutMs: session.timeoutMs
+            timeoutMs: session.timeoutMs,
+            filterRules
           });
 
           session.results.push(result);
@@ -614,6 +836,9 @@ class ProbeSessionManager {
             session.stats.validBlogCommentNoUrl++;
           } else if (result.status === 'valid_blog_comment_blogger') {
             session.stats.bloggerComment++;
+          } else if (result.status === 'filtered_title_rule') {
+            session.stats.spamFilteredTitle++;
+            session.stats.spamFilteredTotal++;
           } else if (result.status === 'suspect_need_review' || result.status === 'blocked_challenge') {
             session.stats.needReview++;
           } else if (result.status === 'comments_closed') {
@@ -631,6 +856,7 @@ class ProbeSessionManager {
           session.results.push({
             url: targetUrl,
             domain: normalizeDomain(targetUrl),
+            title: '',
             httpStatus: 0,
             elapsedMs: 0,
             isBlogComment: false,

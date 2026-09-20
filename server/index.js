@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
-import { probeManager } from './probe.js';
+import { probeManager, DEFAULT_FILTER_RULES } from './probe.js';
 
 const DEFAULT_PORT = 17321;
 const DEFAULT_PG_HOST = 'localhost';
@@ -76,6 +76,7 @@ const runsTable = `${schemaSql}.auto_comment_runs`;
 const runItemsTable = `${schemaSql}.auto_comment_run_items`;
 const assetsTable = `${schemaSql}.backlink_assets`;
 const probeHistoryTable = `${schemaSql}.probe_history`;
+const probeRulesTable = `${schemaSql}.probe_rules`;
 
 /**
  * 将任意 URL 或域名转换成标准域名：去掉协议、路径和开头的 www.，并统一小写。
@@ -1320,6 +1321,110 @@ async function saveProbeSessionToDb(session) {
   }
 }
 
+async function getProbeRulesFromDb() {
+  try {
+    const res = await pool.query(`SELECT rule_key, enabled, rules, description FROM ${probeRulesTable}`);
+    if (res.rows && res.rows.length > 0) {
+      const result = {
+        urlBlacklist: { enabled: true, rules: [] },
+        titleBlacklist: { enabled: true, rules: [] }
+      };
+      for (const row of res.rows) {
+        const rulesArray = Array.isArray(row.rules) ? row.rules : [];
+        if (row.rule_key === 'url_blacklist') {
+          result.urlBlacklist = {
+            enabled: row.enabled !== false,
+            rules: rulesArray
+          };
+        } else if (row.rule_key === 'title_blacklist') {
+          result.titleBlacklist = {
+            enabled: row.enabled !== false,
+            rules: rulesArray
+          };
+        }
+      }
+      return result;
+    }
+  } catch (err) {
+    console.warn('[ProbeRules] 从数据库加载规则异常，将降级使用内置默认规则：', err.message);
+  }
+  return JSON.parse(JSON.stringify(DEFAULT_FILTER_RULES));
+}
+
+async function saveProbeRulesToDb(payload) {
+  const urlBlacklist = payload?.urlBlacklist || {};
+  const titleBlacklist = payload?.titleBlacklist || {};
+
+  const cleanRules = (list) => {
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((item) => String(item || '').trim())
+      .filter((item) => item && !item.startsWith('#') && !item.startsWith('//'));
+  };
+
+  const urlRules = cleanRules(urlBlacklist.rules);
+  const titleRules = cleanRules(titleBlacklist.rules);
+
+  await pool.query(
+    `INSERT INTO ${probeRulesTable} (rule_key, enabled, rules, description, updated_at)
+     VALUES 
+     ('url_blacklist', $1, $2, 'URL/域名黑名单：在发起网络抓取前（阶段1）零耗时过滤，支持子串与通配符', CURRENT_TIMESTAMP),
+     ('title_blacklist', $3, $4, '网页标题黑名单：在获取 HTML 头部（阶段2）嗅探并熔断，防止SEO农场与买卖外链站误报', CURRENT_TIMESTAMP)
+     ON CONFLICT (rule_key) DO UPDATE SET
+       enabled = EXCLUDED.enabled,
+       rules = EXCLUDED.rules,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      urlBlacklist.enabled !== false,
+      JSON.stringify(urlRules),
+      titleBlacklist.enabled !== false,
+      JSON.stringify(titleRules)
+    ]
+  );
+
+  return getProbeRulesFromDb();
+}
+
+async function resetProbeRulesInDb() {
+  await pool.query(
+    `INSERT INTO ${probeRulesTable} (rule_key, enabled, rules, description, updated_at)
+     VALUES 
+     ('url_blacklist', $1, $2, 'URL/域名黑名单：在发起网络抓取前（阶段1）零耗时过滤，支持子串与通配符', CURRENT_TIMESTAMP),
+     ('title_blacklist', $3, $4, '网页标题黑名单：在获取 HTML 头部（阶段2）嗅探并熔断，防止SEO农场与买卖外链站误报', CURRENT_TIMESTAMP)
+     ON CONFLICT (rule_key) DO UPDATE SET
+       enabled = EXCLUDED.enabled,
+       rules = EXCLUDED.rules,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      DEFAULT_FILTER_RULES.urlBlacklist.enabled,
+      JSON.stringify(DEFAULT_FILTER_RULES.urlBlacklist.rules),
+      DEFAULT_FILTER_RULES.titleBlacklist.enabled,
+      JSON.stringify(DEFAULT_FILTER_RULES.titleBlacklist.rules)
+    ]
+  );
+  return getProbeRulesFromDb();
+}
+
+    // --- 博客外链过滤规则 API ---
+    if (method === 'GET' && url.pathname === '/api/probe/rules') {
+      const rules = await getProbeRulesFromDb();
+      writeJson(response, 200, { ok: true, data: rules });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/probe/rules') {
+      const payload = await readJsonBody(request);
+      const updated = await saveProbeRulesToDb(payload);
+      writeJson(response, 200, { ok: true, data: updated });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/probe/rules/reset') {
+      const resetRules = await resetProbeRulesInDb();
+      writeJson(response, 200, { ok: true, data: resetRules });
+      return;
+    }
+
     // --- 博客外链并发探测 API ---
     if (method === 'POST' && url.pathname === '/api/probe/start') {
       const payload = await readJsonBody(request);
@@ -1346,6 +1451,11 @@ async function saveProbeSessionToDb(session) {
         }
       }
 
+      let filterRules = payload && payload.filterRules;
+      if (!filterRules) {
+        filterRules = await getProbeRulesFromDb();
+      }
+
       const session = probeManager.startSession(urls, {
         sessionId,
         title,
@@ -1353,6 +1463,7 @@ async function saveProbeSessionToDb(session) {
         timeoutMs,
         existingLibraryMap,
         skipExisting,
+        filterRules,
         onComplete: (s) => {
           saveProbeSessionToDb(s);
         }

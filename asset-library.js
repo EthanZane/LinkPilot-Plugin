@@ -1761,10 +1761,13 @@
         });
       }
       for (const r of nonBlogOrFailedResults) {
+        let cat = '非博客或请求异常';
+        if (r.status === 'filtered_url_rule') cat = `命中URL黑名单 [${r.matchedRule || ''}]`;
+        else if (r.status === 'filtered_title_rule') cat = `命中标题黑名单 [${r.matchedRule || ''}]`;
         currentSkippedItemsToExport.push({
           domain: r.domain,
           url: r.url,
-          category: '非博客或请求异常',
+          category: cat,
           status: r.statusLabel,
           details: r.details || ''
         });
