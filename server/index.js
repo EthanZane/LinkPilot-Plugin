@@ -465,7 +465,8 @@ async function refreshAssetsForDomains(domains, database = pool) {
       agg_stats as (
         select
           referral_domain,
-          count(*)::integer as total_attempts,
+          -- 实际执行尝试次数（排除因防重复跳过未执行的项，避免拉低真实成功率）
+          count(case when result <> 'skipped' then 1 end)::integer as total_attempts,
           count(case when result = 'success' then 1 end)::integer as success_count,
           count(case when result = 'fail' then 1 end)::integer as fail_count,
           count(case when result = 'skipped' then 1 end)::integer as skipped_count,
@@ -483,7 +484,8 @@ async function refreshAssetsForDomains(domains, database = pool) {
         'blog_comment' as resource_type,
         case
           when s.blocked_count > 0 and s.success_count = 0 then 'blacklisted'
-          when s.success_count >= 1 and (s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+          when s.total_attempts > 0 and s.success_count >= 1 and s.success_count::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+          when s.total_attempts = 0 and s.skipped_count > 0 then 'high_quality'
           when l.result = 'manual_required' then 'manual_needed'
           when s.no_box_count >= 2 or (s.total_attempts >= 2 and s.success_count = 0) then 'broken'
           when s.success_count > 0 then 'high_quality'
@@ -497,7 +499,11 @@ async function refreshAssetsForDomains(domains, database = pool) {
         s.manual_count,
         s.no_box_count,
         s.blocked_count,
-        round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
+        case
+          when s.total_attempts > 0 then round((s.success_count::numeric / s.total_attempts::numeric) * 100, 1)
+          when s.skipped_count > 0 then 100.0
+          else 0.0
+        end as success_rate,
         l.result as last_run_result,
         coalesce(l.result_message, '') as last_run_message,
         l.page_depth as page_depth,
@@ -561,7 +567,8 @@ async function bootstrapAssets(database = pool) {
       agg_stats as (
         select
           referral_domain,
-          count(*)::integer as total_attempts,
+          -- 实际执行尝试次数（排除因防重复跳过未执行的项，避免拉低真实成功率）
+          count(case when result <> 'skipped' then 1 end)::integer as total_attempts,
           count(case when result = 'success' then 1 end)::integer as success_count,
           count(case when result = 'fail' then 1 end)::integer as fail_count,
           count(case when result = 'skipped' then 1 end)::integer as skipped_count,
@@ -580,7 +587,8 @@ async function bootstrapAssets(database = pool) {
         'blog_comment' as resource_type,
         case
           when s.blocked_count > 0 and s.success_count = 0 then 'blacklisted'
-          when s.success_count >= 1 and (s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+          when s.total_attempts > 0 and s.success_count >= 1 and s.success_count::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+          when s.total_attempts = 0 and s.skipped_count > 0 then 'high_quality'
           when l.result = 'manual_required' then 'manual_needed'
           when s.no_box_count >= 2 or (s.total_attempts >= 2 and s.success_count = 0) then 'broken'
           when s.success_count > 0 then 'high_quality'
@@ -594,7 +602,11 @@ async function bootstrapAssets(database = pool) {
         s.manual_count,
         s.no_box_count,
         s.blocked_count,
-        round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
+        case
+          when s.total_attempts > 0 then round((s.success_count::numeric / s.total_attempts::numeric) * 100, 1)
+          when s.skipped_count > 0 then 100.0
+          else 0.0
+        end as success_rate,
         l.result as last_run_result,
         coalesce(l.result_message, '') as last_run_message,
         l.page_depth as page_depth,

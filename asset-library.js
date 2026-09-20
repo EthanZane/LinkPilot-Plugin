@@ -977,13 +977,13 @@
           <div class="depth-cell">${depthHtml}</div>
         </td>
         <td>
-          <div class="perf-cell">
+          <div class="perf-cell" title="执行详情：成功 ${asset.success_count || 0} 次${asset.skipped_count > 0 ? `，跳过 ${asset.skipped_count} 次` : ''}${asset.fail_count > 0 ? `，失败 ${asset.fail_count} 次` : ''}（共 ${asset.total_attempts || 0} 次）">
             <div class="perf-bar-wrap">
               <div class="perf-bar" style="width:${Math.min(100, Math.max(0, rateNum))}%;background:${rateNum >= 60 ? '#10b981' : (rateNum >= 30 ? '#f59e0b' : '#ef4444')};"></div>
             </div>
             <div class="perf-text">
               <strong style="color:${rateNum >= 60 ? '#059669' : (rateNum >= 30 ? '#d97706' : '#dc2626')}">${rateNum.toFixed(1)}%</strong>
-              <span style="color:#94a3b8;margin-left:4px;">(${asset.success_count || 0}/${asset.total_attempts || 0}次)</span>
+              <span style="color:#94a3b8;margin-left:4px;">(${asset.success_count || 0}/${asset.total_attempts || 0}次${asset.skipped_count > 0 ? ` <span title="其中 ${asset.skipped_count} 次因防重复已评论而跳过" style="color:#64748b;font-size:10px;">[${asset.skipped_count}跳过]</span>` : ''})</span>
             </div>
           </div>
         </td>

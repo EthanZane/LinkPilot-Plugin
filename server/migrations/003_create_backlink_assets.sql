@@ -35,7 +35,7 @@ comment on column dw.backlink_assets.referral_url is '实际提交或入口 URL�
 comment on column dw.backlink_assets.resource_type is '外链类型：blog_comment 博客评论，directory_submission 导航目录站，forum_thread 论坛回帖，guest_post 投稿文章等。';
 comment on column dw.backlink_assets.quality_tier is '资产质量等级：high_quality 优质可用，manual_needed 需人工介入，broken 失效或无评论框，untested 未测试，blacklisted 风险拦截。';
 comment on column dw.backlink_assets.source_channel is '资产来源渠道：semrush, ahrefs, manual_paste, run_harvest 等。';
-comment on column dw.backlink_assets.success_rate is '历史成功率（%）：(success_count + skipped_count) / total_attempts * 100。';
+comment on column dw.backlink_assets.success_rate is '历史成功率（%）：success_count / total_attempts * 100。';
 
 create index if not exists idx_backlink_assets_resource_type
   on dw.backlink_assets (resource_type);
@@ -99,7 +99,7 @@ with latest_items as (
 agg_stats as (
   select
     referral_domain,
-    count(*)::integer as total_attempts,
+    count(case when result <> 'skipped' then 1 end)::integer as total_attempts,
     count(case when result = 'success' then 1 end)::integer as success_count,
     count(case when result = 'fail' then 1 end)::integer as fail_count,
     count(case when result = 'skipped' then 1 end)::integer as skipped_count,
@@ -118,7 +118,8 @@ select
   'blog_comment' as resource_type,
   case
     when s.blocked_count > 0 and s.success_count = 0 then 'blacklisted'
-    when s.success_count >= 1 and (s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+    when s.total_attempts > 0 and s.success_count >= 1 and s.success_count::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+    when s.total_attempts = 0 and s.skipped_count > 0 then 'high_quality'
     when l.result = 'manual_required' then 'manual_needed'
     when s.no_box_count >= 2 or (s.total_attempts >= 2 and s.success_count = 0) then 'broken'
     when s.success_count > 0 then 'high_quality'
@@ -132,7 +133,11 @@ select
   s.manual_count,
   s.no_box_count,
   s.blocked_count,
-  round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
+  case
+    when s.total_attempts > 0 then round((s.success_count::numeric / s.total_attempts::numeric) * 100, 1)
+    when s.skipped_count > 0 then 100.0
+    else 0.0
+  end as success_rate,
   l.result as last_run_result,
   coalesce(l.result_message, '') as last_run_message,
   coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
