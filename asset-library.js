@@ -457,7 +457,7 @@
                 </label>
                 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
                   <input type="radio" name="assetDedupeStrategy" value="update_url" />
-                  <span><strong>覆盖更新入口 URL</strong>：已存在域名如果导入了新 URL，则更新为其最新 URL</span>
+                  <span><strong>覆盖更新入口 URL</strong>：已存在域名保留历史统计；若导入了新 URL 则更新为新 URL 并将页面深度自动置为空（待任务重新探测）</span>
                 </label>
                 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:4px;">
                   <input type="checkbox" id="assetImportFilterIllegal" checked />
@@ -506,6 +506,9 @@
                 <a id="assetEditFindShallowLink" href="#" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#2563eb;text-decoration:underline;display:none;">🔍 谷歌搜该站新页面 (找浅页)</a>
               </div>
               <input type="url" id="assetEditUrl" placeholder="https://..." />
+              <div id="assetEditUrlHint" style="display:none;font-size:11px;color:#059669;margin-top:4px;">
+                💡 检测到入口 URL 已变更，页面深度已自动重置为空（未知），待下次自动化任务重新探测实际深度。
+              </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
               <div>
@@ -720,6 +723,19 @@
     document.getElementById('assetEditResetDepthBtn')?.addEventListener('click', () => {
       const depthInput = document.getElementById('assetEditPageDepth');
       if (depthInput) depthInput.value = '';
+    });
+    document.getElementById('assetEditUrl')?.addEventListener('input', (e) => {
+      const currentUrl = state.currentEditingAsset?.referral_url || '';
+      const newUrl = e.target.value.trim();
+      const hint = document.getElementById('assetEditUrlHint');
+      const depthInput = document.getElementById('assetEditPageDepth');
+      const isChanged = newUrl !== '' && newUrl !== currentUrl;
+      if (hint) hint.style.display = isChanged ? 'block' : 'none';
+      if (isChanged && depthInput) {
+        depthInput.value = '';
+      } else if (!isChanged && depthInput && state.currentEditingAsset) {
+        depthInput.value = state.currentEditingAsset.page_depth != null ? state.currentEditingAsset.page_depth : '';
+      }
     });
   }
 
@@ -1281,6 +1297,11 @@
   function openEditModal(asset, options = {}) {
     const modal = document.getElementById('assetEditModal');
     if (!modal) return;
+    state.currentEditingAsset = asset;
+
+    const urlHint = document.getElementById('assetEditUrlHint');
+    if (urlHint) urlHint.style.display = 'none';
+
     document.getElementById('assetEditDomain').value = asset.referral_domain;
     document.getElementById('assetEditUrl').value = asset.referral_url;
     document.getElementById('assetEditType').value = asset.resource_type || 'blog_comment';
@@ -1332,6 +1353,7 @@
   function closeEditModal() {
     const modal = document.getElementById('assetEditModal');
     if (modal) modal.style.display = 'none';
+    state.currentEditingAsset = null;
   }
 
   async function saveEditModal() {
@@ -1342,7 +1364,10 @@
     const tags = document.getElementById('assetEditTags').value.split(',').map((t) => t.trim()).filter(Boolean);
     const notes = document.getElementById('assetEditNotes').value.trim();
     const pageDepthRaw = document.getElementById('assetEditPageDepth')?.value.trim();
-    const pageDepth = pageDepthRaw !== '' ? Number(pageDepthRaw) : null;
+
+    const isUrlChanged = state.currentEditingAsset && referralUrl !== state.currentEditingAsset.referral_url;
+    // 如果 URL 发生改变且用户未输入自定义数值，则置空为 null（未知）
+    const pageDepth = pageDepthRaw !== '' ? Number(pageDepthRaw) : (isUrlChanged ? null : (state.currentEditingAsset?.page_depth ?? null));
 
     if (!referralUrl) {
       alert('入口 URL 不能为空');

@@ -945,8 +945,32 @@ async function importAssets(payload, database = pool) {
   if (duplicateStrategy === 'update_url' && toSkip.length > 0) {
     for (const item of toSkip) {
       await database.query(
-        `update ${assetsTable} set referral_url = $2, updated_at = now() where referral_domain = $1`,
-        [item.referral_domain, item.referral_url]
+        `
+          update ${assetsTable}
+          set
+            -- 如果导入的 URL 与库内原有 URL 不一样，将页面深度置为空（未知，待下次执行探测）
+            page_depth = case when referral_url <> $2 then null else page_depth end,
+            -- 如果此前旧页面标记为 broken（失效/无框），更新为新 URL 后自动复活为 untested 重新测试
+            quality_tier = case when referral_url <> $2 and quality_tier = 'broken' then 'untested' else quality_tier end,
+            referral_url = $2,
+            -- 同步补充 SEO 指标与标签（如果导入项提供了对应属性，不冲掉已有值）
+            domain_rating = coalesce($3, domain_rating),
+            organic_traffic = coalesce($4, organic_traffic),
+            tags = case
+              when $5::text[] is not null and array_length($5::text[], 1) > 0 then
+                array(select distinct unnest(array_cat(coalesce(tags, array[]::text[]), $5::text[])))
+              else tags
+            end,
+            updated_at = now()
+          where referral_domain = $1
+        `,
+        [
+          item.referral_domain,
+          item.referral_url,
+          item.domain_rating,
+          item.organic_traffic,
+          item.tags
+        ]
       );
     }
   }
@@ -968,17 +992,29 @@ async function updateAsset(domain, payload, database = pool) {
   const normalizedDomain = normalizeDomain(domain);
   if (!normalizedDomain) throw new Error('缺少合法域名');
 
+  const existingRes = await database.query(
+    `select referral_url, page_depth, quality_tier from ${assetsTable} where referral_domain = $1`,
+    [normalizedDomain]
+  );
+  if (existingRes.rowCount === 0) throw new Error(`外链资产不存在：${normalizedDomain}`);
+  const existingRow = existingRes.rows[0];
+
   const fields = [];
   const values = [normalizedDomain];
   let idx = 2;
 
+  let urlChanged = false;
+  if (payload.referralUrl !== undefined) {
+    const newUrl = String(payload.referralUrl).trim();
+    fields.push(`referral_url = $${idx++}`);
+    values.push(newUrl);
+    if (existingRow.referral_url !== newUrl) {
+      urlChanged = true;
+    }
+  }
   if (payload.resourceType !== undefined) {
     fields.push(`resource_type = $${idx++}`);
     values.push(String(payload.resourceType || 'blog_comment').trim());
-  }
-  if (payload.referralUrl !== undefined) {
-    fields.push(`referral_url = $${idx++}`);
-    values.push(String(payload.referralUrl).trim());
   }
   if (payload.qualityTier !== undefined) {
     fields.push(`quality_tier = $${idx++}`);
@@ -992,19 +1028,29 @@ async function updateAsset(domain, payload, database = pool) {
     fields.push(`tags = $${idx++}`);
     values.push(Array.isArray(payload.tags) ? payload.tags : []);
   }
+
+  // 页面深度处理：
+  // 1. 如果显式传递了 pageDepth，按传递的值设置（可为数值或 null）
+  // 2. 如果未显式传递 pageDepth，但 URL 发生了改变，自动置为空（null）待下次重新探测
   if (payload.pageDepth !== undefined) {
     fields.push(`page_depth = $${idx++}`);
     values.push(numberOrNull(payload.pageDepth));
+  } else if (urlChanged) {
+    fields.push('page_depth = null');
   }
 
-  if (fields.length === 0) return null;
+  // 如果 URL 改变了且此前状态为 broken，在未显式传参指定 qualityTier 时，自动复活为 untested 重新进入测试
+  if (urlChanged && payload.qualityTier === undefined && existingRow.quality_tier === 'broken') {
+    fields.push("quality_tier = 'untested'");
+  }
+
+  if (fields.length === 0) return existingRow;
 
   fields.push('updated_at = now()');
   const result = await database.query(
     `update ${assetsTable} set ${fields.join(', ')} where referral_domain = $1 returning *`,
     values
   );
-  if (result.rowCount === 0) throw new Error(`外链资产不存在：${normalizedDomain}`);
   return result.rows[0];
 }
 
