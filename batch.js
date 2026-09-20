@@ -85,6 +85,7 @@ const urlPreview = document.getElementById('urlPreview');
 const urlPreviewBody = document.getElementById('urlPreviewBody');
 const manualUrlsInput = document.getElementById('manualUrlsInput');
 const parseManualUrlsBtn = document.getElementById('parseManualUrlsBtn');
+const loadFromAssetLibraryBtn = document.getElementById('loadFromAssetLibraryBtn');
 const clearManualUrlsBtn = document.getElementById('clearManualUrlsBtn');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
@@ -1652,6 +1653,18 @@ function bindEvents() {
   if (parseManualUrlsBtn) {
     parseManualUrlsBtn.addEventListener('click', parseManualUrlsFromInput);
   }
+  if (loadFromAssetLibraryBtn) {
+    loadFromAssetLibraryBtn.addEventListener('click', () => {
+      const assetsTabBtn = document.querySelector('[data-tab-target="assets"]');
+      if (assetsTabBtn) {
+        assetsTabBtn.click();
+      } else if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.openOptionsPage) {
+        chrome.storage.local.set({ auto_comment_options_active_tab: 'assets' }, () => {
+          chrome.runtime.openOptionsPage();
+        });
+      }
+    });
+  }
   if (clearManualUrlsBtn) {
     clearManualUrlsBtn.addEventListener('click', () => {
       manualUrlsInput.value = '';
@@ -2224,6 +2237,8 @@ function applyParsedUrlItems(items, options = {}) {
   }
   updateUI();
 }
+
+window.applyParsedUrlItems = applyParsedUrlItems;
 
 function buildManualOriginalRow(url, sourceDomain) {
   return [

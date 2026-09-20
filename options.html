@@ -5,6 +5,7 @@
     <title>LinkPilot 设置</title>
     <link rel="icon" type="image/png" sizes="32x32" href="icons/icon32.png" />
     <link rel="icon" type="image/svg+xml" href="icons/logo.svg" />
+    <link rel="stylesheet" href="asset-library.css" />
     <style>
       * {
         box-sizing: border-box;
@@ -14,15 +15,15 @@
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
           Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
         margin: 0;
-        padding: 28px;
+        padding: 16px 20px;
         background: #f4f5f8;
         color: #1f2937;
       }
 
       .app-shell {
-        width: min(100%, 1760px);
-        max-width: 1760px;
-        margin: 0 auto;
+        width: 100%;
+        max-width: 100%;
+        margin: 0;
       }
 
       .page-header {
@@ -1545,6 +1546,7 @@
         <nav class="sidebar" aria-label="设置分类">
           <button class="tab-btn active" type="button" data-tab-target="ai">AI 配置</button>
           <button class="tab-btn" type="button" data-tab-target="site">目标 URL 管理</button>
+          <button class="tab-btn" type="button" data-tab-target="assets">外链资产库</button>
           <button class="tab-btn" type="button" data-tab-target="batch">批量自动外链</button>
           <button class="tab-btn" type="button" data-tab-target="other">其他设置</button>
         </nav>
@@ -1692,6 +1694,10 @@
             </div>
           </section>
 
+          <section class="tab-panel" data-tab-panel="assets">
+            <div id="assetLibraryContainer"></div>
+          </section>
+
           <section class="tab-panel" data-tab-panel="batch">
             <div class="section-head">
               <div>
@@ -1749,6 +1755,7 @@
                   <textarea id="manualUrlsInput" class="manual-url-textarea" rows="7" placeholder="一行一个 URL，例如：&#10;https://example.com/post-a&#10;https://example.com/post-b"></textarea>
                   <div class="manual-url-tools">
                     <button class="btn btn-secondary" id="parseManualUrlsBtn" type="button">解析引荐 URL</button>
+                    <button class="btn btn-secondary" id="loadFromAssetLibraryBtn" type="button" title="从外链资产库中筛选优质外链载入本任务">📚 从外链资产库载入</button>
                     <button class="btn btn-secondary" id="clearManualUrlsBtn" type="button">清空粘贴内容</button>
                   </div>
                   <div class="hint">支持一行一个 URL；也兼容用空格、逗号分隔。未写协议时会自动补全为 https://。</div>
@@ -2146,5 +2153,6 @@
     <script src="illegal-site-filter.js"></script>
     <script src="options.js"></script>
     <script src="batch.js"></script>
+    <script src="asset-library.js"></script>
   </body>
 </html>

@@ -15,6 +15,8 @@ const requiredFiles = [
   'options.js',
   'batch.html',
   'batch.js',
+  'asset-library.js',
+  'asset-library.css',
   'lib/papaparse.min.js'
 ];
 
@@ -50,7 +52,8 @@ function validateJavaScriptSyntax() {
     'content.js',
     'illegal-site-filter.js',
     'options.js',
-    'batch.js'
+    'batch.js',
+    'asset-library.js'
   ];
 
   for (const file of jsFiles) {
@@ -68,7 +71,7 @@ function validateJavaScriptSyntax() {
  * 按设置页真实加载顺序组合解析普通脚本，捕获单文件语法检查无法发现的顶层 const/let 重名问题。
  */
 function validateOptionsPageScriptScope() {
-  const scriptFiles = ['illegal-site-filter.js', 'options.js', 'batch.js'];
+  const scriptFiles = ['illegal-site-filter.js', 'options.js', 'batch.js', 'asset-library.js'];
   const combinedSource = scriptFiles
     .map((file) => `\n// 来源文件：${file}\n${readFileSync(path.join(rootDir, file), 'utf8')}`)
     .join('\n');
@@ -87,6 +90,7 @@ function validateBatchUiBindings() {
   const optionsHtml = readFileSync(path.join(rootDir, 'options.html'), 'utf8');
   const batchHtml = readFileSync(path.join(rootDir, 'batch.html'), 'utf8');
   const requiredElementIds = [
+    'loadFromAssetLibraryBtn',
     'databasePersistence',
     'databasePersistenceMessage',
     'retryDatabaseBtn',

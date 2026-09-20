@@ -4,7 +4,7 @@
   "description": "LinkPilot - 个人本地版 Chrome AI 智能外链与博客推广插件",
   "type": "module",
   "scripts": {
-    "db:migrate": "PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5499} PGDATABASE=${PGDATABASE:-bi} psql -v ON_ERROR_STOP=1 -f server/migrations/001_init.sql -f server/migrations/002_add_execution_timestamps.sql",
+    "db:migrate": "PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5499} PGDATABASE=${PGDATABASE:-bi} psql -v ON_ERROR_STOP=1 -f server/migrations/001_init.sql -f server/migrations/002_add_execution_timestamps.sql -f server/migrations/003_create_backlink_assets.sql",
     "server:start": "node server/index.js",
     "validate": "node scripts/validate-extension.js",
     "test": "pnpm validate"

@@ -73,6 +73,7 @@ function quoteSchemaName(schema) {
 const schemaSql = quoteSchemaName(config.pgSchema);
 const runsTable = `${schemaSql}.auto_comment_runs`;
 const runItemsTable = `${schemaSql}.auto_comment_run_items`;
+const assetsTable = `${schemaSql}.backlink_assets`;
 
 /**
  * 将任意 URL 或域名转换成标准域名：去掉协议、路径和开头的 www.，并统一小写。
@@ -349,6 +350,12 @@ async function syncRunResults(payload) {
     if (persistedCount !== items.length) {
       throw new Error(`数据库校验失败：应写入 ${items.length} 条明细，实际 ${persistedCount} 条`);
     }
+    const distinctDomains = Array.from(
+      new Set(items.map((i) => normalizeDomain(i.referralDomain || i.referralUrl)).filter(Boolean))
+    );
+    if (distinctDomains.length > 0) {
+      await refreshAssetsForDomains(distinctDomains, client);
+    }
     await client.query('commit');
     return { run, persistedCount };
   } catch (error) {
@@ -425,6 +432,538 @@ async function listTargetSuccessItems(targetUrl) {
 }
 
 /**
+ * 刷新指定域名的资产统计指标。从运行明细中重新聚合成功率、次数与最新状态。
+ */
+async function refreshAssetsForDomains(domains, database = pool) {
+  const cleanDomains = Array.from(new Set((domains || []).map(normalizeDomain).filter(Boolean)));
+  if (cleanDomains.length === 0) return 0;
+
+  const result = await database.query(
+    `
+      insert into ${assetsTable} (
+        referral_domain, referral_url, resource_type, quality_tier, source_channel,
+        total_attempts, success_count, fail_count, skipped_count, manual_count,
+        no_box_count, blocked_count, success_rate, last_run_result, last_run_message,
+        last_executed_at, updated_at
+      )
+      with latest_items as (
+        select distinct on (referral_domain)
+          referral_domain, referral_url, result, result_message, executed_at
+        from ${runItemsTable}
+        where referral_domain = any($1::text[])
+        order by referral_domain, executed_at desc, id desc
+      ),
+      agg_stats as (
+        select
+          referral_domain,
+          count(*)::integer as total_attempts,
+          count(case when result = 'success' then 1 end)::integer as success_count,
+          count(case when result = 'fail' then 1 end)::integer as fail_count,
+          count(case when result = 'skipped' then 1 end)::integer as skipped_count,
+          count(case when result = 'manual_required' then 1 end)::integer as manual_count,
+          count(case when result = 'no_comment_box' then 1 end)::integer as no_box_count,
+          count(case when result = 'blocked_illegal' then 1 end)::integer as blocked_count,
+          max(executed_at) as last_exec_at
+        from ${runItemsTable}
+        where referral_domain = any($1::text[])
+        group by referral_domain
+      )
+      select
+        s.referral_domain,
+        l.referral_url,
+        'blog_comment' as resource_type,
+        case
+          when s.blocked_count > 0 and s.success_count = 0 then 'blacklisted'
+          when s.success_count >= 1 and (s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+          when l.result = 'manual_required' then 'manual_needed'
+          when s.no_box_count >= 2 or (s.total_attempts >= 2 and s.success_count = 0) then 'broken'
+          when s.success_count > 0 then 'high_quality'
+          else 'untested'
+        end as quality_tier,
+        'run_harvest' as source_channel,
+        s.total_attempts,
+        s.success_count,
+        s.fail_count,
+        s.skipped_count,
+        s.manual_count,
+        s.no_box_count,
+        s.blocked_count,
+        round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
+        l.result as last_run_result,
+        coalesce(l.result_message, '') as last_run_message,
+        coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
+        now() as updated_at
+      from agg_stats s
+      join latest_items l on s.referral_domain = l.referral_domain
+      on conflict (referral_domain) do update set
+        referral_url = excluded.referral_url,
+        total_attempts = excluded.total_attempts,
+        success_count = excluded.success_count,
+        fail_count = excluded.fail_count,
+        skipped_count = excluded.skipped_count,
+        manual_count = excluded.manual_count,
+        no_box_count = excluded.no_box_count,
+        blocked_count = excluded.blocked_count,
+        success_rate = excluded.success_rate,
+        last_run_result = excluded.last_run_result,
+        last_run_message = excluded.last_run_message,
+        last_executed_at = excluded.last_executed_at,
+        quality_tier = case
+          when ${assetsTable}.quality_tier = 'blacklisted' then 'blacklisted'
+          else excluded.quality_tier
+        end,
+        updated_at = now()
+    `,
+    [cleanDomains]
+  );
+  return result.rowCount;
+}
+
+/**
+ * 历史数据全量建库回填。
+ */
+async function bootstrapAssets(database = pool) {
+  const result = await database.query(
+    `
+      insert into ${assetsTable} (
+        referral_domain, referral_url, resource_type, quality_tier, source_channel,
+        total_attempts, success_count, fail_count, skipped_count, manual_count,
+        no_box_count, blocked_count, success_rate, last_run_result, last_run_message,
+        last_executed_at, created_at, updated_at
+      )
+      with latest_items as (
+        select distinct on (referral_domain)
+          referral_domain, referral_url, result, result_message, executed_at
+        from ${runItemsTable}
+        where referral_domain <> ''
+        order by referral_domain, executed_at desc, id desc
+      ),
+      agg_stats as (
+        select
+          referral_domain,
+          count(*)::integer as total_attempts,
+          count(case when result = 'success' then 1 end)::integer as success_count,
+          count(case when result = 'fail' then 1 end)::integer as fail_count,
+          count(case when result = 'skipped' then 1 end)::integer as skipped_count,
+          count(case when result = 'manual_required' then 1 end)::integer as manual_count,
+          count(case when result = 'no_comment_box' then 1 end)::integer as no_box_count,
+          count(case when result = 'blocked_illegal' then 1 end)::integer as blocked_count,
+          min(created_at) as first_seen_at,
+          max(executed_at) as last_exec_at
+        from ${runItemsTable}
+        where referral_domain <> ''
+        group by referral_domain
+      )
+      select
+        s.referral_domain,
+        l.referral_url,
+        'blog_comment' as resource_type,
+        case
+          when s.blocked_count > 0 and s.success_count = 0 then 'blacklisted'
+          when s.success_count >= 1 and (s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric >= 0.5 then 'high_quality'
+          when l.result = 'manual_required' then 'manual_needed'
+          when s.no_box_count >= 2 or (s.total_attempts >= 2 and s.success_count = 0) then 'broken'
+          when s.success_count > 0 then 'high_quality'
+          else 'untested'
+        end as quality_tier,
+        'run_harvest' as source_channel,
+        s.total_attempts,
+        s.success_count,
+        s.fail_count,
+        s.skipped_count,
+        s.manual_count,
+        s.no_box_count,
+        s.blocked_count,
+        round(((s.success_count + s.skipped_count)::numeric / s.total_attempts::numeric) * 100, 2) as success_rate,
+        l.result as last_run_result,
+        coalesce(l.result_message, '') as last_run_message,
+        coalesce(l.executed_at, s.last_exec_at) as last_executed_at,
+        coalesce(s.first_seen_at, now()) as created_at,
+        now() as updated_at
+      from agg_stats s
+      join latest_items l on s.referral_domain = l.referral_domain
+      on conflict (referral_domain) do update set
+        referral_url = excluded.referral_url,
+        total_attempts = excluded.total_attempts,
+        success_count = excluded.success_count,
+        fail_count = excluded.fail_count,
+        skipped_count = excluded.skipped_count,
+        manual_count = excluded.manual_count,
+        no_box_count = excluded.no_box_count,
+        blocked_count = excluded.blocked_count,
+        success_rate = excluded.success_rate,
+        last_run_result = excluded.last_run_result,
+        last_run_message = excluded.last_run_message,
+        last_executed_at = excluded.last_executed_at,
+        quality_tier = case
+          when ${assetsTable}.quality_tier = 'blacklisted' then 'blacklisted'
+          else excluded.quality_tier
+        end,
+        updated_at = now()
+    `
+  );
+  return { updatedCount: result.rowCount };
+}
+
+/**
+ * 获取外链资产库总体指标概览（各等级数量、各类型数量、平均成功率）。
+ */
+async function getAssetsSummary(database = pool) {
+  const summaryResult = await database.query(
+    `
+      select
+        count(*)::integer as total,
+        count(case when quality_tier = 'high_quality' then 1 end)::integer as high_quality_count,
+        count(case when quality_tier = 'manual_needed' then 1 end)::integer as manual_needed_count,
+        count(case when quality_tier = 'broken' then 1 end)::integer as broken_count,
+        count(case when quality_tier = 'untested' then 1 end)::integer as untested_count,
+        count(case when quality_tier = 'blacklisted' then 1 end)::integer as blacklisted_count,
+        coalesce(round(avg(case when total_attempts > 0 then success_rate end), 1), 0)::numeric as avg_success_rate
+      from ${assetsTable}
+    `
+  );
+
+  const typesResult = await database.query(
+    `
+      select resource_type, count(*)::integer as count
+      from ${assetsTable}
+      group by resource_type
+    `
+  );
+
+  const byType = {};
+  typesResult.rows.forEach((row) => {
+    byType[row.resource_type] = row.count;
+  });
+
+  const row = summaryResult.rows[0] || {};
+  return {
+    total: Number(row.total || 0),
+    highQualityCount: Number(row.high_quality_count || 0),
+    manualNeededCount: Number(row.manual_needed_count || 0),
+    brokenCount: Number(row.broken_count || 0),
+    untestedCount: Number(row.untested_count || 0),
+    blacklistedCount: Number(row.blacklisted_count || 0),
+    avgSuccessRate: Number(row.avg_success_rate || 0),
+    byType
+  };
+}
+
+/**
+ * 分页、多维度过滤查询外链资产列表。
+ */
+async function listAssets(params, database = pool) {
+  const page = Math.max(1, Number(params.page || 1));
+  const pageSize = Math.min(200, Math.max(10, Number(params.pageSize || 50)));
+  const offset = (page - 1) * pageSize;
+
+  const resourceType = String(params.resourceType || 'all').trim();
+  const qualityTier = String(params.qualityTier || 'all').trim();
+  const minSuccessRate = numberOrNull(params.minSuccessRate);
+  const maxSuccessRate = numberOrNull(params.maxSuccessRate);
+  const targetDomain = normalizeDomain(params.targetDomain || '');
+  const targetSiteStatus = String(params.targetSiteStatus || 'all').trim();
+  const keyword = String(params.keyword || '').trim();
+
+  const allowedSortCols = {
+    success_rate: 'a.success_rate',
+    total_attempts: 'a.total_attempts',
+    last_executed_at: 'a.last_executed_at',
+    created_at: 'a.created_at',
+    referral_domain: 'a.referral_domain'
+  };
+  const sortByCol = allowedSortCols[params.sortBy] || 'a.success_rate';
+  const sortOrder = String(params.sortOrder || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+
+  const whereConditions = [];
+  const values = [];
+  let paramIndex = 1;
+
+  if (resourceType && resourceType !== 'all') {
+    whereConditions.push(`a.resource_type = $${paramIndex++}`);
+    values.push(resourceType);
+  }
+
+  if (qualityTier && qualityTier !== 'all') {
+    whereConditions.push(`a.quality_tier = $${paramIndex++}`);
+    values.push(qualityTier);
+  }
+
+  if (minSuccessRate !== null) {
+    whereConditions.push(`a.success_rate >= $${paramIndex++}`);
+    values.push(minSuccessRate);
+  }
+
+  if (maxSuccessRate !== null) {
+    whereConditions.push(`a.success_rate <= $${paramIndex++}`);
+    values.push(maxSuccessRate);
+  }
+
+  if (targetDomain && targetSiteStatus === 'never_succeeded') {
+    whereConditions.push(`not exists (
+      select 1 from ${runItemsTable} i
+      where i.referral_domain = a.referral_domain
+        and (i.target_domain = $${paramIndex} or i.target_url like '%' || $${paramIndex} || '%')
+        and i.result in ('success', 'skipped')
+    )`);
+    values.push(targetDomain);
+    paramIndex++;
+  } else if (targetDomain && targetSiteStatus === 'succeeded') {
+    whereConditions.push(`exists (
+      select 1 from ${runItemsTable} i
+      where i.referral_domain = a.referral_domain
+        and (i.target_domain = $${paramIndex} or i.target_url like '%' || $${paramIndex} || '%')
+        and i.result in ('success', 'skipped')
+    )`);
+    values.push(targetDomain);
+    paramIndex++;
+  } else if (targetDomain && targetSiteStatus === 'never_run') {
+    whereConditions.push(`not exists (
+      select 1 from ${runItemsTable} i
+      where i.referral_domain = a.referral_domain
+        and (i.target_domain = $${paramIndex} or i.target_url like '%' || $${paramIndex} || '%')
+    )`);
+    values.push(targetDomain);
+    paramIndex++;
+  }
+
+  if (keyword) {
+    whereConditions.push(`(
+      a.referral_domain ilike $${paramIndex}
+      or a.referral_url ilike $${paramIndex}
+      or a.notes ilike $${paramIndex}
+      or array_to_string(a.tags, ',') ilike $${paramIndex}
+    )`);
+    values.push(`%${keyword}%`);
+    paramIndex++;
+  }
+
+  const whereClause = whereConditions.length > 0 ? `where ${whereConditions.join(' and ')}` : '';
+
+  const countQuery = `select count(*)::integer as total from ${assetsTable} a ${whereClause}`;
+  const countResult = await database.query(countQuery, values);
+  const total = countResult.rows[0].total;
+
+  const dataQuery = `
+    select
+      a.*,
+      coalesce(
+        (select jsonb_agg(jsonb_build_object('target_domain', cov.target_domain, 'success_count', cov.success_count, 'last_success_at', cov.last_success_at))
+         from dw.v_backlink_site_coverage cov
+         where cov.referral_domain = a.referral_domain),
+        '[]'::jsonb
+      ) as target_coverage
+    from ${assetsTable} a
+    ${whereClause}
+    order by ${sortByCol} ${sortOrder} nulls last, a.referral_domain asc
+    limit $${paramIndex++} offset $${paramIndex++}
+  `;
+  const dataResult = await database.query(dataQuery, [...values, pageSize, offset]);
+
+  return {
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize) || 1,
+    items: dataResult.rows
+  };
+}
+
+/**
+ * 批量导入外链资产。支持域名解析、组内去重、库内查重、非法过滤与选择性更新。
+ */
+async function importAssets(payload, database = pool) {
+  const rawItems = Array.isArray(payload && payload.items) ? payload.items : [];
+  const duplicateStrategy = payload && payload.duplicateStrategy === 'update_url' ? 'update_url' : 'skip';
+  const defaultType = String(payload && payload.defaultType || 'blog_comment').trim();
+  const sourceChannel = String(payload && payload.sourceChannel || 'batch_import').trim();
+
+  if (rawItems.length === 0) {
+    throw new Error('导入列表为空');
+  }
+
+  const seenInBatch = new Set();
+  const validItems = [];
+  let invalidCount = 0;
+
+  for (const item of rawItems) {
+    const rawUrl = String(item.referralUrl || item.url || '').trim();
+    const rawDomain = String(item.referralDomain || item.domain || '').trim();
+    const normalizedDomain = normalizeDomain(rawDomain || rawUrl);
+
+    if (!normalizedDomain || !normalizedDomain.includes('.') || normalizedDomain === 'localhost') {
+      invalidCount++;
+      continue;
+    }
+
+    if (seenInBatch.has(normalizedDomain)) {
+      continue;
+    }
+    seenInBatch.add(normalizedDomain);
+
+    const fullUrl = rawUrl
+      ? rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+        ? rawUrl
+        : `https://${rawUrl}`
+      : `https://${normalizedDomain}`;
+
+    validItems.push({
+      referral_domain: normalizedDomain,
+      referral_url: fullUrl,
+      resource_type: String(item.resourceType || defaultType || 'blog_comment').trim(),
+      source_channel: sourceChannel,
+      domain_rating: numberOrNull(item.domainRating || item.asScore),
+      organic_traffic: numberOrNull(item.organicTraffic),
+      tags: Array.isArray(item.tags)
+        ? item.tags
+        : item.tags
+        ? String(item.tags).split(',').map((t) => t.trim()).filter(Boolean)
+        : [],
+      notes: String(item.notes || '').trim()
+    });
+  }
+
+  if (validItems.length === 0) {
+    return {
+      total: rawItems.length,
+      insertedCount: 0,
+      skippedCount: 0,
+      invalidCount,
+      insertedDomains: [],
+      skippedDomains: []
+    };
+  }
+
+  const allDomains = validItems.map((i) => i.referral_domain);
+  const existingRes = await database.query(
+    `select referral_domain from ${assetsTable} where referral_domain = any($1::text[])`,
+    [allDomains]
+  );
+  const existingSet = new Set(existingRes.rows.map((r) => r.referral_domain));
+
+  const toInsert = [];
+  const toSkip = [];
+
+  validItems.forEach((item) => {
+    if (existingSet.has(item.referral_domain)) {
+      toSkip.push(item);
+    } else {
+      toInsert.push(item);
+    }
+  });
+
+  if (toInsert.length > 0) {
+    const chunkSize = 200;
+    for (let i = 0; i < toInsert.length; i += chunkSize) {
+      const chunk = toInsert.slice(i, i + chunkSize);
+      const valuePlaceholders = [];
+      const queryValues = [];
+      let idx = 1;
+
+      chunk.forEach((item) => {
+        valuePlaceholders.push(`($${idx++}, $${idx++}, $${idx++}, 'untested', $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+        queryValues.push(
+          item.referral_domain,
+          item.referral_url,
+          item.resource_type,
+          item.source_channel,
+          item.domain_rating,
+          item.organic_traffic,
+          item.tags,
+          item.notes
+        );
+      });
+
+      await database.query(
+        `
+          insert into ${assetsTable} (
+            referral_domain, referral_url, resource_type, quality_tier,
+            source_channel, domain_rating, organic_traffic, tags, notes
+          )
+          values ${valuePlaceholders.join(', ')}
+          on conflict (referral_domain) do nothing
+        `,
+        queryValues
+      );
+    }
+  }
+
+  if (duplicateStrategy === 'update_url' && toSkip.length > 0) {
+    for (const item of toSkip) {
+      await database.query(
+        `update ${assetsTable} set referral_url = $2, updated_at = now() where referral_domain = $1`,
+        [item.referral_domain, item.referral_url]
+      );
+    }
+  }
+
+  return {
+    total: rawItems.length,
+    insertedCount: toInsert.length,
+    skippedCount: toSkip.length,
+    invalidCount,
+    insertedDomains: toInsert.slice(0, 100).map((i) => i.referral_domain),
+    skippedDomains: toSkip.slice(0, 100).map((i) => i.referral_domain)
+  };
+}
+
+/**
+ * 更新单条外链资产信息。
+ */
+async function updateAsset(domain, payload, database = pool) {
+  const normalizedDomain = normalizeDomain(domain);
+  if (!normalizedDomain) throw new Error('缺少合法域名');
+
+  const fields = [];
+  const values = [normalizedDomain];
+  let idx = 2;
+
+  if (payload.resourceType !== undefined) {
+    fields.push(`resource_type = $${idx++}`);
+    values.push(String(payload.resourceType || 'blog_comment').trim());
+  }
+  if (payload.referralUrl !== undefined) {
+    fields.push(`referral_url = $${idx++}`);
+    values.push(String(payload.referralUrl).trim());
+  }
+  if (payload.qualityTier !== undefined) {
+    fields.push(`quality_tier = $${idx++}`);
+    values.push(String(payload.qualityTier).trim());
+  }
+  if (payload.notes !== undefined) {
+    fields.push(`notes = $${idx++}`);
+    values.push(String(payload.notes).trim());
+  }
+  if (payload.tags !== undefined) {
+    fields.push(`tags = $${idx++}`);
+    values.push(Array.isArray(payload.tags) ? payload.tags : []);
+  }
+
+  if (fields.length === 0) return null;
+
+  fields.push('updated_at = now()');
+  const result = await database.query(
+    `update ${assetsTable} set ${fields.join(', ')} where referral_domain = $1 returning *`,
+    values
+  );
+  if (result.rowCount === 0) throw new Error(`外链资产不存在：${normalizedDomain}`);
+  return result.rows[0];
+}
+
+/**
+ * 批量删除外链资产。
+ */
+async function batchDeleteAssets(domains, database = pool) {
+  const cleanDomains = Array.from(new Set((domains || []).map(normalizeDomain).filter(Boolean)));
+  if (cleanDomains.length === 0) return { deletedCount: 0 };
+  const result = await database.query(
+    `delete from ${assetsTable} where referral_domain = any($1::text[])`,
+    [cleanDomains]
+  );
+  return { deletedCount: result.rowCount };
+}
+
+/**
  * 使用极简路由处理本地 API，避免为个人本地服务引入较重的 Web 框架。
  */
 async function handleRequest(request, response) {
@@ -496,6 +1035,48 @@ async function handleRequest(request, response) {
       const result = await pool.query(`delete from ${runsTable} where id = $1 returning id`, [runId]);
       const deleted = result.rowCount > 0;
       writeJson(response, 200, { ok: true, data: { deleted, runId } });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/assets/summary') {
+      writeJson(response, 200, { ok: true, data: await getAssetsSummary() });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/assets') {
+      const params = Object.fromEntries(url.searchParams.entries());
+      writeJson(response, 200, { ok: true, data: await listAssets(params) });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/assets/bootstrap') {
+      writeJson(response, 200, { ok: true, data: await bootstrapAssets() });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/assets/import') {
+      const payload = await readJsonBody(request);
+      writeJson(response, 200, { ok: true, data: await importAssets(payload) });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/assets/batch-delete') {
+      const payload = await readJsonBody(request);
+      writeJson(response, 200, { ok: true, data: await batchDeleteAssets(payload && payload.domains) });
+      return;
+    }
+
+    const assetDomainMatch = url.pathname.match(/^\/api\/assets\/([^/]+)$/);
+    if (method === 'PATCH' && assetDomainMatch) {
+      const domain = decodeURIComponent(assetDomainMatch[1]);
+      const payload = await readJsonBody(request);
+      writeJson(response, 200, { ok: true, data: await updateAsset(domain, payload) });
+      return;
+    }
+
+    if (method === 'DELETE' && assetDomainMatch) {
+      const domain = decodeURIComponent(assetDomainMatch[1]);
+      writeJson(response, 200, { ok: true, data: await batchDeleteAssets([domain]) });
       return;
     }
 

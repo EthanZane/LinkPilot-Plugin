@@ -166,6 +166,9 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       chrome.storage.local.set({ auto_comment_options_active_tab: targetName }, () => {});
     } catch (_) {}
+    if (targetName === 'assets' && typeof window !== 'undefined' && window.LinkPilotAssetLibrary) {
+      window.LinkPilotAssetLibrary.refresh();
+    }
   }
 
   function initTabs() {
