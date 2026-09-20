@@ -95,6 +95,48 @@
   border-bottom: 1px solid #e2e8f0;
 }
 
+.probe-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.probe-search-input {
+  width: 220px;
+  height: 31px;
+  padding: 4px 28px 4px 28px;
+  font-size: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  outline: none;
+  background: #f8fafc;
+  color: #1e293b;
+  transition: all 0.2s ease-in-out;
+}
+
+.probe-search-input:focus {
+  border-color: #3b82f6;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+  width: 260px;
+}
+
+.probe-search-clear-btn {
+  display: none;
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+}
+
+.probe-search-clear-btn:hover {
+  color: #475569;
+}
+
 .probe-table-wrap {
   width: 100%;
   overflow-x: auto;
