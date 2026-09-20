@@ -394,19 +394,27 @@ export async function probeSingleUrl(targetUrl, options = {}) {
  */
 class ProbeSessionManager {
   constructor() {
-    this.currentSession = null;
+    this.sessions = new Map();
+    this.latestSessionId = null;
+  }
+
+  get currentSession() {
+    return this.latestSessionId ? this.sessions.get(this.latestSessionId) : null;
+  }
+
+  set currentSession(val) {
+    if (val && val.id) {
+      this.sessions.set(val.id, val);
+      this.latestSessionId = val.id;
+    }
   }
 
   /**
    * 启动一次批量探测任务
    * @param {string[]} urls 待探测的 URL 列表
-   * @param {object} options 并发度、超时、库内已有映射等
+   * @param {object} options 并发度、超时、库内已有映射、sessionId 等
    */
   startSession(urls, options = {}) {
-    if (this.currentSession && this.currentSession.status === 'running') {
-      throw new Error('已有正在执行的探测任务，请等待完成或先点击中止');
-    }
-
     const rawList = (urls || [])
       .map((u) => String(u || '').trim())
       .filter((u) => u && !u.startsWith('#') && !u.startsWith('//'));
@@ -446,7 +454,26 @@ class ProbeSessionManager {
     const existingLibraryMap = options.existingLibraryMap || null;
     const skipExisting = options.skipExisting !== false && Boolean(existingLibraryMap);
 
-    const sessionId = `probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const sessionId = options.sessionId || `probe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    if (this.sessions.has(sessionId)) {
+      const existingSession = this.sessions.get(sessionId);
+      if (existingSession && existingSession.status === 'running') {
+        throw new Error('该探测任务正在执行中，请等待完成或先点击中止');
+      }
+    }
+
+    // 清理老旧会话（保留最近 50 个）
+    if (this.sessions.size > 50) {
+      const keys = Array.from(this.sessions.keys());
+      for (let i = 0; i < keys.length - 40; i++) {
+        const oldS = this.sessions.get(keys[i]);
+        if (oldS && oldS.status !== 'running') {
+          this.sessions.delete(keys[i]);
+        }
+      }
+    }
+
     const session = {
       id: sessionId,
       status: 'running', // 'running' | 'completed' | 'canceled'
@@ -473,7 +500,8 @@ class ProbeSessionManager {
       cancelRequested: false
     };
 
-    this.currentSession = session;
+    this.sessions.set(sessionId, session);
+    this.latestSessionId = sessionId;
 
     // 2. 检查资产库：已存在的引荐域名直接跳过网络探测，并计入独立分类
     const toProbeList = [];
@@ -627,28 +655,47 @@ class ProbeSessionManager {
   }
 
   /**
-   * 取消当前任务
+   * 取消任务（支持指定 sessionId，默认取消最近任务）
    */
-  cancelSession() {
-    if (!this.currentSession || this.currentSession.status !== 'running') {
+  cancelSession(sessionId) {
+    const targetSessionId = sessionId || this.latestSessionId;
+    if (!targetSessionId || !this.sessions.has(targetSessionId)) {
       return { ok: false, message: '当前没有正在运行的探测任务' };
     }
-    this.currentSession.cancelRequested = true;
+    const session = this.sessions.get(targetSessionId);
+    if (session.status !== 'running') {
+      return { ok: false, message: '当前探测任务未在运行' };
+    }
+    session.cancelRequested = true;
     return { ok: true, message: '已发出中止信号' };
   }
 
   /**
-   * 获取当前任务状态与结果
+   * 获取任务状态与结果（支持指定 sessionId 或兼容直接传 limit/offset）
    */
-  getSessionStatus(limit = 200, offset = 0) {
-    if (!this.currentSession) {
+  getSessionStatus(sessionIdOrLimit = 200, limitOrOffset = 0, offsetVal = 0) {
+    let targetSessionId = null;
+    let limit = 200;
+    let offset = 0;
+
+    if (typeof sessionIdOrLimit === 'string') {
+      targetSessionId = sessionIdOrLimit;
+      if (typeof limitOrOffset === 'number') limit = limitOrOffset;
+      if (typeof offsetVal === 'number') offset = offsetVal;
+    } else {
+      targetSessionId = this.latestSessionId;
+      if (typeof sessionIdOrLimit === 'number') limit = sessionIdOrLimit;
+      if (typeof limitOrOffset === 'number') offset = limitOrOffset;
+    }
+
+    if (!targetSessionId || !this.sessions.has(targetSessionId)) {
       return {
         hasSession: false,
         session: null
       };
     }
 
-    const s = this.currentSession;
+    const s = this.sessions.get(targetSessionId);
     const elapsedSeconds = Math.round(((s.endTime || Date.now()) - s.startTime) / 1000);
     const progressPercent = s.total > 0 ? Math.round((s.processed / s.total) * 100) : 0;
 

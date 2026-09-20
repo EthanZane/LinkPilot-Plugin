@@ -828,6 +828,36 @@ async function listAssets(params, database = pool) {
   const countResult = await database.query(countQuery, values);
   const total = countResult.rows[0].total;
 
+  const isExportAll =
+    params.exportAll === true ||
+    params.exportAll === 'true' ||
+    params.export === 'true' ||
+    String(params.pageSize || '').toLowerCase() === 'all';
+
+  if (isExportAll) {
+    const dataQuery = `
+      select
+        a.*,
+        coalesce(
+          (select jsonb_agg(jsonb_build_object('target_domain', cov.target_domain, 'success_count', cov.success_count, 'last_success_at', cov.last_success_at))
+           from dw.v_backlink_site_coverage cov
+           where cov.referral_domain = a.referral_domain),
+          '[]'::jsonb
+        ) as target_coverage
+      from ${assetsTable} a
+      ${whereClause}
+      order by ${sortByCol} ${sortOrder} nulls last, a.referral_domain asc
+    `;
+    const dataResult = await database.query(dataQuery, values);
+    return {
+      total,
+      page: 1,
+      pageSize: total,
+      totalPages: 1,
+      items: dataResult.rows
+    };
+  }
+
   const dataQuery = `
     select
       a.*,
@@ -1177,8 +1207,11 @@ async function handleRequest(request, response) {
       return;
     }
 
-    if (method === 'GET' && url.pathname === '/api/assets') {
+    if (method === 'GET' && (url.pathname === '/api/assets' || url.pathname === '/api/assets/export')) {
       const params = Object.fromEntries(url.searchParams.entries());
+      if (url.pathname === '/api/assets/export') {
+        params.exportAll = true;
+      }
       writeJson(response, 200, { ok: true, data: await listAssets(params) });
       return;
     }
@@ -1221,6 +1254,7 @@ async function handleRequest(request, response) {
       const concurrency = payload && payload.concurrency;
       const timeoutMs = payload && payload.timeoutMs;
       const skipExisting = payload && payload.skipExisting !== false;
+      const sessionId = payload && payload.sessionId ? String(payload.sessionId) : undefined;
 
       let existingLibraryMap = null;
       if (skipExisting) {
@@ -1239,6 +1273,7 @@ async function handleRequest(request, response) {
       }
 
       const session = probeManager.startSession(urls, {
+        sessionId,
         concurrency,
         timeoutMs,
         existingLibraryMap,
@@ -1249,15 +1284,18 @@ async function handleRequest(request, response) {
     }
 
     if (method === 'GET' && url.pathname === '/api/probe/status') {
+      const sessionId = url.searchParams.get('sessionId') || undefined;
       const limit = Number(url.searchParams.get('limit') || 500);
       const offset = Number(url.searchParams.get('offset') || 0);
-      const statusData = probeManager.getSessionStatus(limit, offset);
+      const statusData = probeManager.getSessionStatus(sessionId, limit, offset);
       writeJson(response, 200, { ok: true, data: statusData });
       return;
     }
 
     if (method === 'POST' && url.pathname === '/api/probe/cancel') {
-      const res = probeManager.cancelSession();
+      const payload = await readJsonBody(request).catch(() => ({}));
+      const sessionId = payload && payload.sessionId ? String(payload.sessionId) : undefined;
+      const res = probeManager.cancelSession(sessionId);
       writeJson(response, 200, { ok: true, data: res });
       return;
     }

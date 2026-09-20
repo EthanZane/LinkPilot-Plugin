@@ -225,6 +225,7 @@
             <div class="section-desc">将实际执行过与外部导入的外链沉淀为持久资产。支持多维表现统计、智能质量评级、目标站点隔离筛选与一键投产。</div>
           </div>
           <div class="asset-header-actions">
+            <button type="button" class="btn btn-secondary" id="assetExportBtn" title="把当前所有筛选与搜索条件匹配的全部数据导出为 Excel (CSV) 表格（导出全部匹配数据，非仅当前页）">📊 导出当前结果 (Excel)</button>
             <button type="button" class="btn btn-secondary" id="assetBootstrapBtn" title="扫描历史运行批次，一键回填建库">🔄 从历史任务建库</button>
             <button type="button" class="btn btn-primary" id="assetOpenImportModalBtn">📥 批量导入外链</button>
             <button type="button" class="btn btn-secondary" id="assetRefreshBtn" title="刷新列表与指标">🔄 刷新</button>
@@ -408,7 +409,10 @@
 
           <!-- 分页控件 -->
           <div class="asset-pagination">
-            <div class="asset-page-info" id="assetPaginationInfo">显示 0 - 0 条，共 0 条</div>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <div class="asset-page-info" id="assetPaginationInfo">显示 0 - 0 条，共 0 条</div>
+              <button type="button" class="btn btn-secondary btn-xs" id="assetExportFooterBtn" title="把当前查询与筛选条件匹配的全部数据导出为 Excel (CSV) 表格（非仅当前页）">📊 导出全部查询结果 (Excel)</button>
+            </div>
             <div class="asset-page-controls">
               <label style="font-size:12px;color:#64748b;margin-right:6px;">每页：</label>
               <select id="assetPageSizeSelect" style="width:70px;padding:3px 6px;margin-right:12px;">
@@ -471,6 +475,34 @@
               </div>
             </div>
 
+            <!-- 博客评论智能侦测配置区 -->
+            <div id="assetImportProbeConfigBox" style="margin-top:12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;font-size:12px;">
+              <div style="display:flex;align-items:flex-start;gap:8px;">
+                <input type="checkbox" id="assetImportEnableProbe" checked style="margin-top:2px;cursor:pointer;" />
+                <div style="flex:1;">
+                  <label for="assetImportEnableProbe" style="font-weight:700;color:#1e1b4b;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    <span>启用博客表单智能侦测（推荐）</span>
+                    <span style="background:#4338ca;color:#fff;font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;">高质量防污染</span>
+                  </label>
+                  <div style="color:#4338ca;margin-top:3px;font-size:11px;line-height:1.5;">
+                    自动高并发深度侦探页面源码表单，<strong>仅将真实开放评论的博客页面入库</strong>；自动过滤拦截非博客（新闻/电商/404）、评论已关闭、需登录页面。
+                  </div>
+                  <div id="assetImportProbeSettings" style="display:flex;align-items:center;gap:12px;margin-top:6px;font-size:11px;">
+                    <label style="color:#334155;font-weight:600;display:flex;align-items:center;gap:4px;">
+                      并发线程：
+                      <select id="assetImportProbeConcurrency" style="padding:2px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;">
+                        <option value="10">10 并发</option>
+                        <option value="20" selected>20 并发 (推荐)</option>
+                        <option value="30">30 并发</option>
+                        <option value="50">50 并发 (极速)</option>
+                      </select>
+                    </label>
+                    <span style="color:#64748b;">单页超时：8秒</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div style="margin-top:12px;padding:10px 12px;background:#f1f5f9;border-radius:8px;font-size:12px;">
               <div style="font-weight:600;color:#334155;margin-bottom:6px;">查重与过滤策略：</div>
               <div style="display:flex;flex-direction:column;gap:6px;">
@@ -489,21 +521,63 @@
               </div>
             </div>
 
+            <!-- 实时并发侦测进度条与动态看板 -->
+            <div id="assetImportProgressSection" style="display:none;margin-top:14px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12px;">
+                <span style="font-weight:600;color:#1e293b;display:flex;align-items:center;gap:6px;">
+                  <span class="probe-pulse">⚡</span>
+                  <span id="assetImportProgressTitle">正在高并发侦测博客表单...</span>
+                </span>
+                <span style="font-weight:700;color:#2563eb;" id="assetImportProgressPercent">0% (0 / 0)</span>
+              </div>
+              <div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;margin-bottom:10px;">
+                <div id="assetImportProgressBar" style="height:100%;width:0%;background:#2563eb;transition:width 0.2s;"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:6px;font-size:11px;text-align:center;">
+                <div style="background:#ecfdf5;color:#065f46;padding:5px 6px;border-radius:6px;border:1px solid #a7f3d0;">
+                  <div style="font-size:10px;color:#047857;">开放博客</div>
+                  <strong id="liveValidCount" style="font-size:14px;font-weight:800;">0</strong>
+                </div>
+                <div style="background:#eff6ff;color:#1e40af;padding:5px 6px;border-radius:6px;border:1px solid #bfdbfe;">
+                  <div style="font-size:10px;color:#1d4ed8;">库内已有跳过</div>
+                  <strong id="liveSkipCount" style="font-size:14px;font-weight:800;">0</strong>
+                </div>
+                <div style="background:#fffbeb;color:#92400e;padding:5px 6px;border-radius:6px;border:1px solid #fde68a;">
+                  <div style="font-size:10px;color:#b45309;">评论关闭/需登录</div>
+                  <strong id="liveClosedCount" style="font-size:14px;font-weight:800;">0</strong>
+                </div>
+                <div style="background:#fef2f2;color:#991b1b;padding:5px 6px;border-radius:6px;border:1px solid #fecaca;">
+                  <div style="font-size:10px;color:#b91c1c;">非博客/失效拦截</div>
+                  <strong id="liveInvalidCount" style="font-size:14px;font-weight:800;">0</strong>
+                </div>
+              </div>
+              <div style="margin-top:8px;text-align:right;">
+                <button type="button" class="btn btn-secondary btn-sm" id="assetImportAbortBtn" style="color:#b91c1c;border-color:#fecaca;padding:2px 8px;font-size:11px;">⏹ 中止侦测</button>
+              </div>
+            </div>
+
             <!-- 导入反馈报表区 -->
             <div id="assetImportReportSection" style="display:none;margin-top:14px;border-top:1px solid #e2e8f0;padding-top:12px;">
-              <div style="font-weight:700;font-size:13px;margin-bottom:8px;color:#1e293b;">📊 导入处理结果：</div>
-              <div class="asset-import-stat-banner">
-                <div class="stat-pill"><span class="pill-num" id="reportTotalRead">0</span> 总读取</div>
-                <div class="stat-pill pill-success"><span class="pill-num" id="reportInserted">0</span> 成功新增</div>
-                <div class="stat-pill pill-warning"><span class="pill-num" id="reportSkipped">0</span> 重复跳过</div>
-                <div class="stat-pill pill-danger"><span class="pill-num" id="reportFiltered">0</span> 违规/无效拦截</div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <div style="font-weight:700;font-size:13px;color:#1e293b;">📊 导入处理结果统计：</div>
+                <button type="button" class="btn btn-secondary btn-sm" id="assetExportSkippedCsvBtn" style="display:none;font-size:11px;padding:3px 8px;">
+                  📥 导出未入库/过滤明细 (CSV)
+                </button>
               </div>
-              <div id="assetImportReportDetail" style="margin-top:8px;max-height:120px;overflow-y:auto;font-size:11px;color:#475569;background:#f8fafc;padding:8px;border-radius:6px;"></div>
+              <div class="asset-import-stat-banner" id="assetImportStatBanner">
+                <div class="stat-pill"><span class="pill-num" id="reportTotalRead">0</span> 总读取</div>
+                <div class="stat-pill pill-success"><span class="pill-num" id="reportInserted">0</span> 成功新增入库</div>
+                <div class="stat-pill pill-info"><span class="pill-num" id="reportAlreadyInLibrary">0</span> 资产库已存跳过</div>
+                <div class="stat-pill pill-warning"><span class="pill-num" id="reportClosedOrLogin">0</span> 评论关闭/需登录</div>
+                <div class="stat-pill pill-danger"><span class="pill-num" id="reportNonBlogOrFailed">0</span> 非博客/失效拦截</div>
+              </div>
+              <div id="assetImportSummaryAlert" style="margin-top:8px;font-size:12px;color:#1e293b;background:#f8fafc;border:1px solid #e2e8f0;padding:8px 12px;border-radius:6px;line-height:1.5;"></div>
+              <div id="assetImportReportDetail" style="margin-top:8px;max-height:110px;overflow-y:auto;font-size:11px;color:#475569;background:#f8fafc;padding:8px;border-radius:6px;"></div>
             </div>
           </div>
           <div class="asset-modal-footer">
             <button type="button" class="btn btn-secondary" id="assetCancelImportBtn">取消</button>
-            <button type="button" class="btn btn-primary" id="assetExecuteImportBtn">开始解析导入</button>
+            <button type="button" class="btn btn-primary" id="assetExecuteImportBtn">🚀 开始智能侦测并导入</button>
             <button type="button" class="btn btn-primary" id="assetGoToTaskAfterImportBtn" style="display:none;">🚀 立即为新增外链执行批量任务</button>
           </div>
         </div>
@@ -607,9 +681,11 @@
    * 绑定界面所有交互事件。
    */
   function bindEvents() {
-    // 顶部按钮
+    // 顶部与导出按钮
     document.getElementById('assetRefreshBtn')?.addEventListener('click', () => refreshAll());
     document.getElementById('assetBootstrapBtn')?.addEventListener('click', handleBootstrap);
+    document.getElementById('assetExportBtn')?.addEventListener('click', exportCurrentAssetsExcel);
+    document.getElementById('assetExportFooterBtn')?.addEventListener('click', exportCurrentAssetsExcel);
     document.getElementById('assetOpenImportModalBtn')?.addEventListener('click', openImportModal);
     document.getElementById('assetCloseImportModalBtn')?.addEventListener('click', closeImportModal);
     document.getElementById('assetCancelImportBtn')?.addEventListener('click', closeImportModal);
@@ -739,6 +815,12 @@
     // 执行导入
     document.getElementById('assetExecuteImportBtn')?.addEventListener('click', executeImport);
 
+    // 导入 Modal：类型与智能侦测联动及操作
+    document.getElementById('assetImportDefaultType')?.addEventListener('change', updateImportProbeUiState);
+    document.getElementById('assetImportEnableProbe')?.addEventListener('change', updateImportProbeUiState);
+    document.getElementById('assetImportAbortBtn')?.addEventListener('click', abortProbeImport);
+    document.getElementById('assetExportSkippedCsvBtn')?.addEventListener('click', exportSkippedOrFilteredCsv);
+
     // 编辑 Modal
     document.getElementById('assetCloseEditModalBtn')?.addEventListener('click', closeEditModal);
     document.getElementById('assetCancelEditBtn')?.addEventListener('click', closeEditModal);
@@ -764,6 +846,9 @@
 
   let selectedImportFile = null;
   let lastImportResultData = null;
+  let currentImportProbeSessionId = null;
+  let importProbePollTimer = null;
+  let currentSkippedItemsToExport = [];
 
   function handleCsvFileSelected(file) {
     selectedImportFile = file;
@@ -855,15 +940,9 @@
   }
 
   /**
-   * 查询外链资产列表。
+   * 收集当前界面激活的多维筛选与排序参数。
    */
-  async function fetchAssets() {
-    const tbody = document.getElementById('assetTableBody');
-    if (!tbody) return;
-
-    state.isLoading = true;
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">正在加载资产数据...</td></tr>';
-
+  function getCurrentFilterParams() {
     const sortVal = (document.getElementById('assetSortBy')?.value || 'success_rate-desc').split('-');
     const sortBy = sortVal[0];
     const sortOrder = sortVal[1] || 'desc';
@@ -878,9 +957,7 @@
 
     const pageDepth = document.getElementById('assetFilterPageDepth')?.value || 'all';
 
-    const queryParams = new URLSearchParams({
-      page: state.page,
-      pageSize: state.pageSize,
+    const params = {
       resourceType: document.getElementById('assetFilterType')?.value || 'all',
       qualityTier: document.getElementById('assetFilterQuality')?.value || 'all',
       targetDomain: document.getElementById('assetFilterTargetDomain')?.value || '',
@@ -888,17 +965,37 @@
       keyword: document.getElementById('assetFilterKeyword')?.value?.trim() || '',
       sortBy,
       sortOrder
-    });
+    };
 
-    if (minRate !== null) queryParams.set('minSuccessRate', minRate);
-    if (maxRate !== null) queryParams.set('maxSuccessRate', maxRate);
-    if (pageDepth && pageDepth !== 'all') queryParams.set('pageDepthRange', pageDepth);
+    if (minRate !== null) params.minSuccessRate = minRate;
+    if (maxRate !== null) params.maxSuccessRate = maxRate;
+    if (pageDepth && pageDepth !== 'all') params.pageDepthRange = pageDepth;
 
     const timeRange = document.getElementById('assetFilterTimeRange')?.value || 'all';
-    if (timeRange && timeRange !== 'all') queryParams.set('timeRange', timeRange);
+    if (timeRange && timeRange !== 'all') params.timeRange = timeRange;
 
     const sourceChannel = document.getElementById('assetFilterSourceChannel')?.value || 'all';
-    if (sourceChannel && sourceChannel !== 'all') queryParams.set('sourceChannel', sourceChannel);
+    if (sourceChannel && sourceChannel !== 'all') params.sourceChannel = sourceChannel;
+
+    return params;
+  }
+
+  /**
+   * 查询外链资产列表。
+   */
+  async function fetchAssets() {
+    const tbody = document.getElementById('assetTableBody');
+    if (!tbody) return;
+
+    state.isLoading = true;
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">正在加载资产数据...</td></tr>';
+
+    const filterParams = getCurrentFilterParams();
+    const queryParams = new URLSearchParams({
+      page: state.page,
+      pageSize: state.pageSize,
+      ...filterParams
+    });
 
     try {
       const data = await apiRequest(`/api/assets?${queryParams.toString()}`);
@@ -913,6 +1010,152 @@
       tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:30px;color:#dc2626;">加载失败：${escapeHtml(error.message)}</td></tr>`;
     } finally {
       state.isLoading = false;
+    }
+  }
+
+  function formatDateTime(val) {
+    if (!val) return '-';
+    try {
+      const d = new Date(val);
+      if (isNaN(d.getTime())) return String(val);
+      const Y = d.getFullYear();
+      const M = String(d.getMonth() + 1).padStart(2, '0');
+      const D = String(d.getDate()).padStart(2, '0');
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      const s = String(d.getSeconds()).padStart(2, '0');
+      return `${Y}-${M}-${D} ${h}:${m}:${s}`;
+    } catch (_) {
+      return String(val);
+    }
+  }
+
+  /**
+   * 导出当前筛选与搜索条件下的全部外链资产（不限当前分页）为 Excel 兼容 CSV。
+   */
+  async function exportCurrentAssetsExcel() {
+    const topBtn = document.getElementById('assetExportBtn');
+    const footerBtn = document.getElementById('assetExportFooterBtn');
+    const origTopText = topBtn ? topBtn.innerHTML : '';
+    const origFooterText = footerBtn ? footerBtn.innerHTML : '';
+
+    if (topBtn) {
+      topBtn.disabled = true;
+      topBtn.textContent = '⏳ 正在导出...';
+    }
+    if (footerBtn) {
+      footerBtn.disabled = true;
+      footerBtn.textContent = '⏳ 正在导出...';
+    }
+
+    try {
+      const filterParams = getCurrentFilterParams();
+      const queryParams = new URLSearchParams({
+        exportAll: 'true',
+        ...filterParams
+      });
+
+      const data = await apiRequest(`/api/assets/export?${queryParams.toString()}`);
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      if (items.length === 0) {
+        alert('当前查询与筛选条件下没有匹配的外链资产可供导出');
+        return;
+      }
+
+      const headers = [
+        '引荐域名',
+        '入口引荐URL',
+        '外链类型',
+        '质量评级',
+        '成功率(%)',
+        '成功次数',
+        '跳过次数',
+        '失败次数',
+        '总执行次数',
+        '页面深度(屏数)',
+        '来源渠道',
+        '标签',
+        'DR评分',
+        '月自然流量',
+        '最近执行时间',
+        '最近执行状态',
+        '目标站投放覆盖',
+        '备注',
+        '添加建库时间'
+      ];
+
+      const rows = items.map((a) => {
+        const typeInfo = RESOURCE_TYPES[a.resource_type] || { label: a.resource_type || '博客评论' };
+        const qualityInfo = QUALITY_TIERS[a.quality_tier] || { label: a.quality_tier || '未测试' };
+        const rateNum = Number(a.success_rate || 0).toFixed(1);
+
+        let sourceChannelLabel = '手动/表格导入';
+        if (a.source_channel === 'probe_discovery') sourceChannelLabel = '博客探测入库';
+        else if (a.source_channel === 'run_harvest') sourceChannelLabel = '任务自动沉淀';
+        else if (a.source_channel === 'batch_import') sourceChannelLabel = '表格/手动导入';
+
+        const depthText = (a.page_depth !== null && a.page_depth !== undefined && a.page_depth !== '')
+          ? Number(a.page_depth).toFixed(1)
+          : '未知';
+
+        const coverageList = Array.isArray(a.target_coverage) ? a.target_coverage : [];
+        const coverageText = coverageList.length > 0
+          ? coverageList.map((c) => `${c.target_domain}(成功${c.success_count}次)`).join('; ')
+          : '未关联';
+
+        const tagsText = Array.isArray(a.tags) ? a.tags.join(', ') : (a.tags || '');
+
+        let lastResultText = '无记录';
+        if (a.last_run_result === 'success') lastResultText = '成功';
+        else if (a.last_run_result === 'skipped') lastResultText = '跳过';
+        else if (a.last_run_result === 'failed') lastResultText = '失败';
+        else if (a.last_run_result) lastResultText = String(a.last_run_result);
+
+        return [
+          `"${(a.referral_domain || '').replace(/"/g, '""')}"`,
+          `"${(a.referral_url || '').replace(/"/g, '""')}"`,
+          `"${typeInfo.label}"`,
+          `"${qualityInfo.label}"`,
+          rateNum,
+          a.success_count || 0,
+          a.skipped_count || 0,
+          a.fail_count || 0,
+          a.total_attempts || 0,
+          `"${depthText}"`,
+          `"${sourceChannelLabel}"`,
+          `"${tagsText.replace(/"/g, '""')}"`,
+          a.domain_rating !== null && a.domain_rating !== undefined ? a.domain_rating : '',
+          a.organic_traffic !== null && a.organic_traffic !== undefined ? a.organic_traffic : '',
+          `"${formatDateTime(a.last_executed_at)}"`,
+          `"${lastResultText}"`,
+          `"${coverageText.replace(/"/g, '""')}"`,
+          `"${(a.notes || '').replace(/"/g, '""')}"`,
+          `"${formatDateTime(a.created_at)}"`
+        ];
+      });
+
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      link.download = `外链资产库导出_${dateStr}_共${items.length}条.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`导出失败：${err.message}`);
+    } finally {
+      if (topBtn) {
+        topBtn.disabled = false;
+        topBtn.innerHTML = origTopText;
+      }
+      if (footerBtn) {
+        footerBtn.disabled = false;
+        footerBtn.innerHTML = origFooterText;
+      }
     }
   }
 
@@ -1129,25 +1372,136 @@
   }
 
   /**
+   * 更新导入弹窗内博客侦测配置的展示与按钮文案
+   */
+  function updateImportProbeUiState() {
+    const defaultType = document.getElementById('assetImportDefaultType')?.value || 'blog_comment';
+    const configBox = document.getElementById('assetImportProbeConfigBox');
+    const enableProbeCheck = document.getElementById('assetImportEnableProbe');
+    const execBtn = document.getElementById('assetExecuteImportBtn');
+
+    if (defaultType === 'blog_comment') {
+      if (configBox) configBox.style.display = 'block';
+      const isProbe = enableProbeCheck ? enableProbeCheck.checked : true;
+      if (execBtn) {
+        execBtn.textContent = isProbe ? '🚀 开始智能侦测并导入' : '开始解析导入';
+      }
+    } else {
+      if (configBox) configBox.style.display = 'none';
+      if (execBtn) {
+        execBtn.textContent = '开始解析导入';
+      }
+    }
+  }
+
+  /**
+   * 中止正在执行的博客侦测
+   */
+  async function abortProbeImport() {
+    if (!currentImportProbeSessionId) return;
+    const abortBtn = document.getElementById('assetImportAbortBtn');
+    if (abortBtn) {
+      abortBtn.disabled = true;
+      abortBtn.textContent = '正在中止...';
+    }
+    try {
+      await apiRequest('/api/probe/cancel', { sessionId: currentImportProbeSessionId });
+    } catch (err) {
+      console.warn('中止探测请求失败：', err);
+    }
+  }
+
+  /**
+   * 导出未入库/过滤的明细列表为 CSV 文件
+   */
+  function exportSkippedOrFilteredCsv() {
+    if (!currentSkippedItemsToExport || currentSkippedItemsToExport.length === 0) {
+      alert('当前没有可导出的未入库或过滤明细');
+      return;
+    }
+
+    const headers = ['引荐域名', '入口URL', '过滤分类', '状态说明', '判定详情'];
+    const rows = [headers];
+
+    for (const item of currentSkippedItemsToExport) {
+      rows.push([
+        item.domain || '',
+        item.url || '',
+        item.category || '',
+        item.status || '',
+        (item.details || '').replace(/\r?\n/g, ' ')
+      ]);
+    }
+
+    const csvContent = rows
+      .map((row) =>
+        row
+          .map((field) => {
+            const escaped = String(field ?? '').replace(/"/g, '""');
+            return `"${escaped}"`;
+          })
+          .join(',')
+      )
+      .join('\r\n');
+
+    // 添加 UTF-8 BOM 确保 Excel/WPS 打开中文正常
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `未入库外链明细_${new Date().toISOString().slice(0, 10)}_${Math.random().toString(36).slice(2, 6)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+  }
+
+  /**
    * 打开批量导入 Modal。
    */
   function openImportModal() {
     const modal = document.getElementById('assetImportModal');
     if (modal) modal.style.display = 'flex';
-    document.getElementById('assetImportReportSection').style.display = 'none';
-    document.getElementById('assetGoToTaskAfterImportBtn').style.display = 'none';
+    currentImportProbeSessionId = null;
+    if (importProbePollTimer) {
+      clearInterval(importProbePollTimer);
+      importProbePollTimer = null;
+    }
+    currentSkippedItemsToExport = [];
+
+    const progressSec = document.getElementById('assetImportProgressSection');
+    if (progressSec) progressSec.style.display = 'none';
+
+    const reportSec = document.getElementById('assetImportReportSection');
+    if (reportSec) reportSec.style.display = 'none';
+
+    const taskBtn = document.getElementById('assetGoToTaskAfterImportBtn');
+    if (taskBtn) taskBtn.style.display = 'none';
+
+    const exportCsvBtn = document.getElementById('assetExportSkippedCsvBtn');
+    if (exportCsvBtn) exportCsvBtn.style.display = 'none';
+
+    const execBtn = document.getElementById('assetExecuteImportBtn');
+    if (execBtn) execBtn.disabled = false;
+
+    updateImportProbeUiState();
   }
 
   function closeImportModal() {
     const modal = document.getElementById('assetImportModal');
     if (modal) modal.style.display = 'none';
+    if (importProbePollTimer) {
+      clearInterval(importProbePollTimer);
+      importProbePollTimer = null;
+    }
     selectedImportFile = null;
+    currentImportProbeSessionId = null;
     const fileInfo = document.getElementById('assetImportFileInfo');
     if (fileInfo) fileInfo.style.display = 'none';
   }
 
   /**
-   * 解析并执行批量导入。
+   * 解析并执行批量导入（支持智能博客表单探测或快速直接导入）。
    */
   async function executeImport() {
     const isCsvTab = document.querySelector('.import-tab-btn.active')?.dataset.importTab === 'csv';
@@ -1155,6 +1509,8 @@
     const sourceChannel = document.getElementById('assetImportSourceChannel')?.value || 'manual_import';
     const duplicateStrategy = document.querySelector('input[name="assetDedupeStrategy"]:checked')?.value || 'skip';
     const filterIllegal = document.getElementById('assetImportFilterIllegal')?.checked ?? true;
+    const isBlogProbeEnabled =
+      defaultType === 'blog_comment' && (document.getElementById('assetImportEnableProbe')?.checked ?? true);
 
     let itemsToImport = [];
 
@@ -1174,14 +1530,22 @@
       return;
     }
 
-    // 可选：执行非法站点前置过滤
+    // 执行非法站点前置过滤
     let filteredIllegalCount = 0;
+    const illegalItems = [];
     if (filterIllegal && root.AutoCommentIllegalSiteFilter && root.AutoCommentIllegalSiteFilter.evaluateUrl) {
       const cleanList = [];
       itemsToImport.forEach((item) => {
         const check = root.AutoCommentIllegalSiteFilter.evaluateUrl(item.referralUrl || item.referralDomain);
         if (check && check.blocked) {
           filteredIllegalCount++;
+          illegalItems.push({
+            domain: normalizeDomain(item.referralDomain || item.referralUrl),
+            url: item.referralUrl || item.referralDomain,
+            category: '违规站点拦截',
+            status: '违规黑名单',
+            details: check.reason || '命中违规词库'
+          });
         } else {
           cleanList.push(item);
         }
@@ -1189,8 +1553,333 @@
       itemsToImport = cleanList;
     }
 
+    if (itemsToImport.length === 0) {
+      alert('所有提取到的条目均被安全词库拦截！');
+      return;
+    }
+
+    // 若未启用博客智能探测，执行快速直接入库
+    if (!isBlogProbeEnabled) {
+      return executeDirectImport(
+        itemsToImport,
+        defaultType,
+        sourceChannel,
+        duplicateStrategy,
+        filteredIllegalCount,
+        illegalItems
+      );
+    }
+
+    // 启用智能博客评论表单探测
+    return executeProbeAndImport(
+      itemsToImport,
+      defaultType,
+      sourceChannel,
+      duplicateStrategy,
+      filteredIllegalCount,
+      illegalItems
+    );
+  }
+
+  /**
+   * 智能博客探测入库通道
+   */
+  async function executeProbeAndImport(
+    itemsToImport,
+    defaultType,
+    sourceChannel,
+    duplicateStrategy,
+    filteredIllegalCount,
+    illegalItems
+  ) {
     const execBtn = document.getElementById('assetExecuteImportBtn');
-    if (execBtn) { execBtn.disabled = true; execBtn.textContent = '正在导入并查重...'; }
+    const progressSec = document.getElementById('assetImportProgressSection');
+    const reportSec = document.getElementById('assetImportReportSection');
+    const taskBtn = document.getElementById('assetGoToTaskAfterImportBtn');
+    const progressBar = document.getElementById('assetImportProgressBar');
+    const progressPercent = document.getElementById('assetImportProgressPercent');
+    const progressTitle = document.getElementById('assetImportProgressTitle');
+    const liveValidCount = document.getElementById('liveValidCount');
+    const liveSkipCount = document.getElementById('liveSkipCount');
+    const liveClosedCount = document.getElementById('liveClosedCount');
+    const liveInvalidCount = document.getElementById('liveInvalidCount');
+    const abortBtn = document.getElementById('assetImportAbortBtn');
+
+    if (reportSec) reportSec.style.display = 'none';
+    if (taskBtn) taskBtn.style.display = 'none';
+    if (progressSec) progressSec.style.display = 'block';
+    if (progressBar) progressBar.style.width = '0%';
+    if (progressPercent) progressPercent.textContent = '0% (0 / 0)';
+    if (progressTitle) progressTitle.textContent = '正在高并发深度侦测博客表单...';
+    if (liveValidCount) liveValidCount.textContent = '0';
+    if (liveSkipCount) liveSkipCount.textContent = '0';
+    if (liveClosedCount) liveClosedCount.textContent = '0';
+    if (liveInvalidCount) liveInvalidCount.textContent = '0';
+    if (abortBtn) {
+      abortBtn.disabled = false;
+      abortBtn.textContent = '⏹ 中止侦测';
+    }
+    if (execBtn) {
+      execBtn.disabled = true;
+      execBtn.textContent = '正在并发探测中...';
+    }
+
+    const targetUrls = itemsToImport.map((it) => it.referralUrl || it.referralDomain);
+    const concurrency = Number(document.getElementById('assetImportProbeConcurrency')?.value || 20);
+    const sessionId = `import_probe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    currentImportProbeSessionId = sessionId;
+
+    try {
+      const startRes = await apiRequest('/api/probe/start', {
+        sessionId,
+        urls: targetUrls,
+        concurrency,
+        skipExisting: duplicateStrategy === 'skip'
+      });
+
+      const totalTarget = startRes.total || targetUrls.length;
+
+      // 启动进度轮询
+      const sessionData = await new Promise((resolve) => {
+        // 若直接已完成（例如全部都在库内）
+        if (startRes.status === 'completed') {
+          apiRequest(`/api/probe/status?sessionId=${sessionId}&limit=10000`).then((res) => {
+            resolve(res.session || startRes);
+          });
+          return;
+        }
+
+        importProbePollTimer = setInterval(async () => {
+          try {
+            const statusRes = await apiRequest(`/api/probe/status?sessionId=${sessionId}&limit=10000`);
+            if (!statusRes.hasSession || !statusRes.session) return;
+            const s = statusRes.session;
+
+            if (progressBar) progressBar.style.width = `${s.progressPercent || 0}%`;
+            if (progressPercent)
+              progressPercent.textContent = `${s.progressPercent || 0}% (${s.processed || 0} / ${s.total || totalTarget})`;
+
+            const validCount =
+              (s.stats.validBlogCommentWithUrl || 0) +
+              (s.stats.validBlogCommentNoUrl || 0) +
+              (s.stats.bloggerComment || 0);
+            const closedCount = (s.stats.commentsClosed || 0) + (s.stats.loginRequired || 0);
+            const invalidCount = (s.stats.notBlogComment || 0) + (s.stats.failed || 0);
+
+            if (liveValidCount) liveValidCount.textContent = validCount;
+            if (liveSkipCount) liveSkipCount.textContent = s.stats.alreadyInLibrary || 0;
+            if (liveClosedCount) liveClosedCount.textContent = closedCount;
+            if (liveInvalidCount) liveInvalidCount.textContent = invalidCount;
+
+            if (s.status === 'completed' || s.status === 'canceled') {
+              clearInterval(importProbePollTimer);
+              importProbePollTimer = null;
+              resolve(s);
+            }
+          } catch (pollErr) {
+            console.warn('轮询探测进度异常：', pollErr);
+          }
+        }, 400);
+      });
+
+      if (progressSec) progressSec.style.display = 'none';
+
+      // 分析探测结果
+      const allResults = sessionData.results || [];
+      const validResults = [];
+      const alreadyInLibraryResults = [];
+      const closedOrLoginResults = [];
+      const nonBlogOrFailedResults = [];
+
+      for (const r of allResults) {
+        if (r.status === 'already_in_library') {
+          alreadyInLibraryResults.push(r);
+        } else if (r.isBlogComment) {
+          validResults.push(r);
+        } else if (r.status === 'comments_closed' || r.status === 'login_required') {
+          closedOrLoginResults.push(r);
+        } else {
+          nonBlogOrFailedResults.push(r);
+        }
+      }
+
+      // 保存未入库或过滤明细，供一键导出 CSV
+      currentSkippedItemsToExport = [];
+      for (const it of illegalItems) {
+        currentSkippedItemsToExport.push(it);
+      }
+      for (const r of closedOrLoginResults) {
+        currentSkippedItemsToExport.push({
+          domain: r.domain,
+          url: r.url,
+          category: r.status === 'login_required' ? '需登录博客' : '评论已关闭',
+          status: r.statusLabel,
+          details: r.details || ''
+        });
+      }
+      for (const r of nonBlogOrFailedResults) {
+        currentSkippedItemsToExport.push({
+          domain: r.domain,
+          url: r.url,
+          category: '非博客或请求异常',
+          status: r.statusLabel,
+          details: r.details || ''
+        });
+      }
+      for (const r of alreadyInLibraryResults) {
+        currentSkippedItemsToExport.push({
+          domain: r.domain,
+          url: r.url,
+          category: '资产库已存在',
+          status: r.statusLabel,
+          details: r.details || ''
+        });
+      }
+
+      // 仅将判定为真实开放的博客（validResults）组织为资产入库
+      let importResult = { insertedCount: 0, skippedCount: 0, insertedDomains: [], skippedDomains: [] };
+
+      if (validResults.length > 0) {
+        const origMap = new Map();
+        itemsToImport.forEach((it) => {
+          const d = normalizeDomain(it.referralDomain || it.referralUrl);
+          if (d && !origMap.has(d)) origMap.set(d, it);
+        });
+
+        const assetsToImport = validResults.map((vr) => {
+          const orig = origMap.get(vr.domain) || {};
+          return {
+            referralUrl: vr.url,
+            referralDomain: vr.domain,
+            domainRating: orig.domainRating || null,
+            organicTraffic: orig.organicTraffic || null,
+            resourceType: defaultType,
+            notes: `[博客智能侦测] ${vr.statusLabel} (${vr.formType || 'Blog'})`
+          };
+        });
+
+        importResult = await apiRequest('/api/assets/import', {
+          items: assetsToImport,
+          defaultType,
+          sourceChannel: sourceChannel || 'probe_discovery',
+          duplicateStrategy
+        });
+      }
+
+      // 呈现多维统计结果
+      renderProbeImportReport({
+        rawCount: (sessionData.stats && sessionData.stats.rawCount) || itemsToImport.length,
+        total: sessionData.total || itemsToImport.length,
+        dedupCount: (sessionData.stats && sessionData.stats.dedupCount) || 0,
+        insertedCount: importResult.insertedCount || 0,
+        insertedDomains: importResult.insertedDomains || [],
+        alreadyInLibraryCount: (sessionData.stats && sessionData.stats.alreadyInLibrary || 0) + (importResult.skippedCount || 0),
+        closedOrLoginCount: closedOrLoginResults.length,
+        nonBlogOrFailedCount: nonBlogOrFailedResults.length + filteredIllegalCount,
+        skippedList: currentSkippedItemsToExport
+      });
+
+      refreshAll();
+    } catch (err) {
+      if (progressSec) progressSec.style.display = 'none';
+      alert(`智能侦测并导入失败：${err.message}`);
+    } finally {
+      if (importProbePollTimer) {
+        clearInterval(importProbePollTimer);
+        importProbePollTimer = null;
+      }
+      if (execBtn) {
+        execBtn.disabled = false;
+        execBtn.textContent = '🚀 开始智能侦测并导入';
+      }
+    }
+  }
+
+  /**
+   * 渲染智能探测入库的多维统计报告
+   */
+  function renderProbeImportReport(reportData) {
+    const reportSec = document.getElementById('assetImportReportSection');
+    const taskBtn = document.getElementById('assetGoToTaskAfterImportBtn');
+    const exportCsvBtn = document.getElementById('assetExportSkippedCsvBtn');
+    const summaryAlert = document.getElementById('assetImportSummaryAlert');
+    const detailBox = document.getElementById('assetImportReportDetail');
+
+    if (!reportSec) return;
+    reportSec.style.display = 'block';
+
+    document.getElementById('reportTotalRead').textContent = reportData.rawCount;
+    document.getElementById('reportInserted').textContent = reportData.insertedCount;
+    document.getElementById('reportAlreadyInLibrary').textContent = reportData.alreadyInLibraryCount;
+    document.getElementById('reportClosedOrLogin').textContent = reportData.closedOrLoginCount;
+    document.getElementById('reportNonBlogOrFailed').textContent = reportData.nonBlogOrFailedCount;
+
+    if (summaryAlert) {
+      const filteredTotal = reportData.closedOrLoginCount + reportData.nonBlogOrFailedCount;
+      summaryAlert.innerHTML = `
+        <div style="font-weight:700;color:#0f172a;margin-bottom:4px;">
+          🎯 博客外链智能甄别完成：共读取 ${reportData.rawCount} 条（去重后 ${reportData.total} 个独立域名）
+        </div>
+        <div style="line-height:1.6;color:#334155;">
+          • <strong>${reportData.insertedCount}</strong> 条判定为真实开放评论的博客页面，已成功入库沉淀为资产。<br/>
+          • <strong>${reportData.alreadyInLibraryCount}</strong> 条域名在资产库中已存在，已自动跳过。<br/>
+          • <strong>${filteredTotal}</strong> 条非博客或评论关闭链接已自动拦截过滤，有力保障资产库质量！
+        </div>
+      `;
+    }
+
+    if (detailBox) {
+      let detailHtml = '';
+      if (reportData.insertedCount > 0) {
+        detailHtml += `<strong>🟢 成功入库真博客（前 ${Math.min(30, reportData.insertedDomains.length)} 个）：</strong><br/>`;
+        detailHtml += reportData.insertedDomains.slice(0, 30).join(', ');
+      } else {
+        detailHtml += `<span style="color:#64748b;">本批次未发现可新增入库的开放博客评论页面。</span>`;
+      }
+      detailBox.innerHTML = detailHtml;
+    }
+
+    if (exportCsvBtn) {
+      if (reportData.skippedList && reportData.skippedList.length > 0) {
+        exportCsvBtn.style.display = 'inline-flex';
+        exportCsvBtn.textContent = `📥 导出未入库/过滤明细 (${reportData.skippedList.length}条 CSV)`;
+      } else {
+        exportCsvBtn.style.display = 'none';
+      }
+    }
+
+    if (taskBtn) {
+      if (reportData.insertedCount > 0) {
+        taskBtn.style.display = 'inline-flex';
+        taskBtn.onclick = () => {
+          closeImportModal();
+          const insertedSet = new Set(reportData.insertedDomains || []);
+          state.selectedDomains = insertedSet;
+          updateSelectionBar();
+          openSendToTaskModal();
+        };
+      } else {
+        taskBtn.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * 快速直接入库通道（未启用博客探测或非博客类型外链）
+   */
+  async function executeDirectImport(
+    itemsToImport,
+    defaultType,
+    sourceChannel,
+    duplicateStrategy,
+    filteredIllegalCount,
+    illegalItems
+  ) {
+    const execBtn = document.getElementById('assetExecuteImportBtn');
+    if (execBtn) {
+      execBtn.disabled = true;
+      execBtn.textContent = '正在快速导入并查重...';
+    }
 
     try {
       const result = await apiRequest('/api/assets/import', {
@@ -1203,31 +1892,59 @@
       result.filteredIllegalCount = filteredIllegalCount;
       lastImportResultData = result;
 
-      // 渲染导入反馈报表
-      renderImportReport(result);
+      currentSkippedItemsToExport = [];
+      for (const it of illegalItems) {
+        currentSkippedItemsToExport.push(it);
+      }
+      for (const d of result.skippedDomains || []) {
+        currentSkippedItemsToExport.push({
+          domain: d,
+          url: '',
+          category: '资产库已存在',
+          status: '跳过重复域名',
+          details: '引荐域名已在资产库中'
+        });
+      }
+
+      renderDirectImportReport(result);
       refreshAll();
     } catch (err) {
       alert(`导入失败：${err.message}`);
     } finally {
-      if (execBtn) { execBtn.disabled = false; execBtn.textContent = '开始解析导入'; }
+      if (execBtn) {
+        execBtn.disabled = false;
+        execBtn.textContent = '开始解析导入';
+      }
     }
   }
 
   /**
-   * 渲染导入结果反馈面板。
+   * 渲染普通快速导入的结果反馈面板
    */
-  function renderImportReport(res) {
+  function renderDirectImportReport(res) {
     const reportSec = document.getElementById('assetImportReportSection');
     const taskBtn = document.getElementById('assetGoToTaskAfterImportBtn');
+    const exportCsvBtn = document.getElementById('assetExportSkippedCsvBtn');
+    const summaryAlert = document.getElementById('assetImportSummaryAlert');
+    const detailBox = document.getElementById('assetImportReportDetail');
     if (!reportSec) return;
 
     reportSec.style.display = 'block';
     document.getElementById('reportTotalRead').textContent = res.total || 0;
     document.getElementById('reportInserted').textContent = res.insertedCount || 0;
-    document.getElementById('reportSkipped').textContent = res.skippedCount || 0;
-    document.getElementById('reportFiltered').textContent = (res.invalidCount || 0) + (res.filteredIllegalCount || 0);
+    document.getElementById('reportAlreadyInLibrary').textContent = res.skippedCount || 0;
+    document.getElementById('reportClosedOrLogin').textContent = '0 (未测)';
+    document.getElementById('reportNonBlogOrFailed').textContent =
+      (res.invalidCount || 0) + (res.filteredIllegalCount || 0);
 
-    const detailBox = document.getElementById('assetImportReportDetail');
+    if (summaryAlert) {
+      summaryAlert.innerHTML = `
+        <div style="font-weight:700;color:#0f172a;margin-bottom:3px;">
+          快速导入完成：共读取 ${res.total || 0} 条，成功新增 <strong>${res.insertedCount || 0}</strong> 条资产，跳过重复 ${res.skippedCount || 0} 条。
+        </div>
+      `;
+    }
+
     if (detailBox) {
       let detailHtml = `<strong>新增域名（前 ${Math.min(50, (res.insertedDomains || []).length)} 个）：</strong><br/>`;
       detailHtml += (res.insertedDomains || []).slice(0, 50).join(', ') || '无';
@@ -1238,16 +1955,26 @@
       detailBox.innerHTML = detailHtml;
     }
 
+    if (exportCsvBtn) {
+      if (currentSkippedItemsToExport.length > 0) {
+        exportCsvBtn.style.display = 'inline-flex';
+        exportCsvBtn.textContent = `📥 导出跳过明细 (${currentSkippedItemsToExport.length}条 CSV)`;
+      } else {
+        exportCsvBtn.style.display = 'none';
+      }
+    }
+
     if (taskBtn && res.insertedCount > 0) {
       taskBtn.style.display = 'inline-flex';
       taskBtn.onclick = () => {
         closeImportModal();
-        // 自动筛选刚新增的域名推送到任务
         const insertedSet = new Set(res.insertedDomains || []);
         state.selectedDomains = insertedSet;
         updateSelectionBar();
         openSendToTaskModal();
       };
+    } else if (taskBtn) {
+      taskBtn.style.display = 'none';
     }
   }
 

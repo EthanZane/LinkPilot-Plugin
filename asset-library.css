@@ -592,5 +592,17 @@
 }
 
 .stat-pill.pill-success { background: #ecfdf5; color: #065f46; }
+.stat-pill.pill-info { background: #eff6ff; color: #1e40af; }
 .stat-pill.pill-warning { background: #fffbeb; color: #92400e; }
 .stat-pill.pill-danger { background: #fef2f2; color: #991b1b; }
+
+.probe-pulse {
+  animation: probePulse 1.5s infinite;
+}
+
+@keyframes probePulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
