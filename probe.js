@@ -28,6 +28,80 @@
       .replace(/'/g, '&#39;');
   }
 
+  const COPY_URL_ICON_SVG =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  const COPIED_URL_ICON_SVG =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+  /**
+   * 复制文本到系统剪贴板（优先原生 API，降级 execCommand）
+   */
+  async function copyTextToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {}
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * 显示轻量浮层操作提示
+   */
+  function showProbeToast(message, duration = 2800) {
+    let toast = document.getElementById('probeToastNotification');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'probeToastNotification';
+      toast.style.cssText = `
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        background: #1e293b;
+        color: #ffffff;
+        padding: 10px 18px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: opacity 0.25s ease, transform 0.25s ease;
+        opacity: 0;
+        transform: translateY(12px);
+        pointer-events: none;
+      `;
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateY(0)';
+
+    if (window._probeToastTimer) clearTimeout(window._probeToastTimer);
+    window._probeToastTimer = setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(12px)';
+    }, duration);
+  }
+
   let probeFilterRules = {
     urlBlacklist: { enabled: true, rules: [] },
     titleBlacklist: { enabled: true, rules: [] }
@@ -260,6 +334,8 @@
               <span id="probeSearchMatchBadge" style="display:none;font-size:11px;color:#2563eb;background:#eff6ff;padding:3px 8px;border-radius:12px;font-weight:600;white-space:nowrap;">匹配 0 条</span>
 
               <button type="button" class="btn btn-secondary btn-sm" id="probeSelectValidBtn">勾选全部可用博客</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="probeCopySelectedUrlsBtn" title="复制所有勾选的引荐 URL 到剪贴板（一行一个），方便粘贴到自动外链输入框">📋 复制选中 URL (<span id="probeCopyCountDisplay">0</span>)</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="probeSendToBatchBtn" style="color:#2563eb;border-color:#bfdbfe;background:#eff6ff;" title="复制并将勾选的引荐 URL 直接填入「博客自动外链」输入框并跳转前往">🚀 填入自动外链</button>
               <button type="button" class="btn btn-primary btn-sm" id="probeOpenImportModalBtn">📥 批量导入选中的外链入库 (<span id="probeSelectedCountDisplay">0</span>)</button>
               <button type="button" class="btn btn-secondary btn-sm" id="probeExportExcelBtn" style="display:flex;align-items:center;gap:4px;">📊 导出结果 Excel</button>
             </div>
@@ -641,6 +717,12 @@
     document.getElementById('probeRerunNowBtn')?.addEventListener('click', () => {
       startProbe();
     });
+
+    // 复制选中的引荐 URL（一行一个）
+    document.getElementById('probeCopySelectedUrlsBtn')?.addEventListener('click', copySelectedReferringUrls);
+
+    // 一键填入博客自动外链
+    document.getElementById('probeSendToBatchBtn')?.addEventListener('click', sendSelectedUrlsToBatch);
 
     // 导出 Excel (.xlsx)
     document.getElementById('probeExportExcelBtn')?.addEventListener('click', exportProbeExcel);
@@ -1234,11 +1316,14 @@
           ${item.title ? escapeHtml(item.title) : '<span style="color:#94a3b8;font-size:11px;">—</span>'}
         </td>
         <td class="probe-url-cell">
-          <div>
+          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="probe-url-link" title="${escapeHtml(item.url)}">
               ${escapeHtml(item.url)}
             </a>
-            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="color:#64748b;text-decoration:none;margin-left:4px;font-size:11px;" title="新标签页打开">↗</a>
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="color:#64748b;text-decoration:none;font-size:11px;" title="新标签页打开">↗</a>
+            <button type="button" class="btn-probe-copy-single" data-url="${escapeHtml(item.url)}" title="复制此引荐 URL" aria-label="复制此引荐 URL">
+              ${COPY_URL_ICON_SVG}
+            </button>
           </div>
           <div class="probe-url-details">${escapeHtml(item.details || '')}</div>
         </td>
@@ -1256,6 +1341,24 @@
           </div>
         </td>
       `;
+
+      tr.querySelector('.btn-probe-copy-single')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget;
+        const u = btn.dataset.url;
+        if (!u) return;
+        const ok = await copyTextToClipboard(u);
+        if (ok) {
+          btn.innerHTML = COPIED_URL_ICON_SVG;
+          btn.style.color = '#15803d';
+          btn.title = '已复制！';
+          setTimeout(() => {
+            btn.innerHTML = COPY_URL_ICON_SVG;
+            btn.style.color = '';
+            btn.title = '复制此引荐 URL';
+          }, 1500);
+        }
+      });
 
       tr.querySelector('.probe-row-checkbox')?.addEventListener('change', (e) => {
         const u = e.target.dataset.url;
@@ -1295,11 +1398,123 @@
       selectAllCheckbox.checked =
         visibleItems.length > 0 && visibleItems.every((r) => probeState.selectedUrls.has(r.url));
     }
+    updateSelectedCountDisplay();
   }
 
   function updateSelectedCountDisplay() {
+    const size = probeState.selectedUrls.size;
     const el = document.getElementById('probeSelectedCountDisplay');
-    if (el) el.textContent = probeState.selectedUrls.size;
+    if (el) el.textContent = size;
+    const copyEl = document.getElementById('probeCopyCountDisplay');
+    if (copyEl) copyEl.textContent = size;
+  }
+
+  /**
+   * 获取当前勾选的所有引荐 URL（一行一个，去重并过滤空项，保持结果列表顺序）
+   */
+  function getSelectedReferringUrls() {
+    const selectedSet = probeState.selectedUrls;
+    if (!selectedSet || selectedSet.size === 0) return [];
+
+    const orderedUrls = [];
+    const seen = new Set();
+
+    (probeState.results || []).forEach((r) => {
+      const u = (r.url || '').trim();
+      if (u && selectedSet.has(r.url) && !seen.has(u)) {
+        orderedUrls.push(u);
+        seen.add(u);
+      }
+    });
+
+    selectedSet.forEach((u) => {
+      const trimmed = (u || '').trim();
+      if (trimmed && !seen.has(trimmed)) {
+        orderedUrls.push(trimmed);
+        seen.add(trimmed);
+      }
+    });
+
+    return orderedUrls;
+  }
+
+  /**
+   * 复制勾选的引荐 URL 到剪贴板（一行一个）
+   */
+  async function copySelectedReferringUrls() {
+    const urls = getSelectedReferringUrls();
+    if (urls.length === 0) {
+      alert('请先勾选需要复制的探测结果（或点击“勾选全部可用博客”）');
+      return;
+    }
+
+    const textToCopy = urls.join('\n');
+    const success = await copyTextToClipboard(textToCopy);
+
+    const btn = document.getElementById('probeCopySelectedUrlsBtn');
+    if (success) {
+      if (btn) {
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = `<span>✅ 已复制 ${urls.length} 条 URL！</span>`;
+        btn.style.color = '#15803d';
+        btn.style.borderColor = '#86efac';
+        btn.style.background = '#f0fdf4';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+          btn.style.color = '';
+          btn.style.borderColor = '';
+          btn.style.background = '';
+          updateSelectedCountDisplay();
+        }, 2200);
+      }
+      showProbeToast(`✅ 已成功复制 ${urls.length} 条引荐 URL 到剪贴板（一行一个），可直接粘贴到「博客自动外链」！`);
+    } else {
+      alert('复制失败，请检查浏览器剪贴板权限');
+    }
+  }
+
+  /**
+   * 一键将勾选的引荐 URL 填入「博客自动外链」输入框并切换前往
+   */
+  async function sendSelectedUrlsToBatch() {
+    const urls = getSelectedReferringUrls();
+    if (urls.length === 0) {
+      alert('请先勾选需要填入的探测结果（或点击“勾选全部可用博客”）');
+      return;
+    }
+
+    const textToCopy = urls.join('\n');
+    // 同时写入剪贴板备用
+    await copyTextToClipboard(textToCopy);
+
+    const manualUrlsInput = document.getElementById('manualUrlsInput');
+    if (!manualUrlsInput) {
+      alert(`已将 ${urls.length} 条引荐 URL 复制到剪贴板，请手动粘贴到自动外链输入框运行`);
+      return;
+    }
+
+    // 填入输入框并触发 input 事件以便批处理模块解析
+    manualUrlsInput.value = textToCopy;
+    manualUrlsInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // 切换到“博客自动外链” Tab
+    const batchTabBtn = document.querySelector('[data-tab-target="batch"]');
+    if (batchTabBtn) {
+      batchTabBtn.click();
+    }
+
+    // 触发解析或聚焦
+    const parseBtn = document.getElementById('parseManualUrlsBtn');
+    if (parseBtn) {
+      parseBtn.click();
+    }
+
+    setTimeout(() => {
+      manualUrlsInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      manualUrlsInput.focus();
+    }, 120);
+
+    showProbeToast(`🚀 已将 ${urls.length} 条引荐 URL 填入「博客自动外链」输入框并自动解析！`);
   }
 
   function openImportModal() {

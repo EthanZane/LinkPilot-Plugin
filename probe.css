@@ -199,6 +199,32 @@
   line-height: 1.4;
 }
 
+/* 单行 URL 复制小按钮 */
+.btn-probe-copy-single {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: all 0.15s ease;
+  vertical-align: middle;
+}
+
+.btn-probe-copy-single:hover {
+  color: #2563eb;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.btn-probe-copy-single:active {
+  transform: scale(0.92);
+}
+
 /* 结论与字段徽章：严格禁止折行 */
 .probe-conclusion-badge {
   display: inline-flex !important;

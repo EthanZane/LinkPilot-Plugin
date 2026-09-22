@@ -17,6 +17,8 @@ const requiredFiles = [
   'batch.js',
   'asset-library.js',
   'asset-library.css',
+  'probe.js',
+  'probe.css',
   'lib/papaparse.min.js'
 ];
 
@@ -53,7 +55,8 @@ function validateJavaScriptSyntax() {
     'illegal-site-filter.js',
     'options.js',
     'batch.js',
-    'asset-library.js'
+    'asset-library.js',
+    'probe.js'
   ];
 
   for (const file of jsFiles) {
