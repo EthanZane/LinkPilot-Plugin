@@ -1568,10 +1568,13 @@ function saveTimeoutRetrySetting() {
   }
 }
 
+const MIN_CONCURRENT_TABS = 1;
+const MAX_CONCURRENT_TABS = 30;
+
 function getConcurrencySetting() {
   if (concurrencyInput) {
     const val = parseInt(concurrencyInput.value, 10);
-    if (val >= 1 && val <= 10) return val;
+    if (!isNaN(val) && val >= MIN_CONCURRENT_TABS && val <= MAX_CONCURRENT_TABS) return val;
   }
   return maxConcurrentTabs || 3;
 }
@@ -1580,7 +1583,7 @@ async function loadConcurrencySetting() {
   return new Promise((resolve) => {
     chrome.storage.sync.get([CONCURRENCY_STORAGE_KEY], (data) => {
       const saved = parseInt(data[CONCURRENCY_STORAGE_KEY], 10);
-      maxConcurrentTabs = (saved && saved >= 1 && saved <= 10) ? saved : 3;
+      maxConcurrentTabs = (saved && saved >= MIN_CONCURRENT_TABS && saved <= MAX_CONCURRENT_TABS) ? saved : 3;
       if (concurrencyInput) concurrencyInput.value = String(maxConcurrentTabs);
       resolve();
     });
@@ -1589,13 +1592,15 @@ async function loadConcurrencySetting() {
 
 function saveConcurrencySetting() {
   if (!concurrencyInput) return;
-  const val = parseInt(concurrencyInput.value, 10);
-  if (val >= 1 && val <= 10) {
-    maxConcurrentTabs = val;
-    chrome.storage.sync.set({ [CONCURRENCY_STORAGE_KEY]: val });
-  } else {
-    concurrencyInput.value = String(maxConcurrentTabs);
+  let val = parseInt(concurrencyInput.value, 10);
+  if (isNaN(val) || val < MIN_CONCURRENT_TABS) {
+    val = MIN_CONCURRENT_TABS;
+  } else if (val > MAX_CONCURRENT_TABS) {
+    val = MAX_CONCURRENT_TABS;
   }
+  maxConcurrentTabs = val;
+  concurrencyInput.value = String(val);
+  chrome.storage.sync.set({ [CONCURRENCY_STORAGE_KEY]: val });
 }
 
 // ==================== 事件绑定 ====================
@@ -1749,7 +1754,17 @@ function bindEvents() {
   // 设置
   if (timeoutInput) timeoutInput.addEventListener('change', saveTimeoutSetting);
   if (timeoutRetryCountInput) timeoutRetryCountInput.addEventListener('change', saveTimeoutRetrySetting);
-  if (concurrencyInput) concurrencyInput.addEventListener('change', saveConcurrencySetting);
+  if (concurrencyInput) {
+    concurrencyInput.addEventListener('change', saveConcurrencySetting);
+    concurrencyInput.addEventListener('blur', saveConcurrencySetting);
+    concurrencyInput.addEventListener('input', () => {
+      const val = parseInt(concurrencyInput.value, 10);
+      if (!isNaN(val) && val >= MIN_CONCURRENT_TABS && val <= MAX_CONCURRENT_TABS) {
+        maxConcurrentTabs = val;
+        chrome.storage.sync.set({ [CONCURRENCY_STORAGE_KEY]: val });
+      }
+    });
+  }
 
   // 勾选框设置（全局记忆）
   if (batchAutoOpenPanel) batchAutoOpenPanel.addEventListener('change', saveBatchCheckboxSettings);
@@ -2621,6 +2636,8 @@ function getBatchTaskInfo(taskIndex) {
 }
 
 async function startBatch() {
+  saveConcurrencySetting();
+
   if (parsedUrls.length === 0) {
     alert('请先上传有效的 CSV 文件，或粘贴至少一个有效 URL');
     return;
