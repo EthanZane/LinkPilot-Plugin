@@ -138,6 +138,9 @@
     pollTimer: null
   };
 
+  let probeHistoryItems = [];
+  let probeHistoryActiveFilter = 'all'; // 'all' | 'pending' | 'migrated'
+
   /**
    * 初始化探测 UI
    */
@@ -195,8 +198,8 @@
 
           <div class="probe-config-bar">
             <div class="probe-config-group-left">
-              <button type="button" class="btn btn-secondary btn-sm" id="probeUploadFileBtn">📂 上传 TXT/CSV 文件</button>
-              <input type="file" id="probeFileInput" accept=".txt,.csv" style="display:none;" />
+              <button type="button" class="btn btn-secondary btn-sm" id="probeUploadFileBtn" title="支持多选 Excel (.xlsx/.xls)、CSV、TXT 文件并自动提取 Source url">📂 上传表格/文本文件</button>
+              <input type="file" id="probeFileInput" accept=".xlsx,.xls,.csv,.txt" multiple style="display:none;" />
               <button type="button" class="btn btn-secondary btn-sm" id="probeCleanDedupBtn" title="对输入框内的待测 URL 立即按域名去重整理">🧹 去重整理</button>
               
               <div class="probe-field-inline">
@@ -426,8 +429,15 @@
             <button type="button" class="asset-modal-close" id="probeCloseHistoryModalBtn">×</button>
           </div>
           <div class="asset-modal-body" style="max-height:65vh;overflow-y:auto;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-              <span style="font-size:12px;color:#64748b;">本地共存储 <strong id="probeHistoryTotalCount" style="color:#2563eb;">0</strong> 个历史探测批次</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <span style="font-size:12px;color:#64748b;">本地共存储 <strong id="probeHistoryTotalCount" style="color:#2563eb;">0</strong> 个历史探测批次</span>
+                <div style="display:inline-flex;gap:4px;align-items:center;">
+                  <button type="button" class="probe-history-filter-btn active" data-filter="all" id="probeHistFilterAll">全部 (<span id="probeHistFilterAllCount">0</span>)</button>
+                  <button type="button" class="probe-history-filter-btn" data-filter="pending" id="probeHistFilterPending">⏳ 待处理 (<span id="probeHistFilterPendingCount">0</span>)</button>
+                  <button type="button" class="probe-history-filter-btn" data-filter="migrated" id="probeHistFilterMigrated">✅ 已迁移 (<span id="probeHistFilterMigratedCount">0</span>)</button>
+                </div>
+              </div>
               <button type="button" class="btn btn-secondary btn-sm" id="probeClearAllHistoryBtn" style="color:#b91c1c;border-color:#fecaca;font-size:11px;">🗑️ 清空全部历史记录</button>
             </div>
             <div id="probeHistoryListContainer" style="display:flex;flex-direction:column;gap:10px;">
@@ -587,6 +597,226 @@
   }
 
   /**
+   * 从表格行的对象中提取引荐/来源外链 URL（优先匹配 Semrush 的 Source url 等字段）
+   */
+  function extractSourceUrlFromRow(row) {
+    if (!row || typeof row !== 'object') return '';
+    const candidateKeys = [
+      'sourceurl',
+      'sourcelink',
+      'referringpageurl',
+      'referralurl',
+      '引荐url',
+      '原url',
+      'pageurl',
+      'url',
+      'link'
+    ];
+
+    const keys = Object.keys(row);
+    // 1. 优先根据列名匹配（不区分大小写，忽略下划线/连字符/空格）
+    for (const cand of candidateKeys) {
+      const foundKey = keys.find((k) => k.trim().toLowerCase().replace(/[\s_\-]+/g, '') === cand);
+      if (foundKey && row[foundKey] !== undefined && row[foundKey] !== null) {
+        const val = String(row[foundKey]).trim();
+        if (/^https?:\/\//i.test(val) || (val.includes('.') && !val.includes(' ') && val.length > 3)) {
+          return val;
+        }
+      }
+    }
+
+    // 2. 兜底策略：若候选列名均未命中，扫描各字段值，提取第一个以 http(s) 开头的有效 URL
+    for (const k of keys) {
+      const val = String(row[k] || '').trim();
+      if (/^https?:\/\//i.test(val)) {
+        return val;
+      }
+    }
+    return '';
+  }
+
+  /**
+   * 解析 Excel (.xlsx / .xls) 表格文件
+   */
+  async function parseExcelFile(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          if (!window.XLSX || typeof window.XLSX.read !== 'function') {
+            console.error('XLSX 库未加载');
+            resolve([]);
+            return;
+          }
+          const data = new Uint8Array(e.target.result);
+          const workbook = window.XLSX.read(data, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          if (!firstSheetName) {
+            resolve([]);
+            return;
+          }
+          const sheet = workbook.Sheets[firstSheetName];
+          // 先尝试以首行为表头解析为对象数组
+          const rowsAsObjects = window.XLSX.utils.sheet_to_json(sheet, { defval: '' });
+          const urls = [];
+
+          if (rowsAsObjects.length > 0 && typeof rowsAsObjects[0] === 'object') {
+            for (const row of rowsAsObjects) {
+              const url = extractSourceUrlFromRow(row);
+              if (url) urls.push(url);
+            }
+          }
+
+          // 如果对象解析未能提取到 URL（可能首行包含报表标题说明），尝试按二维数组扫描
+          if (urls.length === 0) {
+            const rowsAsArrays = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+            if (rowsAsArrays.length > 1) {
+              let headerRowIndex = -1;
+              let urlColIndex = -1;
+              for (let r = 0; r < Math.min(rowsAsArrays.length, 10); r++) {
+                const row = rowsAsArrays[r];
+                if (!Array.isArray(row)) continue;
+                for (let c = 0; c < row.length; c++) {
+                  const cellVal = String(row[c] || '').trim().toLowerCase().replace(/[\s_\-]+/g, '');
+                  if (cellVal === 'sourceurl' || cellVal === 'referringpageurl' || cellVal === 'referralurl' || cellVal === '引荐url' || cellVal === 'pageurl' || cellVal === 'url') {
+                    headerRowIndex = r;
+                    urlColIndex = c;
+                    break;
+                  }
+                }
+                if (urlColIndex >= 0) break;
+              }
+
+              if (urlColIndex >= 0) {
+                for (let r = headerRowIndex + 1; r < rowsAsArrays.length; r++) {
+                  const val = String(rowsAsArrays[r]?.[urlColIndex] || '').trim();
+                  if (val && (/^https?:\/\//i.test(val) || val.includes('.'))) {
+                    urls.push(val);
+                  }
+                }
+              } else {
+                for (let r = 0; r < rowsAsArrays.length; r++) {
+                  const row = rowsAsArrays[r];
+                  if (!Array.isArray(row)) continue;
+                  for (let c = 0; c < row.length; c++) {
+                    const val = String(row[c] || '').trim();
+                    if (/^https?:\/\//i.test(val)) {
+                      urls.push(val);
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          resolve(urls);
+        } catch (err) {
+          console.error('Excel 文件解析失败:', err);
+          resolve([]);
+        }
+      };
+      reader.onerror = () => resolve([]);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  /**
+   * 解析 CSV 表格文件（优先 PapaParse，降级文本切分）
+   */
+  async function parseCsvFile(file) {
+    return new Promise((resolve) => {
+      if (window.Papa && typeof window.Papa.parse === 'function') {
+        window.Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            const rows = results.data || [];
+            const urls = [];
+            for (const row of rows) {
+              const url = extractSourceUrlFromRow(row);
+              if (url) urls.push(url);
+            }
+            if (urls.length > 0) {
+              resolve(urls);
+              return;
+            }
+            parseCsvFallback(file).then(resolve);
+          },
+          error: () => {
+            parseCsvFallback(file).then(resolve);
+          }
+        });
+      } else {
+        parseCsvFallback(file).then(resolve);
+      }
+    });
+  }
+
+  async function parseCsvFallback(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result || '';
+        const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const urls = [];
+        for (const line of lines) {
+          const parts = line.split(/[,\t]/).map((p) => p.replace(/^["']|["']$/g, '').trim());
+          const foundUrl = parts.find((p) => /^https?:\/\//i.test(p));
+          if (foundUrl) {
+            urls.push(foundUrl);
+          } else if (parts[0] && (parts[0].includes('.') || /^https?:\/\//i.test(parts[0]))) {
+            urls.push(parts[0]);
+          }
+        }
+        resolve(urls);
+      };
+      reader.onerror = () => resolve([]);
+      reader.readAsText(file);
+    });
+  }
+
+  /**
+   * 解析纯文本 TXT 文件
+   */
+  async function parseTxtFile(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result || '';
+        const lines = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#') && !l.startsWith('//'));
+        const urls = [];
+        for (const line of lines) {
+          const parts = line.split(/[,\t\s]+/);
+          const candidate = parts.find((p) => /^https?:\/\//i.test(p)) || parts[0];
+          if (candidate && (candidate.includes('.') || /^https?:\/\//i.test(candidate))) {
+            urls.push(candidate);
+          }
+        }
+        resolve(urls);
+      };
+      reader.onerror = () => resolve([]);
+      reader.readAsText(file);
+    });
+  }
+
+  /**
+   * 根据文件扩展名分发解析
+   */
+  async function parseFileForProbeUrls(file) {
+    const name = (file.name || '').toLowerCase();
+    if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+      return parseExcelFile(file);
+    } else if (name.endsWith('.csv')) {
+      return parseCsvFile(file);
+    } else {
+      return parseTxtFile(file);
+    }
+  }
+
+  /**
    * 绑定事件监听器
    */
   function bindProbeEvents() {
@@ -603,25 +833,81 @@
       updateInputCountDisplay();
     });
 
-    // 上传文件
+    // 上传文件（支持单个或多选 Excel/CSV/TXT）
     const uploadBtn = document.getElementById('probeUploadFileBtn');
     const fileInput = document.getElementById('probeFileInput');
-    uploadBtn?.addEventListener('click', () => fileInput?.click());
+    uploadBtn?.addEventListener('click', () => {
+      if (fileInput) {
+        fileInput.value = '';
+        fileInput.click();
+      }
+    });
 
-    fileInput?.addEventListener('change', (e) => {
-      const file = e.target.files && e.target.files[0];
-      if (!file) return;
+    fileInput?.addEventListener('change', async (e) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      if (files.length === 0) return;
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const text = event.target.result;
-        const { urls } = parseUrlsFromText(text);
+      uploadBtn.disabled = true;
+      const originalBtnText = uploadBtn.textContent;
+      uploadBtn.textContent = '⏳ 解析中...';
+
+      try {
+        const parseResults = await Promise.all(files.map((file) => parseFileForProbeUrls(file)));
+        const allExtractedUrls = [];
+        parseResults.forEach((urls) => {
+          if (Array.isArray(urls)) {
+            allExtractedUrls.push(...urls);
+          }
+        });
+
+        // 规整清洗提取到的 URL
+        const cleanUrls = [];
+        const seenFullUrls = new Set();
+        for (const u of allExtractedUrls) {
+          const trimmed = String(u || '').trim();
+          if (!trimmed) continue;
+          const fullUrl = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+          const domain = normalizeDomain(fullUrl);
+          if (!domain || !domain.includes('.') || domain === 'localhost') continue;
+          if (seenFullUrls.has(fullUrl)) continue;
+          seenFullUrls.add(fullUrl);
+          cleanUrls.push(fullUrl);
+        }
+
+        if (cleanUrls.length === 0) {
+          alert('未能从所选文件中提取到有效的外链 URL，请检查文件内容是否包含 Source url 列或有效外链。');
+          return;
+        }
+
+        let finalUrls = cleanUrls;
         if (urlsTextarea) {
-          urlsTextarea.value = urls.join('\n');
+          const currentText = urlsTextarea.value.trim();
+          if (currentText) {
+            const shouldAppend = confirm(
+              `检测到输入框中已有待测外链。\n\n- 点击【确定】：追加合并新提取的 ${cleanUrls.length} 条外链\n- 点击【取消】：清空输入框并替换为新上传的外链`
+            );
+            if (shouldAppend) {
+              const currentLines = currentText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+              const mergedSet = new Set(currentLines);
+              for (const u of cleanUrls) {
+                mergedSet.add(u);
+              }
+              finalUrls = Array.from(mergedSet);
+            }
+          }
+          urlsTextarea.value = finalUrls.join('\n');
           updateInputCountDisplay();
         }
-      };
-      reader.readAsText(file);
+
+        const stats = parseUrlsFromText(urlsTextarea?.value || '');
+        showProbeToast(`✅ 已解析 ${files.length} 个文件，提取 ${cleanUrls.length} 条有效外链（共 ${stats.urls.length} 个独立域名）`, 3500);
+      } catch (err) {
+        console.error('解析上传文件出错:', err);
+        alert(`解析文件失败: ${err.message || '未知错误'}`);
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = originalBtnText;
+      }
     });
 
     // 开始探测
@@ -716,6 +1002,17 @@
     document.getElementById('probeFillFailedUrlsBtn')?.addEventListener('click', fillHistoryFailedUrls);
     document.getElementById('probeRerunNowBtn')?.addEventListener('click', () => {
       startProbe();
+    });
+
+    // 历史档案分类过滤切换
+    document.querySelectorAll('.probe-history-filter-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.probe-history-filter-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        probeHistoryActiveFilter = btn.dataset.filter || 'all';
+        const container = document.getElementById('probeHistoryListContainer');
+        renderHistoryList(probeHistoryItems, container);
+      });
     });
 
     // 复制选中的引荐 URL（一行一个）
@@ -1758,6 +2055,24 @@
     }
   }
 
+  function updateHistoryModalCounts() {
+    const totalCountEl = document.getElementById('probeHistoryTotalCount');
+    const badge = document.getElementById('probeHistoryBadge');
+    const allCountEl = document.getElementById('probeHistFilterAllCount');
+    const pendingCountEl = document.getElementById('probeHistFilterPendingCount');
+    const migratedCountEl = document.getElementById('probeHistFilterMigratedCount');
+
+    const total = probeHistoryItems.length;
+    const pending = probeHistoryItems.filter((it) => !it.is_migrated).length;
+    const migrated = probeHistoryItems.filter((it) => it.is_migrated).length;
+
+    if (totalCountEl) totalCountEl.textContent = total;
+    if (badge) badge.textContent = total;
+    if (allCountEl) allCountEl.textContent = total;
+    if (pendingCountEl) pendingCountEl.textContent = pending;
+    if (migratedCountEl) migratedCountEl.textContent = migrated;
+  }
+
   /**
    * 打开历史档案弹窗
    */
@@ -1767,19 +2082,16 @@
     modal.style.display = 'flex';
 
     const container = document.getElementById('probeHistoryListContainer');
-    const totalCountEl = document.getElementById('probeHistoryTotalCount');
     if (container) {
       container.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;font-size:12px;">正在读取历史归档...</div>';
     }
 
     try {
       const res = await apiRequest('/api/probe/history?limit=100');
-      const items = (res && res.items) || [];
-      if (totalCountEl) totalCountEl.textContent = items.length;
-      const badge = document.getElementById('probeHistoryBadge');
-      if (badge) badge.textContent = items.length;
+      probeHistoryItems = (res && res.items) || [];
+      updateHistoryModalCounts();
 
-      if (items.length === 0) {
+      if (probeHistoryItems.length === 0) {
         if (container) {
           container.innerHTML = `
             <div style="text-align:center;padding:40px 20px;color:#94a3b8;font-size:13px;background:#f8fafc;border-radius:8px;">
@@ -1792,7 +2104,7 @@
         return;
       }
 
-      renderHistoryList(items, container);
+      renderHistoryList(probeHistoryItems, container);
     } catch (err) {
       if (container) {
         container.innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444;font-size:12px;">读取历史记录失败：${escapeHtml(err.message)}</div>`;
@@ -1813,7 +2125,24 @@
    */
   function renderHistoryList(items, container) {
     if (!container) return;
-    container.innerHTML = items
+
+    const filtered = (items || []).filter((item) => {
+      if (probeHistoryActiveFilter === 'pending') return !item.is_migrated;
+      if (probeHistoryActiveFilter === 'migrated') return !!item.is_migrated;
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      container.innerHTML = `
+        <div style="text-align:center;padding:36px 20px;color:#94a3b8;font-size:13px;background:#f8fafc;border-radius:8px;">
+          <div style="font-size:24px;margin-bottom:6px;">${probeHistoryActiveFilter === 'pending' ? '🎉' : (probeHistoryActiveFilter === 'migrated' ? '📭' : '🔍')}</div>
+          <div>${probeHistoryActiveFilter === 'pending' ? '没有待处理的批次，全部批次均已完成迁移！' : (probeHistoryActiveFilter === 'migrated' ? '暂无已标记为迁移的批次' : '暂无符合条件的历史记录')}</div>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = filtered
       .map((item) => {
         const timeStr = new Date(item.created_at).toLocaleString('zh-CN', { hour12: false });
         const isCurrentActive = probeState.activeHistoryId === item.id;
@@ -1822,19 +2151,30 @@
         const inLib = item.already_in_library_count || 0;
         const closed = item.closed_or_login_count || 0;
         const invalid = (item.not_blog_count || 0) + (item.failed_count || 0);
+        const isMigrated = !!item.is_migrated;
+        const migratedTimeStr = item.migrated_at ? new Date(item.migrated_at).toLocaleString('zh-CN', { hour12: false }) : '';
+
+        const itemStyle = isCurrentActive
+          ? 'border-color:#6366f1;background:#eef2ff;'
+          : (isMigrated ? 'border-color:#bbf7d0;background:#f8fdf9;' : '');
 
         return `
-          <div class="probe-history-item" style="${isCurrentActive ? 'border-color:#6366f1;background:#eef2ff;' : ''}">
+          <div class="probe-history-item" style="${itemStyle}">
             <div class="probe-history-meta">
-              <div style="display:flex;align-items:center;gap:8px;">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <strong style="font-size:13px;color:#0f172a;">${escapeHtml(item.title || timeStr)}</strong>
                 ${isCurrentActive ? '<span class="badge badge-info" style="background:#4f46e5;color:#fff;font-size:10px;">当前正在查看</span>' : ''}
                 <span class="badge" style="background:${item.status === 'completed' ? '#ecfdf5;color:#065f46;' : '#fef2f2;color:#991b1b;'}font-size:10px;">
                   ${item.status === 'completed' ? '已完成' : '已中止'}
                 </span>
+                ${isMigrated
+                  ? `<span class="badge badge-migrated-tag" style="background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;font-size:10px;font-weight:600;display:inline-flex;align-items:center;gap:3px;" title="该批次已手动标记为已迁移${migratedTimeStr ? '（' + migratedTimeStr + '）' : ''}">✅ 已迁移/已处理</span>`
+                  : `<span class="badge badge-pending-tag" style="background:#f1f5f9;color:#64748b;font-size:10px;" title="该批次尚未迁移处理">⏳ 待处理</span>`
+                }
               </div>
               <div style="font-size:11px;color:#64748b;">
                 探测时间：${timeStr} · 耗时：${item.elapsed_seconds || 0}秒 · 并发：${item.concurrency || 20}
+                ${isMigrated && migratedTimeStr ? ` · <span style="color:#16a34a;">已于 ${migratedTimeStr} 标记迁移</span>` : ''}
               </div>
               <div class="probe-history-badges">
                 <span class="probe-history-pill" style="background:#f1f5f9;color:#334155;">共 ${total} 条</span>
@@ -1844,7 +2184,10 @@
                 <span class="probe-history-pill" style="background:#fef2f2;color:#991b1b;">🔴 ${invalid} 非博客/失败</span>
               </div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+              <button type="button" class="btn btn-sm btn-toggle-migrated" data-history-id="${item.id}" style="padding:4px 9px;font-size:11px;${isMigrated ? 'background:#f0fdf4;color:#15803d;border:1px solid #86efac;font-weight:600;' : 'background:#ffffff;color:#475569;border:1px solid #cbd5e1;'}" title="${isMigrated ? '已标记为已迁移/已处理，点击可撤销/取消标记' : '点击将该批次手动标记为已迁移/已处理'}">
+                ${isMigrated ? '✅ 已迁移 (撤销)' : '⚪ 标记已处理'}
+              </button>
               <button type="button" class="btn btn-primary btn-sm btn-load-history" data-history-id="${item.id}" style="padding:4px 10px;font-size:11px;">
                 📂 载入此批次校对
               </button>
@@ -1857,6 +2200,12 @@
       })
       .join('');
 
+    container.querySelectorAll('.btn-toggle-migrated').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        toggleHistoryMigrationStatus(btn.dataset.historyId, btn);
+      });
+    });
+
     container.querySelectorAll('.btn-load-history').forEach((btn) => {
       btn.addEventListener('click', () => {
         loadHistorySession(btn.dataset.historyId);
@@ -1868,6 +2217,43 @@
         deleteHistorySession(btn.dataset.historyId);
       });
     });
+  }
+
+  /**
+   * 手动切换单条历史批次的迁移状态
+   */
+  async function toggleHistoryMigrationStatus(historyId, buttonEl) {
+    if (!historyId) return;
+    const found = probeHistoryItems.find((it) => it.id === historyId);
+
+    // 若当前已是“已迁移”，本次操作属于撤销，弹出确认对话框防止误触
+    if (found && found.is_migrated) {
+      const batchTitle = found.title || '该历史批次';
+      const confirmed = confirm(`确定要取消【${batchTitle}】的“已迁移”标记吗？\n\n取消后该批次将重新回到【待处理】列表。`);
+      if (!confirmed) return;
+    }
+
+    if (buttonEl) buttonEl.disabled = true;
+    try {
+      const res = await apiRequest(`/api/probe/history/${encodeURIComponent(historyId)}/toggle-migrated`, {}, { method: 'POST' });
+      const newIsMigrated = res && res.isMigrated;
+      const newMigratedAt = res && res.migratedAt;
+
+      if (found) {
+        found.is_migrated = newIsMigrated;
+        found.migrated_at = newMigratedAt;
+      }
+
+      showProbeToast(newIsMigrated ? '✅ 已手动标记为：已迁移/已处理' : '↩️ 已取消标记，已恢复为待处理状态', 2500);
+
+      updateHistoryModalCounts();
+      const container = document.getElementById('probeHistoryListContainer');
+      renderHistoryList(probeHistoryItems, container);
+    } catch (err) {
+      alert(`标记状态更新失败: ${err.message || '网络或接口错误'}`);
+    } finally {
+      if (buttonEl) buttonEl.disabled = false;
+    }
   }
 
   /**

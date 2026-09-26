@@ -1558,7 +1558,7 @@ async function resetProbeRulesInDb() {
         `select id, title, status, total_count, processed_count, raw_count, dedup_count,
                 already_in_library_count, valid_blog_count, closed_or_login_count,
                 not_blog_count, failed_count, concurrency, timeout_ms, elapsed_seconds,
-                stats, created_at, updated_at
+                stats, is_migrated, migrated_at, created_at, updated_at
          from ${probeHistoryTable}
          order by created_at desc
          limit $1`,
@@ -1575,7 +1575,7 @@ async function resetProbeRulesInDb() {
         `select id, title, status, total_count, processed_count, raw_count, dedup_count,
                 already_in_library_count, valid_blog_count, closed_or_login_count,
                 not_blog_count, failed_count, concurrency, timeout_ms, elapsed_seconds,
-                stats, results, created_at, updated_at
+                stats, results, is_migrated, migrated_at, created_at, updated_at
          from ${probeHistoryTable}
          where id = $1`,
         [historyId]
@@ -1598,10 +1598,66 @@ async function resetProbeRulesInDb() {
           endTime: new Date(record.updated_at).getTime(),
           stats: record.stats || {},
           results: record.results || [],
+          isMigrated: record.is_migrated,
+          migratedAt: record.migrated_at,
           cancelRequested: false
         });
       }
       writeJson(response, 200, { ok: true, data: record });
+      return;
+    }
+
+    // 手动切换批次是否已迁移/已处理
+    const probeHistoryToggleMatch = url.pathname.match(/^\/api\/probe\/history\/([^/]+)\/toggle-migrated$/);
+    if ((method === 'POST' || method === 'PATCH') && probeHistoryToggleMatch) {
+      const historyId = decodeURIComponent(probeHistoryToggleMatch[1]);
+      const payload = await readJsonBody(request).catch(() => ({}));
+      const hasTarget = payload && typeof payload.isMigrated === 'boolean';
+      const targetState = hasTarget ? payload.isMigrated : null;
+
+      let updateRes;
+      if (targetState === null) {
+        updateRes = await pool.query(
+          `update ${probeHistoryTable}
+           set is_migrated = not is_migrated,
+               migrated_at = case when not is_migrated then now() else null end,
+               updated_at = now()
+           where id = $1
+           returning id, is_migrated, migrated_at`,
+          [historyId]
+        );
+      } else {
+        updateRes = await pool.query(
+          `update ${probeHistoryTable}
+           set is_migrated = $2,
+               migrated_at = case when $2 then now() else null end,
+               updated_at = now()
+           where id = $1
+           returning id, is_migrated, migrated_at`,
+          [historyId, targetState]
+        );
+      }
+
+      if (updateRes.rows.length === 0) {
+        writeJson(response, 404, { ok: false, error: '未找到指定的探测历史记录' });
+        return;
+      }
+
+      const updated = updateRes.rows[0];
+      if (probeManager.sessions.has(historyId)) {
+        const s = probeManager.sessions.get(historyId);
+        s.isMigrated = updated.is_migrated;
+        s.migratedAt = updated.migrated_at;
+      }
+
+      writeJson(response, 200, {
+        ok: true,
+        data: {
+          id: updated.id,
+          isMigrated: updated.is_migrated,
+          migratedAt: updated.migrated_at
+        }
+      });
       return;
     }
 

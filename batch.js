@@ -1852,6 +1852,28 @@ window.addEventListener('autoCommentSitesConfigChanged', (event) => {
   applyBatchSitesConfig(event.detail, preferredSiteId);
 });
 
+// 当用户切回 options.html 页面时，立即触发巡检与调度补偿
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && (status === 'running' || status === 'queue_transition') && !isTerminated) {
+    console.log('[batch] 设置页切换到前台，立即触发心跳补偿与超时巡检');
+    if (keepAliveAudioCtx && keepAliveAudioCtx.state === 'suspended') {
+      keepAliveAudioCtx.resume().catch(() => {});
+    }
+    checkTimeouts();
+    scheduleNextTabs();
+  }
+});
+
+window.addEventListener('focus', () => {
+  if ((status === 'running' || status === 'queue_transition') && !isTerminated) {
+    if (keepAliveAudioCtx && keepAliveAudioCtx.state === 'suspended') {
+      keepAliveAudioCtx.resume().catch(() => {});
+    }
+    checkTimeouts();
+    scheduleNextTabs();
+  }
+});
+
 // ==================== CSV 解析 ====================
 function handleFileDrop(e) {
   e.preventDefault();
@@ -3111,6 +3133,9 @@ async function openNextTab() {
           activeTabsByIndex.delete(urlIndex);
           retryingItemIndexes.delete(urlIndex);
           activeTabCount = Math.max(0, activeTabCount - 1);
+          if (chrome.tabs.onUpdated) {
+            chrome.tabs.onUpdated.removeListener(updateListener);
+          }
           chrome.tabs.onRemoved.removeListener(listener);
 
           console.log('[batch] 标签页关闭:', { tabId, urlIndex, activeTabCount, status });
@@ -3164,6 +3189,18 @@ async function openNextTab() {
       };
       chrome.tabs.onRemoved.addListener(listener);
 
+      // 监听标签加载完成事件，一旦 complete 立即主动触发 sendWhenReady，减少轮询延迟
+      let isTaskSent = false;
+      const updateListener = (tabId, changeInfo) => {
+        if (tabId === tab.id && changeInfo.status === 'complete' && !isTaskSent) {
+          if (chrome.tabs.onUpdated) chrome.tabs.onUpdated.removeListener(updateListener);
+          sendWhenReady(tabId);
+        }
+      };
+      if (chrome.tabs.onUpdated) {
+        chrome.tabs.onUpdated.addListener(updateListener);
+      }
+
       // 等待 content script 就绪后再发送任务
       function sendWhenReady(tabId, retries = 0) {
         if (status !== 'running' || isTerminated || !activeTabs.has(tabId)) {
@@ -3198,6 +3235,8 @@ async function openNextTab() {
           return;
         }
         chrome.tabs.sendMessage(tabId, { type: 'PING' }, { frameId: 0 }).then(() => {
+          isTaskSent = true;
+          if (chrome.tabs.onUpdated) chrome.tabs.onUpdated.removeListener(updateListener);
           const isDebug = batchDebugMode ? batchDebugMode.checked : false;
           const isIgnoreHistory = batchIgnoreHistory ? batchIgnoreHistory.checked : false;
           const presetComment = isDebug ? resolveDebugCommentText(site || batchPromotionSite) : '';
@@ -3655,9 +3694,59 @@ async function checkTimeouts() {
   }
 }
 
+// ==================== 后台防休眠/防挂起音频锁 ====================
+// 利用 Web Audio API 保持活跃媒体会话，彻底豁免 Chromium 对后台 extension 页面的定时器节流 (Intensive Wake Up Throttling) 与休眠挂起 (PageLifecycle Freeze/Discard)
+let keepAliveAudioCtx = null;
+let keepAliveOsc = null;
+
+function startBackgroundKeepAlive() {
+  if (keepAliveAudioCtx) {
+    if (keepAliveAudioCtx.state === 'suspended') {
+      keepAliveAudioCtx.resume().catch(() => {});
+    }
+    return;
+  }
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    keepAliveAudioCtx = new AudioContextClass();
+    const osc = keepAliveAudioCtx.createOscillator();
+    const gain = keepAliveAudioCtx.createGain();
+    // 近似静音（0.00001），人耳完全无感，但使 Chrome 识别此 Tab 为活跃媒体 Tab，豁免一切后台冻结和睡眠挂起
+    gain.gain.value = 0.00001;
+    osc.connect(gain);
+    gain.connect(keepAliveAudioCtx.destination);
+    osc.start();
+    keepAliveOsc = osc;
+    console.log('[batch] 已启动后台防休眠音频锁，保障 options.html 后台调度不被 Chrome 挂起/冻结');
+  } catch (err) {
+    console.warn('[batch] 启动后台防休眠音频锁失败:', err);
+  }
+}
+
+function stopBackgroundKeepAlive() {
+  try {
+    if (keepAliveOsc) {
+      keepAliveOsc.stop();
+      keepAliveOsc.disconnect();
+      keepAliveOsc = null;
+    }
+    if (keepAliveAudioCtx) {
+      keepAliveAudioCtx.close().catch(() => {});
+      keepAliveAudioCtx = null;
+    }
+    console.log('[batch] 已释放后台防休眠音频锁');
+  } catch (_) {}
+}
+
 // ==================== UI 更新 ====================
 function setStatus(s) {
   status = s;
+  if (s === 'running' || s === 'queue_transition') {
+    startBackgroundKeepAlive();
+  } else {
+    stopBackgroundKeepAlive();
+  }
   statusBadge.textContent = {
     idle: '空闲',
     running: '运行中',

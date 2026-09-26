@@ -313,6 +313,30 @@
   font-weight: 500;
 }
 
+/* 历史档案筛选按钮 */
+.probe-history-filter-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.probe-history-filter-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.probe-history-filter-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+}
+
 /* 垃圾过滤规则弹窗与测试工具样式 */
 .probe-rules-card {
   background: #f8fafc;
