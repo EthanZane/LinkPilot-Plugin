@@ -736,6 +736,73 @@
       .stats-card-value.unstarted { color: #64748b; }
       .stats-card-value.rate { color: #2563eb; }
 
+      .stats-card[data-result-filter] {
+        cursor: pointer;
+        user-select: none;
+        position: relative;
+        transition: all 0.15s ease;
+      }
+
+      .stats-card[data-result-filter]:hover {
+        background-color: #f1f5f9;
+        border-color: #cbd5e1;
+      }
+
+      .stats-card[data-result-filter]:focus-visible {
+        outline: 2px solid #3b82f6;
+        outline-offset: -2px;
+      }
+
+      .stats-card[data-result-filter].active {
+        font-weight: 600;
+      }
+
+      .stats-card[data-result-filter="all"].active {
+        background-color: #eff6ff;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 1px #3b82f6;
+      }
+      .stats-card[data-result-filter="success"].active {
+        background-color: #ecfdf5;
+        border-color: #10b981;
+        box-shadow: 0 0 0 1px #10b981;
+      }
+      .stats-card[data-result-filter="skipped"].active {
+        background-color: #fefce8;
+        border-color: #eab308;
+        box-shadow: 0 0 0 1px #eab308;
+      }
+      .stats-card[data-result-filter="manual_required"].active {
+        background-color: #fffbeb;
+        border-color: #f59e0b;
+        box-shadow: 0 0 0 1px #f59e0b;
+      }
+      .stats-card[data-result-filter="no_comment_box"].active {
+        background-color: #fffbeb;
+        border-color: #f59e0b;
+        box-shadow: 0 0 0 1px #f59e0b;
+      }
+      .stats-card[data-result-filter="blocked_illegal"].active {
+        background-color: #fff1f2;
+        border-color: #f43f5e;
+        box-shadow: 0 0 0 1px #f43f5e;
+      }
+      .stats-card[data-result-filter="fail"].active {
+        background-color: #fef2f2;
+        border-color: #ef4444;
+        box-shadow: 0 0 0 1px #ef4444;
+      }
+      .stats-card[data-result-filter="unstarted"].active {
+        background-color: #f1f5f9;
+        border-color: #64748b;
+        box-shadow: 0 0 0 1px #64748b;
+      }
+
+      .stats-card[data-result-filter].active .stats-card-label {
+        color: #1e293b;
+        font-weight: 700;
+      }
+
       /* 目标站点切换导航与标签栏 */
       .stats-site-nav {
         display: flex;
@@ -1983,40 +2050,40 @@
                   </div>
                 </div>
 
-                <div class="stats-summary">
-                  <div class="stats-card">
+                <div class="stats-summary" role="tablist" aria-label="按结果状态筛选">
+                  <div class="stats-card active" data-result-filter="all" role="button" tabindex="0" title="点击查看全部结果" aria-selected="true">
                     <div class="stats-card-label">总数</div>
                     <div class="stats-card-value total" id="statsTotal">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="success" role="button" tabindex="0" title="点击仅查看成功结果" aria-selected="false">
                     <div class="stats-card-label">成功</div>
                     <div class="stats-card-value success" id="statsSuccess">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="skipped" role="button" tabindex="0" title="点击仅查看已存在结果" aria-selected="false">
                     <div class="stats-card-label">已存在</div>
                     <div class="stats-card-value skipped" id="statsSkipped">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="manual_required" role="button" tabindex="0" title="点击仅查看需手动处理结果" aria-selected="false">
                     <div class="stats-card-label">需手动处理</div>
                     <div class="stats-card-value manual-required" id="statsManualRequired">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="no_comment_box" role="button" tabindex="0" title="点击仅查看无评论框结果" aria-selected="false">
                     <div class="stats-card-label">无评论框</div>
                     <div class="stats-card-value no-comment-box" id="statsNoCommentBox">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="blocked_illegal" role="button" tabindex="0" title="点击仅查看非法拦截结果" aria-selected="false">
                     <div class="stats-card-label">非法拦截</div>
                     <div class="stats-card-value blocked-illegal" id="statsBlockedIllegal">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="fail" role="button" tabindex="0" title="点击仅查看失败结果" aria-selected="false">
                     <div class="stats-card-label">失败</div>
                     <div class="stats-card-value fail" id="statsFail">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card" data-result-filter="unstarted" role="button" tabindex="0" title="点击仅查看未开始结果" aria-selected="false">
                     <div class="stats-card-label">未开始</div>
                     <div class="stats-card-value unstarted" id="statsUnstarted">0</div>
                   </div>
-                  <div class="stats-card">
+                  <div class="stats-card stats-card-readonly" title="批次执行成功率（统计指标，不可筛选）">
                     <div class="stats-card-label">成功率</div>
                     <div class="stats-card-value rate" id="statsRate">-</div>
                   </div>

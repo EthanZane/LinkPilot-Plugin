@@ -1822,6 +1822,28 @@ function bindEvents() {
   filterTimeRange.addEventListener('change', renderStats);
   if (filterPageDepth) filterPageDepth.addEventListener('change', renderStats);
   filterKeyword.addEventListener('input', debounce(renderStats, 300));
+
+  // 状态统计卡片快捷筛选与键盘导航
+  const filterCards = document.querySelectorAll('.stats-card[data-result-filter]');
+  filterCards.forEach((card) => {
+    const handleFilterClick = () => {
+      const targetFilter = card.getAttribute('data-result-filter') || 'all';
+      if (filterResult.value === targetFilter && targetFilter !== 'all') {
+        filterResult.value = 'all';
+      } else {
+        filterResult.value = targetFilter;
+      }
+      renderStats();
+    };
+
+    card.addEventListener('click', handleFilterClick);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        handleFilterClick();
+      }
+    });
+  });
 }
 
 // 目标 URL 管理更新目标列表后，同步刷新尚未启动批次的目标选择器。
@@ -4051,6 +4073,12 @@ function clearBatch() {
   pendingRetryQueue = [];
   filterDomain.innerHTML = '<option value="all">全部引荐域名</option>';
   filterResult.value = 'all';
+  const filterCards = document.querySelectorAll('.stats-card[data-result-filter]');
+  filterCards.forEach((card) => {
+    const isAll = (card.getAttribute('data-result-filter') || 'all') === 'all';
+    card.classList.toggle('active', isAll);
+    card.setAttribute('aria-selected', isAll ? 'true' : 'false');
+  });
   filterTimeRange.value = 'all';
   if (filterPageDepth) filterPageDepth.value = 'all';
   filterKeyword.value = '';
@@ -4490,7 +4518,23 @@ function renderStats() {
   // 引荐域名下拉根据当前查看的数据集动态建立
   buildDomainOptions(siteResults);
 
-  const resultFilter = filterResult.value;
+  const resultFilter = filterResult ? filterResult.value : 'all';
+
+  // 同步状态统计卡片高亮与无障碍属性
+  const activeResultFilter = resultFilter || 'all';
+  const filterCards = document.querySelectorAll('.stats-card[data-result-filter]');
+  filterCards.forEach((card) => {
+    const cardFilter = card.getAttribute('data-result-filter');
+    const isSelected = cardFilter === activeResultFilter;
+    if (isSelected) {
+      card.classList.add('active');
+      card.setAttribute('aria-selected', 'true');
+    } else {
+      card.classList.remove('active');
+      card.setAttribute('aria-selected', 'false');
+    }
+  });
+
   const domainFilter = filterDomain.value;
   const kw = filterKeyword.value.trim().toLowerCase();
 
