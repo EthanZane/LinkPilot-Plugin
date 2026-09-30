@@ -129,6 +129,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const importExportStatus = document.getElementById('importExportStatus');
   const togglePageFloatingButtonsBtn = document.getElementById('togglePageFloatingButtonsBtn');
 
+  const siteCategorySelect = document.getElementById('siteCategorySelect');
+  const newCategoryBtn = document.getElementById('newCategoryBtn');
+  const quickNewCategoryBtn = document.getElementById('quickNewCategoryBtn');
+  const autoAnalyzeUrlBtn = document.getElementById('autoAnalyzeUrlBtn');
+  const urlAnalyzeStatus = document.getElementById('urlAnalyzeStatus');
+  const analyzeBtnIcon = document.getElementById('analyzeBtnIcon');
+  const analyzeBtnText = document.getElementById('analyzeBtnText');
+
   const providerSelect = document.getElementById('providerSelect');
   const providerNameInput = document.getElementById('providerName');
   const providerTypeInput = document.getElementById('providerType');
@@ -152,8 +160,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let showPageFloatingButtons = true;
   let aiConfig = clone(DEFAULT_AI_CONFIG);
   let editingProviderId = DEFAULT_AI_CONFIG.activeProviderId;
-  let sitesConfig = { activeSiteId: '', sites: [] };
+  let sitesConfig = { activeSiteId: '', categories: [], sites: [] };
   let editingSiteId = '';
+  const collapsedCategoryIds = new Set();
 
   function activateTab(tabName) {
     const targetName = tabPanels.some((panel) => panel.dataset.tabPanel === tabName) ? tabName : 'ai';
@@ -383,6 +392,21 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  function createCategoryId(name) {
+    return 'cat_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function normalizeCategory(cat, fallbackName = '默认分类') {
+    if (typeof cat === 'string') {
+      const name = normalizeText(cat);
+      if (!name) return null;
+      return { id: 'cat_' + encodeURIComponent(name), name };
+    }
+    const name = normalizeText(cat && cat.name) || fallbackName;
+    const id = normalizeText(cat && cat.id) || createCategoryId(name);
+    return { id, name };
+  }
+
   function normalizeSite(site) {
     const url = normalizeText(site && site.url);
     const content = normalizeText(site && site.content);
@@ -390,11 +414,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const anchors = Array.isArray(site && site.anchors)
       ? site.anchors.map(normalizeAnchor).filter(Boolean)
       : [];
+    const category = normalizeText(site && site.category);
+    const categoryId = normalizeText(site && site.categoryId);
     return {
       id: normalizeText(site && site.id) || createSiteId(name),
       name,
       url,
       content,
+      category: category || '',
+      categoryId: categoryId || '',
       anchors
     };
   }
@@ -412,24 +440,78 @@ document.addEventListener('DOMContentLoaded', () => {
       name: getDomainFromUrl(legacyUrl) || '默认目标',
       url: legacyUrl,
       content: legacyContent,
+      category: '默认分类',
+      categoryId: 'cat_default',
       anchors: []
     });
   }
 
   function normalizeSitesConfig(config, legacyData = {}) {
-    let sites = Array.isArray(config && config.sites)
-      ? config.sites.map(normalizeSite).filter(Boolean)
-      : [];
+    let categories = [];
+    if (Array.isArray(config && config.categories)) {
+      const seen = new Set();
+      config.categories.forEach((cat) => {
+        const norm = normalizeCategory(cat);
+        if (norm && !seen.has(norm.name)) {
+          seen.add(norm.name);
+          categories.push(norm);
+        }
+      });
+    }
+
+    if (Array.isArray(config && config.sites)) {
+      config.sites.forEach((site) => {
+        const catName = normalizeText(site && site.category);
+        if (catName && !categories.some((c) => c.name === catName)) {
+          categories.push({
+            id: normalizeText(site.categoryId) || createCategoryId(catName),
+            name: catName
+          });
+        }
+      });
+    }
+
+    if (categories.length === 0) {
+      categories.push({ id: 'cat_default', name: '默认分类' });
+    }
+
+    const defaultCategory = categories[0];
+
+    let rawSites = Array.isArray(config && config.sites) ? config.sites : [];
+    if (rawSites.length === 0) {
+      rawSites = [buildLegacySite(legacyData)];
+    }
+
+    let sites = rawSites.map((site) => {
+      const norm = normalizeSite(site);
+      if (!norm) return null;
+      let matchedCat = null;
+      if (site && site.categoryId) {
+        matchedCat = categories.find((c) => c.id === site.categoryId);
+      }
+      if (!matchedCat && site && site.category) {
+        matchedCat = categories.find((c) => c.name === site.category);
+      }
+      if (!matchedCat) {
+        matchedCat = defaultCategory;
+      }
+      norm.categoryId = matchedCat.id;
+      norm.category = matchedCat.name;
+      return norm;
+    }).filter(Boolean);
 
     if (sites.length === 0) {
-      sites = [buildLegacySite(legacyData)];
+      const legacySite = buildLegacySite(legacyData);
+      legacySite.categoryId = defaultCategory.id;
+      legacySite.category = defaultCategory.name;
+      sites = [legacySite];
     }
 
     const activeSiteId = sites.some((site) => site.id === config?.activeSiteId)
       ? config.activeSiteId
       : sites[0].id;
 
-    return { activeSiteId, sites };
+    return { activeSiteId, categories, sites };
   }
 
   function getEditingSite() {
@@ -459,33 +541,304 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   }
 
+  function renderCategorySelect(selectedCategoryId) {
+    if (!siteCategorySelect) return;
+    siteCategorySelect.innerHTML = '';
+    sitesConfig.categories.forEach((cat) => {
+      const option = document.createElement('option');
+      option.value = cat.id;
+      option.textContent = `📁 ${cat.name}`;
+      siteCategorySelect.appendChild(option);
+    });
+    if (selectedCategoryId && sitesConfig.categories.some((c) => c.id === selectedCategoryId)) {
+      siteCategorySelect.value = selectedCategoryId;
+    } else if (sitesConfig.categories[0]) {
+      siteCategorySelect.value = sitesConfig.categories[0].id;
+    }
+  }
+
+  function promptCreateNewCategory(initialName = '', autoAssignToCurrentSite = false) {
+    const rawName = window.prompt('请输入新分类名称（例如：mireka）：', initialName);
+    if (rawName === null) return null;
+    const name = normalizeText(rawName);
+    if (!name) {
+      alert('分类名称不能为空');
+      return null;
+    }
+    const existing = sitesConfig.categories.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      alert(`分类「${name}」已存在`);
+      if (autoAssignToCurrentSite) {
+        const site = getEditingSite();
+        if (site) {
+          site.categoryId = existing.id;
+          site.category = existing.name;
+          renderCategorySelect(existing.id);
+          renderSiteList();
+          publishSitesConfigForBatch();
+        }
+      }
+      return existing;
+    }
+
+    const newCat = {
+      id: createCategoryId(name),
+      name
+    };
+    sitesConfig.categories.push(newCat);
+    if (autoAssignToCurrentSite) {
+      const site = getEditingSite();
+      if (site) {
+        site.categoryId = newCat.id;
+        site.category = newCat.name;
+      }
+    }
+    persistSitesConfig(() => {
+      renderCategorySelect(autoAssignToCurrentSite ? newCat.id : (getEditingSite()?.categoryId || ''));
+      renderSiteList();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, `分类「${name}」已创建`, 2600);
+    });
+    return newCat;
+  }
+
+  function promptRenameCategory(cat) {
+    const rawName = window.prompt(`重命名分类「${cat.name}」：`, cat.name);
+    if (rawName === null) return;
+    const newName = normalizeText(rawName);
+    if (!newName || newName === cat.name) return;
+    const duplicate = sitesConfig.categories.find((c) => c.id !== cat.id && c.name.toLowerCase() === newName.toLowerCase());
+    if (duplicate) {
+      alert(`已存在同名分类「${newName}」`);
+      return;
+    }
+    cat.name = newName;
+    sitesConfig.sites.forEach((site) => {
+      if (site.categoryId === cat.id) {
+        site.category = newName;
+      }
+    });
+    persistSitesConfig(() => {
+      renderCategorySelect(getEditingSite()?.categoryId || '');
+      renderSiteList();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, `分类已重命名为「${newName}」`, 2600);
+    });
+  }
+
+  function promptDeleteCategory(cat) {
+    if (sitesConfig.categories.length <= 1) {
+      alert('至少需要保留一个分类');
+      return;
+    }
+    const catSites = sitesConfig.sites.filter((s) => s.categoryId === cat.id);
+    const otherCat = sitesConfig.categories.find((c) => c.id !== cat.id);
+    if (catSites.length > 0) {
+      const confirmed = window.confirm(`确定删除分类「${cat.name}」吗？\n该分类下的 ${catSites.length} 个推广页面将被移动到「${otherCat.name}」。`);
+      if (!confirmed) return;
+      catSites.forEach((site) => {
+        site.categoryId = otherCat.id;
+        site.category = otherCat.name;
+      });
+    } else {
+      const confirmed = window.confirm(`确定删除分类「${cat.name}」吗？`);
+      if (!confirmed) return;
+    }
+    sitesConfig.categories = sitesConfig.categories.filter((c) => c.id !== cat.id);
+    persistSitesConfig(() => {
+      renderCategorySelect(getEditingSite()?.categoryId || '');
+      renderSiteList();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, `分类「${cat.name}」已删除`, 2600);
+    });
+  }
+
+  function createNewPageUnderCategory(category) {
+    saveEditingSiteDraft();
+    const site = normalizeSite({
+      id: createSiteId('site'),
+      name: '新网站',
+      url: '',
+      content: '',
+      categoryId: category.id,
+      category: category.name,
+      anchors: []
+    });
+    sitesConfig.sites.push(site);
+    editingSiteId = site.id;
+    renderSiteList();
+    fillSiteForm(site);
+    websiteUrlInput.focus();
+    publishSitesConfigForBatch();
+    showStatus(settingsStatusEl, `已在分类「${category.name}」下创建新页面，输入 URL 后点击右侧图标按钮自动分析`, 3000);
+  }
+
   function renderSiteList() {
     siteList.innerHTML = '';
-    sitesConfig.sites.forEach((site) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'site-item';
-      button.classList.toggle('active', site.id === editingSiteId);
-      button.dataset.siteId = site.id;
-      button.innerHTML = `
-        <div class="site-item-name">
-          <span>${escapeHtml(site.name || '未命名目标')}</span>
-        </div>
-        <div class="site-item-url">${escapeHtml(site.url || '未填写 URL')}</div>
-      `;
-      button.addEventListener('click', () => {
-        saveEditingSiteDraft();
-        editingSiteId = site.id;
+
+    if (!sitesConfig.categories || sitesConfig.categories.length === 0) {
+      sitesConfig.categories = [{ id: 'cat_default', name: '默认分类' }];
+    }
+
+    sitesConfig.categories.forEach((cat) => {
+      const catSites = sitesConfig.sites.filter((s) => s.categoryId === cat.id || (!s.categoryId && s.category === cat.name));
+      const isCollapsed = collapsedCategoryIds.has(cat.id);
+
+      const groupEl = document.createElement('div');
+      groupEl.className = 'site-category-group';
+      groupEl.dataset.categoryId = cat.id;
+
+      // Category Header
+      const headerEl = document.createElement('div');
+      headerEl.className = 'site-category-header';
+
+      const titleWrapEl = document.createElement('div');
+      titleWrapEl.className = 'site-category-title-wrap';
+
+      const arrowEl = document.createElement('span');
+      arrowEl.className = `toggle-arrow${isCollapsed ? ' collapsed' : ''}`;
+      arrowEl.textContent = '▼';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'site-category-name';
+      nameEl.textContent = `📁 ${cat.name}`;
+      nameEl.title = '双击重命名';
+
+      const countEl = document.createElement('span');
+      countEl.className = 'site-category-count';
+      countEl.textContent = String(catSites.length);
+
+      titleWrapEl.appendChild(arrowEl);
+      titleWrapEl.appendChild(nameEl);
+      titleWrapEl.appendChild(countEl);
+
+      titleWrapEl.addEventListener('click', () => {
+        if (collapsedCategoryIds.has(cat.id)) {
+          collapsedCategoryIds.delete(cat.id);
+        } else {
+          collapsedCategoryIds.add(cat.id);
+        }
         renderSiteList();
-        fillSiteForm(site);
       });
-      siteList.appendChild(button);
+
+      titleWrapEl.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        promptRenameCategory(cat);
+      });
+
+      // Actions
+      const actionsEl = document.createElement('div');
+      actionsEl.className = 'site-category-actions';
+
+      const addPageBtn = document.createElement('button');
+      addPageBtn.type = 'button';
+      addPageBtn.className = 'category-action-btn add-page-btn';
+      addPageBtn.textContent = '+ 页面';
+      addPageBtn.title = `在此分类「${cat.name}」下添加页面`;
+      addPageBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        createNewPageUnderCategory(cat);
+      });
+
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'category-action-btn';
+      renameBtn.textContent = '✏️';
+      renameBtn.title = '重命名分类';
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        promptRenameCategory(cat);
+      });
+
+      actionsEl.appendChild(addPageBtn);
+      actionsEl.appendChild(renameBtn);
+
+      if (sitesConfig.categories.length > 1) {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'category-action-btn';
+        deleteBtn.textContent = '🗑️';
+        deleteBtn.title = '删除分类';
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          promptDeleteCategory(cat);
+        });
+        actionsEl.appendChild(deleteBtn);
+      }
+
+      headerEl.appendChild(titleWrapEl);
+      headerEl.appendChild(actionsEl);
+      groupEl.appendChild(headerEl);
+
+      // Body (Pages)
+      const bodyEl = document.createElement('div');
+      bodyEl.className = `site-category-body${isCollapsed ? ' collapsed' : ''}`;
+
+      if (catSites.length === 0) {
+        const emptyEl = document.createElement('div');
+        emptyEl.className = 'category-empty-hint';
+        emptyEl.textContent = '暂无页面，点击右上角「+ 页面」添加';
+        bodyEl.appendChild(emptyEl);
+      } else {
+        catSites.forEach((site) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'site-item';
+          button.classList.toggle('active', site.id === editingSiteId);
+          button.dataset.siteId = site.id;
+          button.innerHTML = `
+            <div class="site-item-name">
+              <span>${escapeHtml(site.name || '未命名目标')}</span>
+            </div>
+            <div class="site-item-url">${escapeHtml(site.url || '未填写 URL')}</div>
+          `;
+          button.addEventListener('click', () => {
+            saveEditingSiteDraft();
+            editingSiteId = site.id;
+            sitesConfig.activeSiteId = site.id;
+            persistSitesConfig();
+            renderSiteList();
+            fillSiteForm(site);
+          });
+          bodyEl.appendChild(button);
+        });
+      }
+
+      groupEl.appendChild(bodyEl);
+      siteList.appendChild(groupEl);
     });
+  }
+
+  function computeAnchorWeights(count) {
+    if (count <= 0) return [];
+    if (count === 1) return [1];
+    const weights = [];
+    for (let i = 0; i < count; i++) {
+      weights.push(i === 0 ? 4.0 : 2.0 / (1 + (i - 1) * 0.45));
+    }
+    return weights;
+  }
+
+  function getAnchorProbabilities(anchors) {
+    const enabledList = (anchors || []).filter((a) => a && a.enabled !== false && a.text);
+    const count = enabledList.length;
+    if (count === 0) return {};
+    if (count === 1) {
+      return { [enabledList[0].id]: '100%' };
+    }
+    const weights = computeAnchorWeights(count);
+    const total = weights.reduce((s, w) => s + w, 0);
+    const result = {};
+    enabledList.forEach((a, i) => {
+      const pct = Math.round((weights[i] / total) * 100);
+      result[a.id] = `~${pct}%`;
+    });
+    return result;
   }
 
   function renderAnchorList(site) {
     anchorList.innerHTML = '';
-    if (!site || site.anchors.length === 0) {
+    if (!site || !Array.isArray(site.anchors) || site.anchors.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'anchor-empty';
       empty.textContent = '这个网站还没有锚文本。未配置时，AI 会根据页面上下文自然生成锚文本。';
@@ -493,15 +846,43 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    site.anchors.forEach((anchor) => {
+    const probabilities = getAnchorProbabilities(site.anchors);
+    let enabledRank = 0;
+
+    site.anchors.forEach((anchor, index) => {
+      const isEnabled = anchor.enabled !== false;
+      const isFirstEnabled = isEnabled && enabledRank === 0;
+      if (isEnabled) enabledRank++;
+
+      const probText = isEnabled ? (probabilities[anchor.id] || '') : '已禁用';
+      const badgeClass = !isEnabled
+        ? 'is-disabled'
+        : isFirstEnabled
+          ? 'is-primary'
+          : 'is-secondary';
+
+      const badgeLabel = !isEnabled
+        ? '已禁用'
+        : isFirstEnabled
+          ? `👑 主词 ${probText}`
+          : `#${enabledRank} ${probText}`;
+
+      const isFirst = index === 0;
+      const isLast = index === site.anchors.length - 1;
+
       const row = document.createElement('div');
-      row.className = 'anchor-row';
-      row.classList.toggle('is-disabled', !anchor.enabled);
+      row.className = `anchor-row ${isFirstEnabled ? 'is-primary' : ''} ${!isEnabled ? 'is-disabled' : ''}`;
       row.dataset.anchorId = anchor.id;
       row.innerHTML = `
-        <input type="checkbox" data-anchor-action="toggle" ${anchor.enabled ? 'checked' : ''} title="启用或禁用该锚文本" />
-        <input type="text" data-anchor-action="text" value="${escapeHtml(anchor.text)}" />
-        <button class="btn btn-secondary" type="button" data-anchor-action="delete">删除</button>
+        <input type="checkbox" data-anchor-action="toggle" ${isEnabled ? 'checked' : ''} title="启用或禁用该锚文本" />
+        <input type="text" data-anchor-action="text" value="${escapeHtml(anchor.text)}" placeholder="锚文本" />
+        <span class="anchor-prob-badge ${badgeClass}" title="${isFirstEnabled ? '排在第 1 位的启用项自动作为主锚文本，轮播权重最高' : (isEnabled ? '次要/长尾词，轮播权重随排序逐级平滑递减' : '已禁用，不参与轮播')}">${badgeLabel}</span>
+        <div class="anchor-actions">
+          ${!isFirst ? '<button class="anchor-action-btn btn-primary-set" type="button" data-anchor-action="set-primary" title="设为主锚文本（移到第 1 位）">👑 置顶</button>' : ''}
+          <button class="anchor-action-btn" type="button" data-anchor-action="move-up" ${isFirst ? 'disabled' : ''} title="上移一位">⬆️</button>
+          <button class="anchor-action-btn" type="button" data-anchor-action="move-down" ${isLast ? 'disabled' : ''} title="下移一位">⬇️</button>
+          <button class="anchor-action-btn btn-delete" type="button" data-anchor-action="delete" title="删除该锚文本">🗑️</button>
+        </div>
       `;
       anchorList.appendChild(row);
     });
@@ -510,10 +891,15 @@ document.addEventListener('DOMContentLoaded', () => {
   function fillSiteForm(site) {
     if (!site) return;
     editingSiteId = site.id;
+    renderCategorySelect(site.categoryId);
     siteNameInput.value = site.name || '';
     websiteUrlInput.value = site.url || '';
     websiteContentInput.value = site.content || '';
     anchorTextInput.value = '';
+    if (urlAnalyzeStatus) {
+      urlAnalyzeStatus.style.display = 'none';
+      urlAnalyzeStatus.innerHTML = '';
+    }
     renderAnchorList(site);
     renderSiteList();
   }
@@ -524,6 +910,13 @@ document.addEventListener('DOMContentLoaded', () => {
     site.name = normalizeText(siteNameInput.value) || getDomainFromUrl(websiteUrlInput.value) || site.name || '未命名目标';
     site.url = normalizeText(websiteUrlInput.value);
     site.content = normalizeText(websiteContentInput.value);
+    if (siteCategorySelect && siteCategorySelect.value) {
+      const cat = sitesConfig.categories.find((c) => c.id === siteCategorySelect.value);
+      if (cat) {
+        site.categoryId = cat.id;
+        site.category = cat.name;
+      }
+    }
     return site;
   }
 
@@ -537,15 +930,39 @@ document.addEventListener('DOMContentLoaded', () => {
     return site;
   }
 
+  function sanitizeBrandOrAuthorName(rawName) {
+    let name = String(rawName || '').trim();
+    if (!name) return 'Guest';
+    if (name.includes(' - ')) {
+      const parts = name.split(' - ').map((p) => p.trim()).filter(Boolean);
+      name = parts[parts.length - 1] || parts[0];
+    } else if (name.includes(' | ')) {
+      const parts = name.split(' | ').map((p) => p.trim()).filter(Boolean);
+      name = parts[0];
+    }
+    name = name.replace(/^https?:\/\//i, '').replace(/\.(com|co|io|org|net|ai|app)$/i, '');
+    return name.trim() || 'Guest';
+  }
+
   function persistSitesConfig(callback) {
+    if (editingSiteId && sitesConfig.sites.some((s) => s.id === editingSiteId)) {
+      sitesConfig.activeSiteId = editingSiteId;
+    }
     const activeSite = sitesConfig.sites.find((s) => s.id === sitesConfig.activeSiteId) || sitesConfig.sites[0] || null;
+    const primaryAnchor = activeSite && Array.isArray(activeSite.anchors)
+      ? (activeSite.anchors.find((a) => a && a.enabled !== false && a.text)?.text || '')
+      : '';
+    const cleanAuthorName = primaryAnchor || (activeSite ? sanitizeBrandOrAuthorName(activeSite.name) : '');
+    const activeId = activeSite ? activeSite.id : '';
     const localPayload = {
-      [SITES_CONFIG_STORAGE_KEY]: sitesConfig
+      [SITES_CONFIG_STORAGE_KEY]: sitesConfig,
+      'auto_comment_selected_promotion_site_id': activeId,
+      'auto_comment_batch_selected_promotion_site_id': activeId
     };
     const syncPayload = {
       [WEBSITE_URL_STORAGE_KEY]: activeSite ? activeSite.url : '',
       [WEBSITE_CONTENT_STORAGE_KEY]: activeSite ? activeSite.content : '',
-      [USER_NAME_STORAGE_KEY]: activeSite ? activeSite.name : '',
+      [USER_NAME_STORAGE_KEY]: cleanAuthorName,
       [USER_EMAIL_STORAGE_KEY]: userEmailInput.value.trim(),
       [USER_PASSWORD_STORAGE_KEY]: userPasswordInput.value.trim()
     };
@@ -699,6 +1116,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sitesConfig.sites.push(site);
       }
       editingSiteId = site.id;
+      sitesConfig.activeSiteId = site.id;
       persistSitesConfig((error) => {
         button.disabled = false;
         button.textContent = originalText;
@@ -728,22 +1146,40 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  if (newCategoryBtn) {
+    newCategoryBtn.addEventListener('click', () => {
+      promptCreateNewCategory();
+    });
+  }
+
+  if (quickNewCategoryBtn) {
+    quickNewCategoryBtn.addEventListener('click', () => {
+      promptCreateNewCategory('', true);
+    });
+  }
+
+  if (siteCategorySelect) {
+    siteCategorySelect.addEventListener('change', () => {
+      const site = getEditingSite();
+      if (!site) return;
+      const cat = sitesConfig.categories.find((c) => c.id === siteCategorySelect.value);
+      if (cat) {
+        site.categoryId = cat.id;
+        site.category = cat.name;
+        renderSiteList();
+        publishSitesConfigForBatch();
+      }
+    });
+  }
+
   if (newSiteBtn) {
     newSiteBtn.addEventListener('click', () => {
       saveEditingSiteDraft();
-      const site = normalizeSite({
-        id: createSiteId('site'),
-        name: '新网站',
-        url: '',
-        content: '',
-        anchors: []
-      });
-      sitesConfig.sites.push(site);
-      editingSiteId = site.id;
-      renderSiteList();
-      fillSiteForm(site);
-      publishSitesConfigForBatch();
-      showStatus(settingsStatusEl, '已创建新网站，请填写后保存', 2600);
+      const currentSite = getEditingSite();
+      const defaultCat = (currentSite && sitesConfig.categories.find((c) => c.id === currentSite.categoryId))
+        || sitesConfig.categories[0]
+        || { id: 'cat_default', name: '默认分类' };
+      createNewPageUnderCategory(defaultCat);
     });
   }
 
@@ -752,7 +1188,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const site = getEditingSite();
       if (!site) return;
       if (sitesConfig.sites.length <= 1) {
-        showStatus(settingsStatusEl, '至少保留一个网站', 2400);
+        showStatus(settingsStatusEl, '至少保留一个推广页面', 2400);
         return;
       }
       if (!confirm(`确认删除「${site.name}」？`)) return;
@@ -764,7 +1200,7 @@ document.addEventListener('DOMContentLoaded', () => {
       persistSitesConfig(() => {
         fillSiteForm(getEditingSite());
         publishSitesConfigForBatch();
-        showStatus(settingsStatusEl, '网站已删除');
+        showStatus(settingsStatusEl, '推广页面已删除');
       });
     });
   }
@@ -789,8 +1225,9 @@ document.addEventListener('DOMContentLoaded', () => {
       site.anchors.push(...nextAnchors);
       anchorTextInput.value = '';
       renderAnchorList(site);
+      persistSitesConfig();
       publishSitesConfigForBatch();
-      showStatus(settingsStatusEl, `已添加 ${nextAnchors.length} 个锚文本，请保存站点`, 2600);
+      showStatus(settingsStatusEl, `已添加 ${nextAnchors.length} 个锚文本（已自动保存）`, 2600);
     });
   }
 
@@ -803,6 +1240,114 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  if (autoAnalyzeUrlBtn) {
+    autoAnalyzeUrlBtn.addEventListener('click', () => {
+      let url = (websiteUrlInput.value || '').trim();
+      if (!url) {
+        websiteUrlInput.focus();
+        if (urlAnalyzeStatus) {
+          urlAnalyzeStatus.style.display = 'block';
+          urlAnalyzeStatus.style.background = '#fef2f2';
+          urlAnalyzeStatus.style.color = '#b91c1c';
+          urlAnalyzeStatus.style.border = '1px solid #fecaca';
+          urlAnalyzeStatus.textContent = '请先输入目标 URL（例如：https://example.com/product）';
+        }
+        return;
+      }
+
+      if (!/^https?:\/\//i.test(url)) {
+        url = `https://${url}`;
+        websiteUrlInput.value = url;
+      }
+
+      autoAnalyzeUrlBtn.disabled = true;
+      if (analyzeBtnIcon) analyzeBtnIcon.classList.add('spin');
+      if (analyzeBtnText) analyzeBtnText.textContent = '分析中...';
+
+      if (urlAnalyzeStatus) {
+        urlAnalyzeStatus.style.display = 'block';
+        urlAnalyzeStatus.style.background = '#eff6ff';
+        urlAnalyzeStatus.style.color = '#1d4ed8';
+        urlAnalyzeStatus.style.border = '1px solid #bfdbfe';
+        urlAnalyzeStatus.innerHTML = '<span class="spin">⏳</span> 正在抓取网页内容并调用 AI 深度分析，请稍候...';
+      }
+
+      chrome.runtime.sendMessage({ type: 'ANALYZE_PROMOTION_URL', url }, (response) => {
+        autoAnalyzeUrlBtn.disabled = false;
+        if (analyzeBtnIcon) analyzeBtnIcon.classList.remove('spin');
+        if (analyzeBtnText) analyzeBtnText.textContent = '自动分析';
+
+        if (chrome.runtime.lastError) {
+          if (urlAnalyzeStatus) {
+            urlAnalyzeStatus.style.display = 'block';
+            urlAnalyzeStatus.style.background = '#fef2f2';
+            urlAnalyzeStatus.style.color = '#b91c1c';
+            urlAnalyzeStatus.style.border = '1px solid #fecaca';
+            urlAnalyzeStatus.textContent = `❌ 分析失败：${chrome.runtime.lastError.message || '后台通信失败'}`;
+          }
+          return;
+        }
+
+        if (!response || !response.ok) {
+          if (urlAnalyzeStatus) {
+            urlAnalyzeStatus.style.display = 'block';
+            urlAnalyzeStatus.style.background = '#fef2f2';
+            urlAnalyzeStatus.style.color = '#b91c1c';
+            urlAnalyzeStatus.style.border = '1px solid #fecaca';
+            urlAnalyzeStatus.textContent = `❌ 分析失败：${response?.error || '无法获取网页信息'}`;
+          }
+          return;
+        }
+
+        const data = response.data || {};
+        if (data.name) {
+          siteNameInput.value = data.name;
+          siteNameInput.classList.remove('is-invalid');
+        }
+        if (data.content) {
+          websiteContentInput.value = data.content;
+          websiteContentInput.classList.remove('is-invalid');
+        }
+        if (data.url) {
+          websiteUrlInput.value = data.url;
+          websiteUrlInput.classList.remove('is-invalid');
+        }
+
+        const currentSite = getEditingSite();
+        let addedCount = 0;
+        if (currentSite && Array.isArray(data.anchors) && data.anchors.length > 0) {
+          const existingSet = new Set(currentSite.anchors.map((a) => a.text.toLowerCase()));
+          const newAnchors = data.anchors
+            .map((t) => normalizeText(t))
+            .filter((t) => t && !existingSet.has(t.toLowerCase()))
+            .map((text) => ({ id: createAnchorId(text), text, enabled: true }));
+          if (newAnchors.length > 0) {
+            currentSite.anchors.push(...newAnchors);
+            addedCount = newAnchors.length;
+            renderAnchorList(currentSite);
+          }
+        }
+
+        saveEditingSiteDraft();
+        persistSitesConfig();
+        renderSiteList();
+        publishSitesConfigForBatch();
+
+        if (urlAnalyzeStatus) {
+          urlAnalyzeStatus.style.display = 'block';
+          urlAnalyzeStatus.style.background = '#f0fdf4';
+          urlAnalyzeStatus.style.color = '#15803d';
+          urlAnalyzeStatus.style.border = '1px solid #bbf7d0';
+          let successHtml = `✨ 网页分析完成！已自动填充并保存目标名称、内容描述与 ${addedCount} 个锚文本。`;
+          if (data.warning) {
+            successHtml += `<br><small style="color: #b45309; font-weight: 500;">ℹ️ ${escapeHtml(data.warning)}</small>`;
+          }
+          urlAnalyzeStatus.innerHTML = successHtml;
+        }
+      });
+    });
+  }
+
   anchorList.addEventListener('change', (event) => {
     const row = event.target.closest('.anchor-row');
     const site = getEditingSite();
@@ -811,9 +1356,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!anchor) return;
     if (event.target.dataset.anchorAction === 'toggle') {
       anchor.enabled = !!event.target.checked;
-      row.classList.toggle('is-disabled', !anchor.enabled);
+      saveEditingSiteDraft();
+      persistSitesConfig();
+      renderAnchorList(site);
       publishSitesConfigForBatch();
-      showStatus(settingsStatusEl, '锚文本状态已修改，请保存站点', 2400);
+      showStatus(settingsStatusEl, '锚文本状态已保存', 2000);
     }
   });
 
@@ -828,15 +1375,51 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   anchorList.addEventListener('click', (event) => {
-    const action = event.target.dataset.anchorAction;
-    if (action !== 'delete') return;
+    const actionBtn = event.target.closest('[data-anchor-action]');
+    if (!actionBtn) return;
+    const action = actionBtn.dataset.anchorAction;
+    if (!action || action === 'toggle' || action === 'text') return;
+
     const row = event.target.closest('.anchor-row');
     const site = getEditingSite();
     if (!row || !site) return;
-    site.anchors = site.anchors.filter((item) => item.id !== row.dataset.anchorId);
-    renderAnchorList(site);
-    publishSitesConfigForBatch();
-    showStatus(settingsStatusEl, '锚文本已删除，请保存站点', 2400);
+    const index = site.anchors.findIndex((item) => item.id === row.dataset.anchorId);
+    if (index === -1) return;
+
+    if (action === 'delete') {
+      site.anchors.splice(index, 1);
+      renderAnchorList(site);
+      saveEditingSiteDraft();
+      persistSitesConfig();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, '锚文本已删除并保存', 2000);
+    } else if (action === 'move-up' && index > 0) {
+      const temp = site.anchors[index];
+      site.anchors[index] = site.anchors[index - 1];
+      site.anchors[index - 1] = temp;
+      renderAnchorList(site);
+      saveEditingSiteDraft();
+      persistSitesConfig();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, '已上移并保存', 1800);
+    } else if (action === 'move-down' && index < site.anchors.length - 1) {
+      const temp = site.anchors[index];
+      site.anchors[index] = site.anchors[index + 1];
+      site.anchors[index + 1] = temp;
+      renderAnchorList(site);
+      saveEditingSiteDraft();
+      persistSitesConfig();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, '已下移并保存', 1800);
+    } else if (action === 'set-primary' && index > 0) {
+      const [target] = site.anchors.splice(index, 1);
+      site.anchors.unshift(target);
+      renderAnchorList(site);
+      saveEditingSiteDraft();
+      persistSitesConfig();
+      publishSitesConfigForBatch();
+      showStatus(settingsStatusEl, '已将该词设为主锚文本并保存', 2000);
+    }
   });
 
   if (providerSelect) {

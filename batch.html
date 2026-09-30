@@ -1138,22 +1138,37 @@
         top: calc(100% + 4px);
         left: 0;
         right: 0;
+        max-height: min(440px, 60vh);
+        overflow-y: auto;
+        overscroll-behavior: contain;
         background: #ffffff;
         border: 1px solid #cbd5e1;
         border-radius: 8px;
-        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.14);
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.18);
         z-index: 100;
         padding: 6px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar {
+        width: 6px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar-track {
+        background: #f1f5f9;
+        border-radius: 4px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
       }
       .batch-dropdown-menu.open {
         display: block;
       }
       .batch-sites-list {
-        max-height: 220px;
-        overflow-y: auto;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 6px;
         padding: 2px;
       }
       .batch-site-item {
@@ -1215,6 +1230,87 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .batch-cat-group {
+        flex-shrink: 0;
+        margin-bottom: 6px;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        background: #f8fafc;
+        overflow: hidden;
+      }
+      .batch-cat-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        background: #f1f5f9;
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.15s ease;
+      }
+      .batch-cat-header:hover {
+        background: #e2e8f0;
+      }
+      .batch-cat-toggle-arrow {
+        display: inline-block;
+        font-size: 10px;
+        color: #64748b;
+        transition: transform 0.15s ease;
+        width: 14px;
+        text-align: center;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .batch-cat-toggle-arrow.collapsed {
+        transform: rotate(-90deg);
+      }
+      .batch-cat-checkbox {
+        cursor: pointer;
+        width: 15px;
+        height: 15px;
+        accent-color: #2563eb;
+        flex-shrink: 0;
+        margin: 0;
+      }
+      .batch-cat-info {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex: 1;
+        min-width: 0;
+      }
+      .batch-cat-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #1e293b;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .batch-cat-badge {
+        font-size: 11px;
+        font-weight: 600;
+        color: #64748b;
+        background: #e2e8f0;
+        padding: 1px 7px;
+        border-radius: 999px;
+        margin-left: 6px;
+        flex-shrink: 0;
+      }
+      .batch-cat-children {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        padding: 4px 6px 6px 6px;
+        background: #ffffff;
+      }
+      .batch-cat-children.collapsed {
+        display: none;
+      }
+      .batch-site-item.child-item {
+        margin-left: 18px;
+        border-left: 3px solid #93c5fd;
       }
       .batch-queue-banner {
         margin-bottom: 12px;

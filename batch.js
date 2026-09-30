@@ -210,10 +210,13 @@ const BATCH_SELECTED_PROMOTION_SITE_IDS_STORAGE_KEY = 'auto_comment_batch_select
 
 // 批次启动时锁定目标 URL 快照，防止运行过程中切换设置导致同一批次混用目标资料。
 let availablePromotionSites = [];
+let availablePromotionCategories = [];
+const collapsedBatchCategoryIds = new Set();
 let batchPromotionSite = null;
 let batchPromotionSiteUserSelected = false;
 let batchSavedPromotionSiteId = '';
 let batchSelectedPromotionSiteIds = [];
+let batchSelectionEverSet = false;
 let batchTargetQueue = [];
 let currentQueueSiteIndex = 0;
 let queueTransitionTimer = null;
@@ -234,6 +237,7 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     if (savedIds.length > 0) {
       batchSelectedPromotionSiteIds = savedIds;
       batchSavedPromotionSiteId = savedIds[0];
+      batchSelectionEverSet = true;
       if (availablePromotionSites.length > 0) {
         renderBatchPromotionSitesList();
       }
@@ -246,6 +250,37 @@ const BATCH_CHECKBOX_SETTINGS_KEY = 'batch_checkbox_settings';
 const batchPromotionSiteSelect = document.getElementById('batchPromotionSiteSelect');
 
 /**
+ * 从配置对象提取分类列表，并与站点分类补全对齐。
+ */
+function extractBatchCategoriesFromConfig(config, sites) {
+  const cats = [];
+  const seen = new Set();
+  if (config && Array.isArray(config.categories)) {
+    config.categories.forEach((cat) => {
+      const name = String(cat && cat.name || cat || '').trim();
+      const id = String(cat && cat.id || ('cat_' + encodeURIComponent(name))).trim();
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        cats.push({ id, name });
+      }
+    });
+  }
+  if (Array.isArray(sites)) {
+    sites.forEach((site) => {
+      const catName = site.category || '默认分类';
+      if (!seen.has(catName)) {
+        seen.add(catName);
+        cats.push({ id: site.categoryId || ('cat_' + encodeURIComponent(catName)), name: catName });
+      }
+    });
+  }
+  if (cats.length === 0) {
+    cats.push({ id: 'cat_default', name: '默认分类' });
+  }
+  return cats;
+}
+
+/**
  * 规范化批量任务使用的网站快照，仅保留生成评论和填写表单需要的字段。
  */
 function normalizeBatchPromotionSite(site) {
@@ -256,6 +291,8 @@ function normalizeBatchPromotionSite(site) {
     name,
     url,
     content: String(site && site.content || '').trim(),
+    category: String(site && site.category || '默认分类').trim(),
+    categoryId: String(site && site.categoryId || '').trim(),
     anchors: Array.isArray(site && site.anchors)
       ? site.anchors.map((anchor) => ({
         id: String(anchor && anchor.id || '').trim(),
@@ -279,9 +316,11 @@ function formatBatchPromotionSiteOption(site) {
  */
 function getBatchPromotionSitesFromConfig(config) {
   if (!config || !Array.isArray(config.sites)) return [];
-  return config.sites
+  const sites = config.sites
     .map(normalizeBatchPromotionSite)
     .filter((site) => site.id && (site.name || site.url || site.content));
+  availablePromotionCategories = extractBatchCategoriesFromConfig(config, sites);
+  return sites;
 }
 
 /**
@@ -303,6 +342,7 @@ function setBatchPromotionSiteSelectMessage(text, disabled = false) {
  * 保存用户在批量页多选的目标站点 ID 列表到本地存储。
  */
 function saveBatchSelectedPromotionSiteIds() {
+  batchSelectionEverSet = true;
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.set({
       [BATCH_SELECTED_PROMOTION_SITE_IDS_STORAGE_KEY]: batchSelectedPromotionSiteIds,
@@ -314,6 +354,9 @@ function saveBatchSelectedPromotionSiteIds() {
 
 /**
  * 渲染批量页目标 URL 列表，支持多选排队执行。
+ */
+/**
+ * 渲染批量页目标 URL 列表，按分类分层级呈现，支持分类快捷全选与多选排队执行。
  */
 function renderBatchPromotionSitesList() {
   const container = document.getElementById('batchPromotionSitesList');
@@ -340,76 +383,178 @@ function renderBatchPromotionSitesList() {
     availablePromotionSites.some((site) => site.id === id)
   );
 
-  // 如果没有选中项，默认选中第一个
-  if (batchSelectedPromotionSiteIds.length === 0 && availablePromotionSites[0]) {
+  // 仅在首次未初始化时默认选中第一个目标
+  if (!batchSelectionEverSet && batchSelectedPromotionSiteIds.length === 0 && availablePromotionSites[0]) {
     batchSelectedPromotionSiteIds = [availablePromotionSites[0].id];
+    batchSelectionEverSet = true;
   }
 
   const isLocked = status === 'running' || status === 'queue_transition';
 
+  if (!availablePromotionCategories || availablePromotionCategories.length === 0) {
+    availablePromotionCategories = extractBatchCategoriesFromConfig(null, availablePromotionSites);
+  }
+
   if (container) {
-    availablePromotionSites.forEach((site) => {
-      const isChecked = batchSelectedPromotionSiteIds.includes(site.id);
-      const orderIndex = isChecked ? batchSelectedPromotionSiteIds.indexOf(site.id) + 1 : 0;
+    availablePromotionCategories.forEach((cat) => {
+      const catSites = availablePromotionSites.filter((s) =>
+        (s.categoryId && s.categoryId === cat.id) ||
+        (!s.categoryId && s.category === cat.name) ||
+        (s.category === cat.name)
+      );
+      if (catSites.length === 0) return;
 
-      const item = document.createElement('div');
-      item.className = `batch-site-item${isChecked ? ' checked' : ''}`;
-      item.dataset.siteId = site.id;
+      const catSelectedSites = catSites.filter((s) => batchSelectedPromotionSiteIds.includes(s.id));
+      const isAllChecked = catSelectedSites.length === catSites.length && catSites.length > 0;
+      const isSomeChecked = catSelectedSites.length > 0 && !isAllChecked;
+      const isCollapsed = collapsedBatchCategoryIds.has(cat.id);
 
-      const label = document.createElement('label');
+      const catGroupEl = document.createElement('div');
+      catGroupEl.className = 'batch-cat-group';
 
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.className = 'batch-site-checkbox';
-      checkbox.value = site.id;
-      checkbox.checked = isChecked;
-      checkbox.disabled = isLocked;
+      // Header (父节点)
+      const catHeaderEl = document.createElement('div');
+      catHeaderEl.className = 'batch-cat-header';
 
-      const orderBadge = document.createElement('span');
-      orderBadge.className = 'batch-site-order-badge';
-      orderBadge.style.display = isChecked ? 'inline-flex' : 'none';
-      orderBadge.textContent = String(orderIndex);
+      const toggleArrow = document.createElement('span');
+      toggleArrow.className = `batch-cat-toggle-arrow${isCollapsed ? ' collapsed' : ''}`;
+      toggleArrow.textContent = '▼';
+      toggleArrow.title = isCollapsed ? '展开分类' : '折叠分类';
 
-      const info = document.createElement('div');
-      info.className = 'batch-site-info';
+      const catCheckbox = document.createElement('input');
+      catCheckbox.type = 'checkbox';
+      catCheckbox.className = 'batch-cat-checkbox';
+      catCheckbox.checked = isAllChecked;
+      catCheckbox.indeterminate = isSomeChecked;
+      catCheckbox.disabled = isLocked;
+      catCheckbox.title = isAllChecked ? '取消勾选该分类下所有页面' : '快捷勾选该分类下所有页面';
 
-      const title = document.createElement('span');
-      title.className = 'batch-site-title';
-      title.textContent = site.name || '未命名目标';
+      const catInfo = document.createElement('div');
+      catInfo.className = 'batch-cat-info';
 
-      const urlSpan = document.createElement('span');
-      urlSpan.className = 'batch-site-url';
-      urlSpan.textContent = site.url || '未填写 URL';
+      const catTitle = document.createElement('span');
+      catTitle.className = 'batch-cat-title';
+      catTitle.textContent = `📁 ${cat.name}`;
 
-      info.appendChild(title);
-      info.appendChild(urlSpan);
+      const catBadge = document.createElement('span');
+      catBadge.className = 'batch-cat-badge';
+      catBadge.textContent = `${catSelectedSites.length}/${catSites.length}`;
 
-      label.appendChild(checkbox);
-      label.appendChild(orderBadge);
-      label.appendChild(info);
-      item.appendChild(label);
-      container.appendChild(item);
+      catInfo.appendChild(catTitle);
+      catInfo.appendChild(catBadge);
 
-      item.addEventListener('click', (e) => {
-        if (e.target === checkbox) return;
-        if (isLocked) return;
-        checkbox.checked = !checkbox.checked;
-        checkbox.dispatchEvent(new Event('change'));
+      catHeaderEl.appendChild(toggleArrow);
+      catHeaderEl.appendChild(catCheckbox);
+      catHeaderEl.appendChild(catInfo);
+      catGroupEl.appendChild(catHeaderEl);
+
+      // 折叠点击
+      toggleArrow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (collapsedBatchCategoryIds.has(cat.id)) {
+          collapsedBatchCategoryIds.delete(cat.id);
+        } else {
+          collapsedBatchCategoryIds.add(cat.id);
+        }
+        renderBatchPromotionSitesList();
       });
 
-      checkbox.addEventListener('change', (e) => {
+      // 点击分类信息：快捷全选/反选该分类
+      catInfo.addEventListener('click', (e) => {
+        if (isLocked) return;
+        catCheckbox.checked = !isAllChecked;
+        catCheckbox.dispatchEvent(new Event('change'));
+      });
+
+      // 分类勾选变化：快捷勾选/取消勾选分类下所有页面，父节点本身不单独加入队列
+      catCheckbox.addEventListener('change', (e) => {
         e.stopPropagation();
-        const siteId = site.id;
-        if (checkbox.checked) {
-          if (!batchSelectedPromotionSiteIds.includes(siteId)) {
-            batchSelectedPromotionSiteIds.push(siteId);
-          }
+        if (isLocked) return;
+        const shouldCheckAll = catCheckbox.checked;
+        if (shouldCheckAll) {
+          catSites.forEach((site) => {
+            if (!batchSelectedPromotionSiteIds.includes(site.id)) {
+              batchSelectedPromotionSiteIds.push(site.id);
+            }
+          });
         } else {
-          batchSelectedPromotionSiteIds = batchSelectedPromotionSiteIds.filter((id) => id !== siteId);
+          const siteIdSet = new Set(catSites.map((s) => s.id));
+          batchSelectedPromotionSiteIds = batchSelectedPromotionSiteIds.filter((id) => !siteIdSet.has(id));
         }
         saveBatchSelectedPromotionSiteIds();
         renderBatchPromotionSitesList();
       });
+
+      // Children (子节点 / 页面节点)
+      const childrenEl = document.createElement('div');
+      childrenEl.className = `batch-cat-children${isCollapsed ? ' collapsed' : ''}`;
+
+      catSites.forEach((site) => {
+        const isChecked = batchSelectedPromotionSiteIds.includes(site.id);
+        const orderIndex = isChecked ? batchSelectedPromotionSiteIds.indexOf(site.id) + 1 : 0;
+
+        const item = document.createElement('div');
+        item.className = `batch-site-item child-item${isChecked ? ' checked' : ''}`;
+        item.dataset.siteId = site.id;
+
+        const label = document.createElement('label');
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'batch-site-checkbox';
+        checkbox.value = site.id;
+        checkbox.checked = isChecked;
+        checkbox.disabled = isLocked;
+
+        const orderBadge = document.createElement('span');
+        orderBadge.className = 'batch-site-order-badge';
+        orderBadge.style.display = isChecked ? 'inline-flex' : 'none';
+        orderBadge.textContent = String(orderIndex);
+
+        const info = document.createElement('div');
+        info.className = 'batch-site-info';
+
+        const title = document.createElement('span');
+        title.className = 'batch-site-title';
+        title.textContent = site.name || '未命名目标';
+
+        const urlSpan = document.createElement('span');
+        urlSpan.className = 'batch-site-url';
+        urlSpan.textContent = site.url || '未填写 URL';
+
+        info.appendChild(title);
+        info.appendChild(urlSpan);
+
+        label.appendChild(checkbox);
+        label.appendChild(orderBadge);
+        label.appendChild(info);
+        item.appendChild(label);
+        childrenEl.appendChild(item);
+
+        item.addEventListener('click', (e) => {
+          if (e.target === checkbox) return;
+          if (isLocked) return;
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change'));
+        });
+
+        checkbox.addEventListener('change', (e) => {
+          e.stopPropagation();
+          const siteId = site.id;
+          if (checkbox.checked) {
+            if (!batchSelectedPromotionSiteIds.includes(siteId)) {
+              batchSelectedPromotionSiteIds.push(siteId);
+            }
+          } else {
+            batchSelectedPromotionSiteIds = batchSelectedPromotionSiteIds.filter((id) => id !== siteId);
+          }
+          saveBatchSelectedPromotionSiteIds();
+          renderBatchPromotionSitesList();
+        });
+      });
+
+      catGroupEl.appendChild(childrenEl);
+      container.appendChild(catGroupEl);
     });
   }
 
@@ -454,11 +599,22 @@ function renderBatchPromotionSitesList() {
   batchPromotionSite = firstSelectedSite ? normalizeBatchPromotionSite(firstSelectedSite) : null;
   if (batchPromotionSiteSelect) {
     batchPromotionSiteSelect.innerHTML = '';
-    availablePromotionSites.forEach((site) => {
-      const option = document.createElement('option');
-      option.value = site.id;
-      option.textContent = formatBatchPromotionSiteOption(site);
-      batchPromotionSiteSelect.appendChild(option);
+    availablePromotionCategories.forEach((cat) => {
+      const catSites = availablePromotionSites.filter((s) =>
+        (s.categoryId && s.categoryId === cat.id) ||
+        (!s.categoryId && s.category === cat.name) ||
+        (s.category === cat.name)
+      );
+      if (catSites.length === 0) return;
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = `📁 ${cat.name}`;
+      catSites.forEach((site) => {
+        const option = document.createElement('option');
+        option.value = site.id;
+        option.textContent = formatBatchPromotionSiteOption(site);
+        optgroup.appendChild(option);
+      });
+      batchPromotionSiteSelect.appendChild(optgroup);
     });
     if (batchPromotionSite) {
       batchPromotionSiteSelect.value = batchPromotionSite.id;
@@ -1628,6 +1784,19 @@ function initBatchDropdown() {
   menu.addEventListener('click', (e) => {
     e.stopPropagation();
   });
+
+  menu.addEventListener('wheel', (e) => {
+    e.stopPropagation();
+    const isScrollable = menu.scrollHeight > menu.clientHeight;
+    if (isScrollable) {
+      const delta = e.deltaY;
+      const atTop = menu.scrollTop <= 0 && delta < 0;
+      const atBottom = menu.scrollTop + menu.clientHeight >= menu.scrollHeight && delta > 0;
+      if (atTop || atBottom) {
+        e.preventDefault();
+      }
+    }
+  }, { passive: false });
 
   document.addEventListener('click', (e) => {
     if (container && !container.contains(e.target)) {
@@ -4729,12 +4898,17 @@ async function retrySingleRow(urlIndex) {
       currentQueueSiteIndex = task.siteIndex;
     }
   } else if (existingResult.promotionSiteUrl) {
-    targetSiteForTask = normalizeBatchPromotionSite({
-      id: existingResult.promotionSiteId || 'retry_target',
-      name: existingResult.promotionSiteName || '重试目标',
-      url: existingResult.promotionSiteUrl,
-      content: ''
-    });
+    const matched = availablePromotionSites.find(
+      (s) => (s.id && s.id === existingResult.promotionSiteId) || (s.url && s.url === existingResult.promotionSiteUrl)
+    );
+    targetSiteForTask = matched
+      ? normalizeBatchPromotionSite(matched)
+      : normalizeBatchPromotionSite({
+          id: existingResult.promotionSiteId || 'retry_target',
+          name: existingResult.promotionSiteName || '重试目标',
+          url: existingResult.promotionSiteUrl,
+          content: ''
+        });
   } else if (batchPromotionSite && batchPromotionSite.url) {
     targetSiteForTask = normalizeBatchPromotionSite(batchPromotionSite);
   } else {
@@ -4968,12 +5142,17 @@ async function retryAllFailed() {
     } else {
       const sampleWithSite = localResults.find((r) => r.promotionSiteUrl);
       if (sampleWithSite) {
-        batchPromotionSite = normalizeBatchPromotionSite({
-          id: sampleWithSite.promotionSiteId || 'retry_target',
-          name: sampleWithSite.promotionSiteName || '重试目标',
-          url: sampleWithSite.promotionSiteUrl,
-          content: ''
-        });
+        const matched = availablePromotionSites.find(
+          (s) => (s.id && s.id === sampleWithSite.promotionSiteId) || (s.url && s.url === sampleWithSite.promotionSiteUrl)
+        );
+        batchPromotionSite = matched
+          ? normalizeBatchPromotionSite(matched)
+          : normalizeBatchPromotionSite({
+              id: sampleWithSite.promotionSiteId || 'retry_target',
+              name: sampleWithSite.promotionSiteName || '重试目标',
+              url: sampleWithSite.promotionSiteUrl,
+              content: ''
+            });
       }
     }
   }

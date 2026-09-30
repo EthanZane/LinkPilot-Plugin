@@ -908,6 +908,8 @@
       name: String(site && site.name || '').trim(),
       url: String(site && site.url || '').trim(),
       content: String(site && site.content || '').trim(),
+      category: String(site && site.category || '默认分类').trim(),
+      categoryId: String(site && site.categoryId || '').trim(),
       anchors: Array.isArray(site && site.anchors)
         ? site.anchors.map(normalizePromotionAnchor).filter(Boolean)
         : []
@@ -993,10 +995,12 @@
               resolve({ sites: [], selectedSiteId: '' });
               return;
             }
+            const cfg = localResult && localResult[SITES_CONFIG_STORAGE_KEY];
             const selectedSiteId = String(
               localResult && (
                 localResult[SELECTED_PROMOTION_SITE_STORAGE_KEY] ||
-                localResult['auto_comment_batch_selected_promotion_site_id']
+                localResult['auto_comment_batch_selected_promotion_site_id'] ||
+                (cfg && cfg.activeSiteId)
               ) || ''
             ).trim();
             if (!chrome.runtime?.lastError) {
@@ -1057,12 +1061,49 @@
     });
   }
 
-  function pickRandomEnabledAnchor(site) {
+  // 独立存储当前任务中的「表单姓名（Author Name）」与「评论正文 HTML 链接（Body Anchor）」
+  // 遵循用户的加权随机规则，两者各自独立随机抽取，提升单条与整批评论的外链多样性
+  let _currentTaskAuthorName = '';
+  let _currentTaskBodyAnchorText = '';
+
+  function resetCurrentTaskAnchors() {
+    _currentTaskAuthorName = '';
+    _currentTaskBodyAnchorText = '';
+  }
+
+  function computeAnchorWeights(count) {
+    if (count <= 0) return [];
+    if (count === 1) return [1];
+    const weights = [];
+    for (let i = 0; i < count; i++) {
+      // 排在第 1 位的启用项自动作为主锚文本，权重显著高于其他项；后续项平滑衰减
+      weights.push(i === 0 ? 4.0 : 2.0 / (1 + (i - 1) * 0.45));
+    }
+    return weights;
+  }
+
+  function pickWeightedEnabledAnchor(site) {
     const enabledAnchors = (site && Array.isArray(site.anchors) ? site.anchors : [])
       .filter((anchor) => anchor && anchor.enabled !== false && anchor.text);
-    if (enabledAnchors.length === 0) return '';
-    const index = Math.floor(Math.random() * enabledAnchors.length);
-    return enabledAnchors[index].text;
+    const count = enabledAnchors.length;
+    if (count === 0) return '';
+    if (count === 1) return enabledAnchors[0].text;
+
+    const weights = computeAnchorWeights(count);
+    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+    let rand = Math.random() * totalWeight;
+
+    for (let i = 0; i < count; i++) {
+      if (rand < weights[i]) {
+        return enabledAnchors[i].text;
+      }
+      rand -= weights[i];
+    }
+    return enabledAnchors[0].text;
+  }
+
+  function pickRandomEnabledAnchor(site) {
+    return pickWeightedEnabledAnchor(site);
   }
 
   function escapeHtmlForComment(value) {
@@ -1138,7 +1179,9 @@
 
   async function getQwenSkillTemplate() {
     const activeSite = await getActivePromotionSite();
+    // 评论正文内的链接锚文本：每次独立按加权随机规则抽取
     const anchorText = pickRandomEnabledAnchor(activeSite);
+    _currentTaskBodyAnchorText = anchorText;
     return {
       systemPrompt: buildQwenSkillTemplate(activeSite, anchorText),
       activeSite,
@@ -1161,7 +1204,20 @@
     return new Promise((resolve) => {
       // 批量任务使用启动时锁定的网站快照，确保整批任务的网站、锚文本和表单名称保持一致。
       if (_batchCtx && _batchCtx.promotionSite) {
-        resolve(normalizePromotionSite(_batchCtx.promotionSite));
+        const batchSite = normalizePromotionSite(_batchCtx.promotionSite);
+        if (batchSite.anchors && batchSite.anchors.length > 0) {
+          resolve(batchSite);
+          return;
+        }
+        // 若批次快照缺失锚文本，尝试从本地完整配置匹配补齐
+        loadPromotionSiteSelectionContext().then(({ sites }) => {
+          const matched = sites.find((s) => (s.id && s.id === batchSite.id) || (s.url && s.url === batchSite.url));
+          if (matched && Array.isArray(matched.anchors) && matched.anchors.length > 0) {
+            batchSite.anchors = matched.anchors;
+            _batchCtx.promotionSite = batchSite;
+          }
+          resolve(batchSite);
+        });
         return;
       }
       loadPromotionSiteSelectionContext().then(({ sites, selectedSiteId }) => {
@@ -1181,14 +1237,36 @@
     return site.content || '';
   }
 
-  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 使用所选目标名称，邮箱和密码仍为全局配置。
+  function sanitizeFallbackAuthorName(rawName) {
+    let name = String(rawName || '').trim();
+    if (!name) return DEFAULT_USERNAME;
+    if (name.includes(' - ')) {
+      const parts = name.split(' - ').map((p) => p.trim()).filter(Boolean);
+      name = parts[parts.length - 1] || parts[0];
+    } else if (name.includes(' | ')) {
+      const parts = name.split(' | ').map((p) => p.trim()).filter(Boolean);
+      name = parts[0];
+    }
+    name = name.replace(/^https?:\/\//i, '').replace(/\.(com|co|io|org|net|ai|app)$/i, '');
+    return name.trim() || DEFAULT_USERNAME;
+  }
+
+  // 从 chrome.storage.sync 中异步获取评论表单资料；Name/Author 独立从所选目标已启用的「锚文本」列表中按加权随机规则选取（博客评论中 Name 会渲染为反向链接，轮播锚文本可极大提升外链多样性与 SEO 效果）；无启用锚文本时降级使用目标名称。
   async function getUserProfile() {
     const activeSite = await getActivePromotionSite();
-    const siteName = String(activeSite && activeSite.name || '').trim();
+    let anchorName = _currentTaskAuthorName;
+    if (!anchorName) {
+      anchorName = pickRandomEnabledAnchor(activeSite);
+      if (anchorName) {
+        _currentTaskAuthorName = anchorName;
+      }
+    }
+    const cleanFallbackName = sanitizeFallbackAuthorName(activeSite && activeSite.name);
+    const preferredName = anchorName || cleanFallbackName;
     return new Promise((resolve) => {
       try {
         if (!isExtensionContextValid() || !chrome.storage || !chrome.storage.sync) {
-          resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+          resolve({ name: preferredName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
           return;
         }
         chrome.storage.sync.get(
@@ -1199,12 +1277,12 @@
                 if (chrome.runtime?.lastError) {
                   console.error('读取评论表单基础信息失败：', chrome.runtime.lastError);
                 }
-                resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+                resolve({ name: preferredName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
                 return;
               }
               const legacyName = result && typeof result[USER_NAME_STORAGE_KEY] === 'string'
                 ? result[USER_NAME_STORAGE_KEY].trim() : '';
-              let name = siteName || legacyName;
+              let name = anchorName || preferredName || sanitizeFallbackAuthorName(legacyName) || DEFAULT_USERNAME;
               let email = result && typeof result[USER_EMAIL_STORAGE_KEY] === 'string'
                 ? result[USER_EMAIL_STORAGE_KEY].trim() : '';
               let password = result && typeof result[USER_PASSWORD_STORAGE_KEY] === 'string'
@@ -1216,12 +1294,12 @@
 
               resolve({ name, email, password });
             } catch (_e) {
-              resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+              resolve({ name: preferredName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
             }
           }
         );
       } catch (_e) {
-        resolve({ name: siteName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
+        resolve({ name: preferredName || DEFAULT_USERNAME, email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD });
       }
     });
   }
@@ -1574,6 +1652,7 @@
   let runningBatchTaskKey = null;
 
   function setBatchContext(batchId, urlIndex, url, promotionSite) {
+    resetCurrentTaskAnchors();
     _batchCtx = {
       batchId,
       urlIndex,
@@ -4486,12 +4565,34 @@
         return;
       }
 
+      // 按分类分组呈现
+      const catMap = new Map();
       sites.forEach((site) => {
-        const option = document.createElement('option');
-        option.value = site.id;
-        option.textContent = formatPromotionSiteOption(site);
-        siteSelect.appendChild(option);
+        const catName = site.category || '默认分类';
+        if (!catMap.has(catName)) catMap.set(catName, []);
+        catMap.get(catName).push(site);
       });
+
+      if (catMap.size <= 1) {
+        sites.forEach((site) => {
+          const option = document.createElement('option');
+          option.value = site.id;
+          option.textContent = formatPromotionSiteOption(site);
+          siteSelect.appendChild(option);
+        });
+      } else {
+        catMap.forEach((catSites, catName) => {
+          const optgroup = document.createElement('optgroup');
+          optgroup.label = `📁 ${catName}`;
+          catSites.forEach((site) => {
+            const option = document.createElement('option');
+            option.value = site.id;
+            option.textContent = formatPromotionSiteOption(site);
+            optgroup.appendChild(option);
+          });
+          siteSelect.appendChild(optgroup);
+        });
+      }
       const selectedSite = choosePromotionSite(sites, selectedSiteId);
       siteSelect.value = selectedSite.id || sites[0].id;
       siteSelect.disabled = false;
@@ -4507,6 +4608,7 @@
         renderBatchPromotionSiteSelect(_batchCtx.promotionSite);
         return;
       }
+      resetCurrentTaskAnchors();
       await saveSelectedPromotionSiteId(siteSelect.value);
       lastGeneratedPromotionCopy = '';
       textarea.value = '';
@@ -4551,7 +4653,7 @@
         console.log('[AutoComment] >>>[4] 检查用户配置是否完整...');
         if (!userProfile.name || !userProfile.email) {
           const missing = [];
-          if (!userProfile.name) missing.push('所选目标名称（Name）');
+          if (!userProfile.name) missing.push('所选目标名称或锚文本（Name）');
           if (!userProfile.email) missing.push('邮箱（Email）');
           const msg = '请先在扩展选项页填写' + missing.join('和') + '，否则无法自动提交评论！';
           setStatus(msg, '#f97373');
@@ -4646,6 +4748,7 @@
       fillFormBtn.style.opacity = '0.55';
       setStatus('正在填充当前页面表单…', '#9ca3af');
       try {
+        _currentTaskAuthorName = '';
         await fillInputs();
         setStatus('已按插件设置填充当前页面表单。', '#22c55e');
       } catch (error) {

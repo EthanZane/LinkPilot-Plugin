@@ -196,7 +196,8 @@
         display: none;
       }
 
-      .required-field.is-invalid + .required-hint {
+      .required-field.is-invalid + .required-hint,
+      .url-input-row:has(.required-field.is-invalid) + .required-hint {
         display: block;
       }
 
@@ -603,11 +604,159 @@
         white-space: nowrap;
       }
 
+      .site-category-group {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #f8fafc;
+        margin-bottom: 10px;
+        overflow: hidden;
+      }
+
+      .site-category-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+        background: #f1f5f9;
+        border-bottom: 1px solid #e2e8f0;
+        user-select: none;
+        gap: 6px;
+      }
+
+      .site-category-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .site-category-title-wrap .toggle-arrow {
+        font-size: 10px;
+        color: #64748b;
+        transition: transform 0.15s ease;
+        width: 14px;
+        display: inline-block;
+        text-align: center;
+        flex-shrink: 0;
+      }
+
+      .site-category-title-wrap .toggle-arrow.collapsed {
+        transform: rotate(-90deg);
+      }
+
+      .site-category-name {
+        font-size: 13px;
+        font-weight: 700;
+        color: #1e293b;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .site-category-count {
+        font-size: 11px;
+        color: #64748b;
+        background: #e2e8f0;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-weight: 600;
+        flex-shrink: 0;
+      }
+
+      .site-category-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+
+      .category-action-btn {
+        padding: 2px 7px;
+        font-size: 11px;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+        color: #475569;
+        transition: all 0.15s;
+        line-height: 1.4;
+      }
+
+      .category-action-btn:hover {
+        background: #e2e8f0;
+        color: #0f172a;
+        border-color: #94a3b8;
+      }
+
+      .category-action-btn.add-page-btn {
+        color: #2563eb;
+        border-color: #bfdbfe;
+        background: #eff6ff;
+        font-weight: 600;
+      }
+
+      .category-action-btn.add-page-btn:hover {
+        background: #dbeafe;
+      }
+
+      .site-category-body {
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .site-category-body.collapsed {
+        display: none;
+      }
+
+      .category-empty-hint {
+        padding: 10px;
+        text-align: center;
+        font-size: 12px;
+        color: #94a3b8;
+        background: #fff;
+        border-radius: 6px;
+        border: 1px dashed #cbd5e1;
+      }
+
+      .url-input-row,
       .anchor-input-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 8px;
-        align-items: start;
+        align-items: stretch;
+      }
+
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      .spin {
+        display: inline-block;
+        animation: spin 1s linear infinite;
+      }
+
+      .url-analyze-btn {
+        transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.05s ease;
+      }
+
+      .url-analyze-btn:hover {
+        background: #dbeafe !important;
+        border-color: #93c5fd !important;
+        color: #1e40af !important;
+      }
+
+      .url-analyze-btn:active {
+        transform: scale(0.97);
+      }
+
+      .url-analyze-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
       }
 
       .anchor-list {
@@ -617,22 +766,128 @@
       }
 
       .anchor-row {
-        display: grid;
-        grid-template-columns: 18px minmax(0, 1fr) auto;
-        gap: 8px;
+        display: flex;
         align-items: center;
-        padding: 8px;
+        gap: 8px;
+        padding: 8px 10px;
         border: 1px solid #e5e7eb;
         border-radius: 8px;
         background: #f8fafc;
+        transition: all 0.15s ease;
+      }
+
+      .anchor-row.is-primary {
+        border-color: #fde047;
+        background: #fefce8;
+        box-shadow: 0 1px 3px rgba(234, 179, 8, 0.08);
       }
 
       .anchor-row.is-disabled {
-        opacity: 0.55;
+        opacity: 0.6;
+        background: #f1f5f9;
+        border-color: #e2e8f0;
+      }
+
+      .anchor-row input[type='checkbox'] {
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        flex-shrink: 0;
       }
 
       .anchor-row input[type='text'] {
-        padding: 7px 9px;
+        flex: 1;
+        min-width: 0;
+        padding: 7px 10px;
+        font-size: 13px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #fff;
+      }
+
+      .anchor-prob-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+        user-select: none;
+        flex-shrink: 0;
+      }
+
+      .anchor-prob-badge.is-primary {
+        background: #fef08a;
+        color: #854d0e;
+        border: 1px solid #facc15;
+      }
+
+      .anchor-prob-badge.is-secondary {
+        background: #f1f5f9;
+        color: #475569;
+        border: 1px solid #cbd5e1;
+      }
+
+      .anchor-prob-badge.is-disabled {
+        background: #f1f5f9;
+        color: #94a3b8;
+        border: 1px solid #e2e8f0;
+        text-decoration: line-through;
+      }
+
+      .anchor-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+
+      .anchor-action-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 28px;
+        padding: 0 6px;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        color: #475569;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      .anchor-action-btn:hover:not(:disabled) {
+        background: #f1f5f9;
+        border-color: #94a3b8;
+        color: #0f172a;
+      }
+
+      .anchor-action-btn:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+
+      .anchor-action-btn.btn-delete:hover {
+        background: #fee2e2;
+        border-color: #fca5a5;
+        color: #b91c1c;
+      }
+
+      .anchor-action-btn.btn-primary-set {
+        background: #fffbeb;
+        border-color: #fde68a;
+        color: #b45309;
+        font-weight: 500;
+        padding: 0 8px;
+      }
+
+      .anchor-action-btn.btn-primary-set:hover {
+        background: #fef3c7;
+        border-color: #fcd34d;
+        color: #92400e;
       }
 
       .anchor-empty {
@@ -1308,22 +1563,37 @@
         top: calc(100% + 4px);
         left: 0;
         right: 0;
+        max-height: min(440px, 60vh);
+        overflow-y: auto;
+        overscroll-behavior: contain;
         background: #ffffff;
         border: 1px solid #cbd5e1;
         border-radius: 8px;
-        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.14);
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.18);
         z-index: 100;
         padding: 6px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar {
+        width: 6px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar-track {
+        background: #f1f5f9;
+        border-radius: 4px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
+      }
+      .batch-dropdown-menu::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
       }
       .batch-dropdown-menu.open {
         display: block;
       }
       .batch-sites-list {
-        max-height: 220px;
-        overflow-y: auto;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 6px;
         padding: 2px;
       }
       .batch-site-item {
@@ -1385,6 +1655,87 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .batch-cat-group {
+        flex-shrink: 0;
+        margin-bottom: 6px;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        background: #f8fafc;
+        overflow: hidden;
+      }
+      .batch-cat-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        background: #f1f5f9;
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.15s ease;
+      }
+      .batch-cat-header:hover {
+        background: #e2e8f0;
+      }
+      .batch-cat-toggle-arrow {
+        display: inline-block;
+        font-size: 10px;
+        color: #64748b;
+        transition: transform 0.15s ease;
+        width: 14px;
+        text-align: center;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .batch-cat-toggle-arrow.collapsed {
+        transform: rotate(-90deg);
+      }
+      .batch-cat-checkbox {
+        cursor: pointer;
+        width: 15px;
+        height: 15px;
+        accent-color: #2563eb;
+        flex-shrink: 0;
+        margin: 0;
+      }
+      .batch-cat-info {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex: 1;
+        min-width: 0;
+      }
+      .batch-cat-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #1e293b;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .batch-cat-badge {
+        font-size: 11px;
+        font-weight: 600;
+        color: #64748b;
+        background: #e2e8f0;
+        padding: 1px 7px;
+        border-radius: 999px;
+        margin-left: 6px;
+        flex-shrink: 0;
+      }
+      .batch-cat-children {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        padding: 4px 6px 6px 6px;
+        background: #ffffff;
+      }
+      .batch-cat-children.collapsed {
+        display: none;
+      }
+      .batch-site-item.child-item {
+        margin-left: 18px;
+        border-left: 3px solid #93c5fd;
       }
       .batch-queue-banner {
         margin-bottom: 12px;
@@ -1590,6 +1941,7 @@
         .grid-2,
         .grid-3,
         .site-manager-grid,
+        .url-input-row,
         .anchor-input-row,
         .batch-grid,
         .inline-field {
@@ -1696,8 +2048,11 @@
 
             <div class="site-manager-grid">
               <div class="card">
-                <div class="card-title">推广页面列表</div>
-                <div class="hint">这里维护可用推广页面；具体使用哪个推广页面，请在 AI 评论面板或批量任务里选择。</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <div class="card-title" style="margin-bottom: 0;">推广页面列表</div>
+                  <button id="newCategoryBtn" class="btn btn-secondary btn-sm" type="button" title="新建分类（例如：mireka）">+ 新建分类</button>
+                </div>
+                <div class="hint">按分类维护推广页面；可新建分类并添加多个页面，在批量外链时可一键批量勾选分类下所有页面。</div>
                 <div class="site-list" id="siteList"></div>
                 <div class="row">
                   <button id="newSiteBtn" class="btn btn-secondary" type="button">新建推广页面</button>
@@ -1705,19 +2060,44 @@
               </div>
 
               <div class="card">
-                <div class="card-title">推广页面详情</div>
+                <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                  <span>推广页面详情</span>
+                  <span style="font-size: 12px; font-weight: 500; color: #64748b;">支持仅填 URL 一键自动抓取分析</span>
+                </div>
+
+                <div style="margin-bottom: 14px;">
+                  <label for="websiteUrl" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <span style="font-weight: 700; color: #1e293b;">目标 URL</span>
+                    <span class="hint" style="margin: 0; font-size: 12px; color: #2563eb; font-weight: 500;">输入 URL 后点击右侧图标按钮自动分析</span>
+                  </label>
+                  <div class="url-input-row">
+                    <input type="url" id="websiteUrl" class="required-field" placeholder="https://example.com/product" autocomplete="off" required style="min-height: 38px;" />
+                    <button id="autoAnalyzeUrlBtn" class="btn btn-secondary url-analyze-btn" type="button" style="white-space: nowrap; padding: 0 14px; font-weight: 700; color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; border-radius: 8px;" title="点击自动分析该网页并填充属性">
+                      <span id="analyzeBtnIcon" style="font-size: 15px; line-height: 1;">✨</span>
+                      <span id="analyzeBtnText">自动分析</span>
+                    </button>
+                  </div>
+                  <div class="required-hint">请填写目标 URL，例如：https://test.com</div>
+                  <div id="urlAnalyzeStatus" style="display: none; margin-top: 8px; font-size: 12px; font-weight: 600; padding: 8px 12px; border-radius: 6px; line-height: 1.5;"></div>
+                </div>
+
                 <div class="grid-2">
                   <div>
                     <label for="siteName">目标名称</label>
                     <input type="text" id="siteName" class="required-field" placeholder="例如：Nano Banana" autocomplete="off" required />
                     <div class="required-hint">请填写目标名称，便于在列表里识别。</div>
+                    <div class="hint" style="margin-top: 4px;">用于插件内列表与分类管理识别，博客评论将使用下方锚文本轮播。</div>
                   </div>
                   <div>
-                    <label for="websiteUrl">目标 URL</label>
-                    <input type="url" id="websiteUrl" class="required-field" placeholder="https://test.com" autocomplete="off" required />
-                    <div class="required-hint">请填写目标 URL，例如：https://test.com</div>
+                    <label for="siteCategorySelect">所属分类</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                      <select id="siteCategorySelect" style="flex: 1; min-height: 38px; border: 1px solid #d1d5db; border-radius: 6px; padding: 0 10px; font-size: 13px; font-weight: 500;"></select>
+                      <button type="button" id="quickNewCategoryBtn" class="btn btn-secondary btn-sm" title="快速新建分类">+ 新分类</button>
+                    </div>
+                    <div class="hint" style="margin-top: 4px;">指定当前页面所属分类（例如：mireka）。</div>
                   </div>
                 </div>
+
                 <div style="margin-top: 12px;">
                   <label for="websiteContent">目标 URL 内容</label>
                   <textarea id="websiteContent" class="required-field" rows="5" placeholder="描述产品、服务、卖点和目标用户。" autocomplete="off" required></textarea>
@@ -1730,7 +2110,7 @@
                     <input type="text" id="anchorTextInput" placeholder="多个锚文本用逗号分隔，例如：Nano Banana, AI image editor, image generator" autocomplete="off" />
                     <button id="addAnchorTextsBtn" class="btn btn-secondary" type="button">添加锚文本</button>
                   </div>
-                  <div class="hint">添加后可逐条启用或禁用；生成评论时会从所选目标 URL 已启用的锚文本里随机选择一个。没有启用锚文本时，由 AI 自然生成。</div>
+                  <div class="hint">排在第 1 位的启用项自动作为<b>主锚文本 👑</b>，获得明显更高的轮播概率（约 45%~65%）；后续项作为次要/长尾词，概率随排序逐级平滑递减。可通过 ⬆️/⬇️ 调序或点击「👑 置顶」。博客评论表单的 <b>Name / Author</b> 会依此加权轮播填充。</div>
                   <div class="anchor-list" id="anchorList"></div>
                 </div>
 
@@ -1744,7 +2124,7 @@
 
             <div class="card">
               <div class="card-title">评论表单基础信息</div>
-              <div class="hint" style="margin-bottom: 12px;">评论表单里的 Name / Author 会自动使用所选目标 URL 的目标名称；这里仅配置跨站通用的邮箱和可选密码。</div>
+              <div class="hint" style="margin-bottom: 12px;">博客评论表单里的 <b>Name / Author</b> 会自动随机轮播当前推广页面已启用的<b>「锚文本」</b>（在博客上渲染为丰富的外链锚文本，无锚文本时使用目标名称兜底）；这里仅配置跨站通用的邮箱和可选密码。</div>
               <div class="grid-2">
                 <div>
                   <label for="userEmail">邮箱</label>
