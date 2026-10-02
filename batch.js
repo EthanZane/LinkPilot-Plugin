@@ -142,6 +142,7 @@ const databasePersistence = document.getElementById('databasePersistence');
 const databasePersistenceMessage = document.getElementById('databasePersistenceMessage');
 const retryDatabaseBtn = document.getElementById('retryDatabaseBtn');
 const retryAllFailedBtn = document.getElementById('retryAllFailedBtn');
+const loadFilteredUrlsBtn = document.getElementById('loadFilteredUrlsBtn');
 const syncDbHistoryBtn = document.getElementById('syncDbHistoryBtn');
 const importResultCsvBtn = document.getElementById('importResultCsvBtn');
 const resultCsvInput = document.getElementById('resultCsvInput');
@@ -1895,6 +1896,7 @@ function bindEvents() {
   clearBtn.addEventListener('click', clearBatch);
   if (retryDatabaseBtn) retryDatabaseBtn.addEventListener('click', retryDatabasePersistence);
   if (retryAllFailedBtn) retryAllFailedBtn.addEventListener('click', retryAllFailed);
+  if (loadFilteredUrlsBtn) loadFilteredUrlsBtn.addEventListener('click', handleLoadFilteredUrlsToInput);
   if (syncDbHistoryBtn) {
     syncDbHistoryBtn.addEventListener('click', () => syncBatchHistoryFromDatabase({ notify: true }));
   }
@@ -2442,6 +2444,10 @@ function applyParsedUrlItems(items, options = {}) {
     dupBadge.textContent = duplicateCount > 0 ? `✅ 已自动剔除 ${duplicateCount} 条重复` : '';
   }
   updateCostHint(Math.max(0, validCount - illegalCount));
+
+  if (manualUrlsInput && (sourceType === 'asset_library' || options.syncToManualInput)) {
+    manualUrlsInput.value = parsedUrls.map((item) => item.url).join('\n');
+  }
 
   if (status !== 'running') {
     status = 'idle';
@@ -3967,6 +3973,7 @@ function updateUI() {
   exportBtn.disabled = localResults.length === 0;
   clearBtn.disabled = isRunning;
   if (importResultCsvBtn) importResultCsvBtn.disabled = isRunning;
+  if (loadFilteredUrlsBtn && isRunning) loadFilteredUrlsBtn.disabled = true;
   if (batchPromotionSiteSelect) {
     // 批次有结果时锁定目标 URL，避免手动重试把历史结果写到另一个目标下。
     batchPromotionSiteSelect.disabled = isRunning || isTerminated || isCompleted;
@@ -4220,6 +4227,11 @@ function clearBatch() {
   if (retryAllFailedBtn) {
     retryAllFailedBtn.style.display = 'none';
     retryAllFailedBtn.disabled = false;
+  }
+  if (loadFilteredUrlsBtn) {
+    loadFilteredUrlsBtn.style.display = 'none';
+    loadFilteredUrlsBtn.disabled = false;
+    loadFilteredUrlsBtn.textContent = '📥 装载过滤 URL';
   }
   statsSelectedSiteKey = 'all';
   isSiteOverviewOpen = false;
@@ -4485,6 +4497,175 @@ function isResultMatchingSite(resultItem, site) {
   return false;
 }
 
+/**
+ * 获取当前结果统计面板中根据筛选条件过滤后的结果列表。
+ * @param {Array} [optionalSiteResults] 可选的当前站点结果集，若不传则基于当前 selectedSite 动态获取
+ * @returns {Array} 当前过滤后的结果数组
+ */
+function getCurrentFilteredResults(optionalSiteResults = null) {
+  if (!localResults || localResults.length === 0) return [];
+  let siteResults = optionalSiteResults;
+  if (!siteResults) {
+    const targetSites = getTargetSitesList();
+    const selectedSite = statsSelectedSiteKey === 'all'
+      ? null
+      : targetSites.find((s) => s.key === statsSelectedSiteKey);
+    siteResults = selectedSite
+      ? localResults.filter((r) => isResultMatchingSite(r, selectedSite))
+      : localResults;
+  }
+
+  const resultFilter = filterResult ? filterResult.value : 'all';
+  const domainFilter = filterDomain ? filterDomain.value : 'all';
+  const kw = filterKeyword ? filterKeyword.value.trim().toLowerCase() : '';
+
+  return siteResults.filter((r) => {
+    if (resultFilter !== 'all' && r.result !== resultFilter) return false;
+    if (domainFilter !== 'all' && extractDomain(r.url) !== domainFilter) return false;
+    if (!filterTimeBucket(r.elapsed)) return false;
+    if (!filterPageDepthBucket(r.pageMetrics)) return false;
+    if (kw) {
+      const haystack = (r.url + ' ' + (r.promotionSiteUrl || '') + ' ' + (r.promotionSiteName || '') + ' ' + (r.aiContent || '') + ' ' + (r.errorMessage || '')).toLowerCase();
+      if (!haystack.includes(kw)) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * 汇总当前生效的过滤维度简述，用于为重新装载的 URL 队列标记可读数据源。
+ */
+function getActiveFilterSummaryDesc() {
+  const resultFilter = filterResult ? filterResult.value : 'all';
+  const resultMap = {
+    success: '成功',
+    skipped: '已存在',
+    manual_required: '需手动',
+    no_comment_box: '无评论框',
+    blocked_illegal: '非法拦截',
+    fail: '失败',
+    unstarted: '未开始'
+  };
+  const parts = [];
+  if (resultFilter !== 'all' && resultMap[resultFilter]) {
+    parts.push(resultMap[resultFilter]);
+  }
+  if (filterDomain && filterDomain.value && filterDomain.value !== 'all') {
+    parts.push(filterDomain.value);
+  }
+  if (filterKeyword && filterKeyword.value.trim()) {
+    parts.push(`搜"${filterKeyword.value.trim()}"`);
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * 轻量浮层操作提示 Toast
+ */
+function showBatchToast(message, duration = 3000) {
+  let toast = document.getElementById('batchToastNotification');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'batchToastNotification';
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      background: #1e293b;
+      color: #ffffff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      z-index: 999999;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+    `;
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.style.opacity = '1';
+  toast.style.transform = 'translateY(0)';
+
+  if (window._batchToastTimer) clearTimeout(window._batchToastTimer);
+  window._batchToastTimer = setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(12px)';
+  }, duration);
+}
+
+/**
+ * 点击「装载过滤 URL」按钮后，把当前过滤结果中的引荐 URL 装载到上方「直接粘贴引荐 URL」输入框并解析入队，
+ * 方便用户过滤部分结果后重新发起任务。
+ */
+function handleLoadFilteredUrlsToInput() {
+  if (status === 'running' || status === 'queue_transition') {
+    alert('当前批量任务正在运行中，请等待完成或终止后再装载 URL 发起新任务。');
+    return;
+  }
+
+  const filtered = getCurrentFilteredResults();
+  if (!filtered || filtered.length === 0) {
+    alert('当前过滤条件下没有可装载的引荐 URL。');
+    return;
+  }
+
+  // 提取引荐 URL 并按原有展示顺序去重
+  const rawUrls = filtered.map((r) => r.url).filter(Boolean);
+  const uniqueUrls = Array.from(new Set(rawUrls));
+
+  if (uniqueUrls.length === 0) {
+    alert('当前过滤结果中未找到有效的引荐 URL。');
+    return;
+  }
+
+  // 1. 同步填入「直接粘贴引荐 URL」输入框
+  if (manualUrlsInput) {
+    manualUrlsInput.value = uniqueUrls.join('\n');
+  }
+
+  // 2. 构造 items 并装载到批量任务待执行队列
+  const items = uniqueUrls.map((url) => {
+    let normalizedUrl = url;
+    if (!/^https?:\/\//i.test(normalizedUrl)) {
+      normalizedUrl = 'https://' + normalizedUrl;
+    }
+    const sourceDomain = extractDomain(normalizedUrl);
+    return {
+      url: normalizedUrl,
+      sourceDomain,
+      originalRow: buildManualOriginalRow(normalizedUrl, sourceDomain)
+    };
+  });
+
+  const filterSummary = getActiveFilterSummaryDesc();
+  applyParsedUrlItems(items, {
+    sourceName: `过滤引荐 URL${filterSummary ? ` (${filterSummary})` : ''}`,
+    sourceType: 'manual',
+    syncToManualInput: true
+  });
+
+  // 3. 平滑滚动到上方的输入框并高亮提示
+  if (manualUrlsInput) {
+    manualUrlsInput.focus();
+    manualUrlsInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    manualUrlsInput.classList.remove('input-highlight-pulse');
+    void manualUrlsInput.offsetWidth;
+    manualUrlsInput.classList.add('input-highlight-pulse');
+    setTimeout(() => {
+      manualUrlsInput.classList.remove('input-highlight-pulse');
+    }, 1800);
+  }
+
+  showBatchToast(`✅ 已成功装载 ${uniqueUrls.length} 条过滤引荐 URL 到输入框，并已生成待执行任务列表！`);
+}
+
 function renderStats() {
   if (localResults.length === 0) {
     statsPanel.classList.remove('visible');
@@ -4707,17 +4888,18 @@ function renderStats() {
   const domainFilter = filterDomain.value;
   const kw = filterKeyword.value.trim().toLowerCase();
 
-  const filtered = siteResults.filter((r) => {
-    if (resultFilter !== 'all' && r.result !== resultFilter) return false;
-    if (domainFilter !== 'all' && extractDomain(r.url) !== domainFilter) return false;
-    if (!filterTimeBucket(r.elapsed)) return false;
-    if (!filterPageDepthBucket(r.pageMetrics)) return false;
-    if (kw) {
-      const haystack = (r.url + ' ' + (r.promotionSiteUrl || '') + ' ' + (r.promotionSiteName || '') + ' ' + (r.aiContent || '') + ' ' + (r.errorMessage || '')).toLowerCase();
-      if (!haystack.includes(kw)) return false;
-    }
-    return true;
-  });
+  const filtered = getCurrentFilteredResults(siteResults);
+
+  const uniqueFilteredUrls = Array.from(new Set(filtered.map((r) => r.url).filter(Boolean)));
+  if (loadFilteredUrlsBtn) {
+    const count = uniqueFilteredUrls.length;
+    loadFilteredUrlsBtn.textContent = `📥 装载过滤 URL (${count})`;
+    loadFilteredUrlsBtn.title = count > 0
+      ? `将当前过滤出的 ${count} 条引荐 URL 装载到上方「直接粘贴引荐 URL」输入框并准备新任务`
+      : '当前过滤结果中无引荐 URL 可装载';
+    loadFilteredUrlsBtn.disabled = count === 0 || status === 'running' || status === 'queue_transition';
+    loadFilteredUrlsBtn.style.display = 'inline-flex';
+  }
 
   statsCountLabel.textContent = selectedSite
     ? `显示 ${filtered.length} / ${total} 条（总计 ${localResults.length} 条）`

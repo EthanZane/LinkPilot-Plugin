@@ -686,23 +686,17 @@
 
       <!-- 批量投产到任务确认 Modal -->
       <div class="asset-modal-overlay" id="assetSendToTaskModal" style="display:none;">
-        <div class="asset-modal-dialog" style="max-width:540px;">
+        <div class="asset-modal-dialog" style="max-width:500px;">
           <div class="asset-modal-header">
             <div class="asset-modal-title">🚀 批量添加到任务执行列表</div>
             <button type="button" class="asset-modal-close" id="assetCloseSendToTaskModalBtn">×</button>
           </div>
           <div class="asset-modal-body">
-            <div style="font-size:13px;color:#334155;margin-bottom:12px;">
-              即将把选中的 <strong id="sendToTaskCountDisplay" style="color:#2563eb;font-size:15px;">0</strong> 个外链的入口 URL 注入到批量任务执行队列中。
+            <div style="font-size:13px;color:#334155;margin-bottom:14px;line-height:1.6;">
+              即将把选中的 <strong id="sendToTaskCountDisplay" style="color:#2563eb;font-size:16px;">0</strong> 个外链的入口 URL 注入到批量任务执行队列，并同步填入输入框。
             </div>
-            <div style="margin-bottom:12px;">
-              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;">请确认本批次推广的目标网站（可在任务中进一步调整）：</label>
-              <select id="sendToTaskSiteSelect" style="width:100%;">
-                <option value="">-- 请选择目标网站 --</option>
-              </select>
-            </div>
-            <div style="padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1e40af;">
-              💡 <strong>提示</strong>：注入成功后将自动切换至「博客自动外链」视图并渲染待处理列表，您可以直接点击「▶ 开始批量处理」进行全自动发布或探测！
+            <div style="padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1e40af;line-height:1.5;">
+              💡 <strong>提示</strong>：注入成功后将自动切换至「博客自动外链」视图并渲染待处理列表，您可以在任务面板中直接勾选目标站点后点击「▶ 开始批量处理」！
             </div>
           </div>
           <div class="asset-modal-footer">
@@ -907,7 +901,6 @@
         state.availablePromotionSites = sites;
 
         const filterSelect = document.getElementById('assetFilterTargetDomain');
-        const modalSelect = document.getElementById('sendToTaskSiteSelect');
 
         if (filterSelect) {
           filterSelect.innerHTML = '<option value="">-- 选择目标站点 (隔离矩阵) --</option>';
@@ -917,16 +910,6 @@
             opt.value = domain;
             opt.textContent = `${site.name || domain} (${domain})`;
             filterSelect.appendChild(opt);
-          });
-        }
-
-        if (modalSelect) {
-          modalSelect.innerHTML = '<option value="">-- 请选择目标站点 --</option>';
-          sites.forEach((site) => {
-            const opt = document.createElement('option');
-            opt.value = site.id;
-            opt.textContent = `${site.name} (${site.url})`;
-            modalSelect.appendChild(opt);
           });
         }
       });
@@ -2350,7 +2333,8 @@
 
     if (assetsToSend.length < selectedDomains.length) {
       try {
-        const queryRes = await apiRequest(`/api/assets?pageSize=200`);
+        const fetchPageSize = Math.max(500, selectedDomains.length + 100);
+        const queryRes = await apiRequest(`/api/assets?pageSize=${fetchPageSize}`);
         const queried = (queryRes.items || []).filter((a) => state.selectedDomains.has(a.referral_domain));
         const map = new Map();
         assetsToSend.forEach((a) => map.set(a.referral_domain, a));
@@ -2366,11 +2350,19 @@
 
     closeSendToTaskModal();
 
+    // 同步将勾选的外链 URL 填入「直接粘贴引荐 URL」输入框
+    const manualUrlsInput = document.getElementById('manualUrlsInput');
+    const urlsText = items.map((i) => i.url).filter(Boolean).join('\n');
+    if (manualUrlsInput) {
+      manualUrlsInput.value = urlsText;
+    }
+
     // 检查 options.html / batch.js 的全局接入点
     if (typeof root.applyParsedUrlItems === 'function') {
       root.applyParsedUrlItems(items, {
         sourceName: `资产库沉淀外链 (${items.length} 个)`,
-        sourceType: 'asset_library'
+        sourceType: 'asset_library',
+        syncToManualInput: true
       });
     }
 

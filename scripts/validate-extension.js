@@ -98,6 +98,7 @@ function validateBatchUiBindings() {
     'databasePersistenceMessage',
     'retryDatabaseBtn',
     'retryAllFailedBtn',
+    'loadFilteredUrlsBtn',
     'syncDbHistoryBtn',
     'importResultCsvBtn',
     'resultCsvInput',

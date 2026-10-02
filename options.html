@@ -473,6 +473,13 @@
         margin-bottom: 0;
       }
 
+      .stats-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
       .stats-panel-header .btn {
         padding: 6px 12px;
         font-size: 12px;
@@ -911,6 +918,14 @@
         min-height: 132px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
         line-height: 1.5;
+      }
+
+      @keyframes inputPulseHighlight {
+        0% { box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.35); border-color: #2563eb; }
+        100% { box-shadow: none; border-color: #d1d5db; }
+      }
+      .input-highlight-pulse {
+        animation: inputPulseHighlight 1.8s ease-out;
       }
 
       .batch-grid {
@@ -2393,6 +2408,7 @@
                   </div>
                   <div class="stats-header-actions">
                     <button class="btn btn-secondary" id="toggleSiteOverviewBtn" type="button" style="display:none;" title="查看各目标站点的统计对比汇总">📊 目标站点汇总对比</button>
+                    <button class="btn btn-secondary" id="loadFilteredUrlsBtn" type="button" style="display:none;" title="将当前过滤结果中的引荐 URL 装载到上方「直接粘贴引荐 URL」输入框并准备新任务">📥 装载过滤 URL</button>
                     <button class="btn btn-secondary" id="retryAllFailedBtn" type="button" style="display:none;" title="重新执行当前批次中所有失败的 URL">🔄 重试所有失败</button>
                   </div>
                 </div>
