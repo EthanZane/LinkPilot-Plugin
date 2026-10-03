@@ -6,7 +6,9 @@
   "permissions": [
     "activeTab",
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "alarms",
+    "power"
   ],
   "host_permissions": [
     "https://*/*",
@@ -41,5 +43,6 @@
       "run_at": "document_end",
       "all_frames": true
     }
-  ]
+  ],
+  "minimum_chrome_version": "120"
 }

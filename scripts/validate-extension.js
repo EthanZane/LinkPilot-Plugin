@@ -8,12 +8,14 @@ const rootDir = process.cwd();
 const requiredFiles = [
   'manifest.json',
   'background.js',
+  'batch-runner.js',
   'ai-providers.js',
   'content.js',
   'illegal-site-filter.js',
   'options.html',
   'options.js',
   'batch.html',
+  'batch-launch.html',
   'batch.js',
   'asset-library.js',
   'asset-library.css',
@@ -32,6 +34,8 @@ function validateManifest() {
   const manifestPath = path.join(rootDir, 'manifest.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
+  assert(manifest.permissions.includes('alarms') && manifest.permissions.includes('power'), '后台任务必须声明闹钟与电源保活权限');
+  assert(manifest.minimum_chrome_version === '120', '30 秒后台闹钟要求 Chrome 120 或更高版本');
   assert(manifest.manifest_version === 3, 'manifest_version 必须为 3');
   assert(manifest.background && manifest.background.service_worker === 'background.js', 'background.service_worker 必须指向 background.js');
   assert(manifest.background && manifest.background.type === 'module', 'background.type 必须为 module，以便加载 AI Provider 模块');
@@ -50,6 +54,7 @@ function validateRequiredFiles() {
 function validateJavaScriptSyntax() {
   const jsFiles = [
     'background.js',
+    'batch-runner.js',
     'ai-providers.js',
     'content.js',
     'illegal-site-filter.js',
@@ -325,6 +330,32 @@ function validateBatchRuntimeExecution() {
     hydratedSummary.total === (hydratedSummary.success + hydratedSummary.skipped + hydratedSummary.manualRequired + hydratedSummary.noCommentBox + hydratedSummary.blockedIllegal + hydratedSummary.fail + hydratedSummary.unstarted),
     '中断恢复后各指标相加必须严格等于总数'
   );
+
+  // 后台运行快照到 UI 的真实桥接：设置页初始化后只显示后台状态，不把运行任务降级成中断。
+  vm.runInContext(`
+    backgroundViewReady = true;
+    applyBackgroundRun({
+      revision: 100001,
+      record: { ...interruptedRecord, id: 'background_batch', status: 'running',
+        results: localResults, summary: summarizeBatchResults(localResults) },
+      siteIndex: 0, active: [{ index: 1, tabId: 123, startTime: 100000 }], retries: {}, forceRetry: false
+    });
+  `, sandbox);
+  assert(vm.runInContext(`status === 'running' && batchId === 'background_batch'`, sandbox), '后台快照必须显示为运行中');
+  assert(vm.runInContext(`activeTabsByIndex.has(1)`, sandbox), '后台活动标签必须映射到 UI 行状态');
+  assert(domElements.get('startBtn').disabled, '后台运行时不得重复开始');
+
+  // 全量预置快照的长度等于总数，但仍应允许继续执行未开始项；旧版按数组长度判断会误禁止恢复。
+  vm.runInContext(`
+    setStatus('terminated');
+    isTerminated = true;
+    updateUI();
+  `, sandbox);
+  assert(domElements.get('startBtn').textContent === '▶ 继续处理', '全量预置快照应按未开始状态判断是否可恢复');
+  assert(!domElements.get('startBtn').disabled, '历史目标配置不在当前列表时仍应允许恢复原目标快照');
+  assert(!batchCode.includes('AudioContext'), '不得再用隐藏音频保活设置页');
+  assert(!batchCode.includes('chrome.tabs.onRemoved.addListener'), '设置页不得继续持有后台调度监听器');
+
 }
 
 validateRequiredFiles();

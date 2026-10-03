@@ -1,4 +1,8 @@
+import { installBatchRunner } from './batch-runner.js';
 import { generateCommentWithActiveProvider, testProvider } from './ai-providers.js';
+
+// 后台执行器在模块加载时注册唤醒事件，不依赖设置页是否打开。
+const batchRunner = installBatchRunner(chrome);
 
 // 点击扩展图标时打开设置页，个人版所有配置都集中在这里维护。
 chrome.action.onClicked.addListener((tab) => {
@@ -48,9 +52,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 /**
- * 将批量结果写入 storage（本地存储，由 batch.js 轮询读取）
+ * 将网页结果串行写入本地缓存，后台执行器随后消费确认结果
  */
-async function persistBatchReport(message) {
+// 串行读改写结果缓存，防止多个页面同时上报时互相覆盖。
+let batchReportWriteChain = Promise.resolve();
+function persistBatchReport(message) {
+  const operation = batchReportWriteChain.then(() => writeBatchReport(message));
+  batchReportWriteChain = operation.catch(() => {});
+  return operation;
+}
+
+async function writeBatchReport(message) {
   const { batchId, urlIndex, url: pageUrl = '', result, aiContent, errorMessage } = message;
   console.log('[background] persistBatchReport >>>', { batchId, urlIndex, url: pageUrl, result, aiContentLen: aiContent ? aiContent.length : 0, errorMessage, time: new Date().toISOString() });
 
@@ -112,12 +124,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           promotionSiteName: message.promotionSiteName || '',
           promotionSiteUrl: message.promotionSiteUrl || ''
         });
-        console.log('[background] persistBatchReport 完成，准备发送 BATCH_CONFIRMED');
+        // 后台先消费已落盘结果并关闭任务标签，设置页只订阅快照。
+        if (await batchRunner.report(persistedEntry, sender)) {
+          sendResponse({ ok: true });
+          return;
+        }
+        console.log('[background] 批次结果已保存，准备通知旧版页面');
 
-        // 关键：先通知 batch.js（popup）落盘已完成，batch.js 等到确认后才关闭标签页
-        // 再转发给 popup（batch.js），确保 batch.js 收到后再关 tab
+        // 兼容尚未关闭的旧版设置页，通知其结果已保存；新版页面只订阅后台快照。
         chrome.runtime.sendMessage({
           type: 'BATCH_CONFIRMED',
+          batchId: message.batchId,
           urlIndex: message.urlIndex,
           result: message.result || 'success',
           aiContent: message.aiContent || null,
@@ -154,9 +171,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const persistedEntry = await persistBatchReport(message);
+        if (await batchRunner.report(persistedEntry, sender)) {
+          sendResponse({ ok: true });
+          return;
+        }
         // 失败等非提交结果同样要通知批量页，避免只能等到外层超时后才显示结果和页面指标。
         chrome.runtime.sendMessage({
           type: 'BATCH_CONFIRMED',
+          batchId: message.batchId,
           urlIndex: message.urlIndex,
           result: message.result || 'fail',
           aiContent: message.aiContent || null,

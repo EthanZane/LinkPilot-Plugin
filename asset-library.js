@@ -873,6 +873,15 @@
         depthInput.value = state.currentEditingAsset.page_depth != null ? state.currentEditingAsset.page_depth : '';
       }
     });
+
+    // 监听推广站点配置变动，实时自动同步目标站点下拉框
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes) => {
+        if (changes.promotion_sites_config || changes.promotion_website_url) {
+          loadPromotionSitesForAssetFilter();
+        }
+      });
+    }
   }
 
   let selectedImportFile = null;
@@ -895,23 +904,54 @@
    */
   async function loadPromotionSitesForAssetFilter() {
     try {
-      chrome.storage.local.get(['auto_comment_sites_config'], (data) => {
-        const config = data.auto_comment_sites_config;
-        const sites = (config && Array.isArray(config.sites)) ? config.sites : [];
-        state.availablePromotionSites = sites;
+      if (typeof chrome === 'undefined' || !chrome.storage) return;
+
+      const populateSelect = (sites) => {
+        const list = Array.isArray(sites) ? sites : [];
+        state.availablePromotionSites = list;
 
         const filterSelect = document.getElementById('assetFilterTargetDomain');
+        if (!filterSelect) return;
 
-        if (filterSelect) {
-          filterSelect.innerHTML = '<option value="">-- 选择目标站点 (隔离矩阵) --</option>';
-          sites.forEach((site) => {
-            const domain = normalizeDomain(site.url);
-            const opt = document.createElement('option');
-            opt.value = domain;
-            opt.textContent = `${site.name || domain} (${domain})`;
-            filterSelect.appendChild(opt);
-          });
+        const currentVal = filterSelect.value;
+        filterSelect.innerHTML = '<option value="">-- 选择目标站点 (隔离矩阵) --</option>';
+        list.forEach((site) => {
+          if (!site) return;
+          const siteUrl = site.url || site.websiteUrl;
+          if (!siteUrl) return;
+          const domain = normalizeDomain(siteUrl);
+          if (!domain) return;
+          const opt = document.createElement('option');
+          opt.value = domain;
+          opt.textContent = `${site.name || domain} (${domain})`;
+          filterSelect.appendChild(opt);
+        });
+
+        if (currentVal && Array.from(filterSelect.options).some((o) => o.value === currentVal)) {
+          filterSelect.value = currentVal;
         }
+      };
+
+      chrome.storage.local.get(['promotion_sites_config', 'promotion_website_url'], (localData) => {
+        const config = localData && localData.promotion_sites_config;
+        let sites = (config && Array.isArray(config.sites)) ? config.sites : [];
+
+        if (sites.length === 0 && chrome.storage.sync) {
+          chrome.storage.sync.get(['promotion_sites_config', 'promotion_website_url'], (syncData) => {
+            const syncConfig = syncData && syncData.promotion_sites_config;
+            let syncSites = (syncConfig && Array.isArray(syncConfig.sites)) ? syncConfig.sites : [];
+            if (syncSites.length === 0) {
+              const fallbackUrl = localData?.promotion_website_url || syncData?.promotion_website_url;
+              if (fallbackUrl) {
+                syncSites = [{ name: normalizeDomain(fallbackUrl), url: fallbackUrl }];
+              }
+            }
+            populateSelect(syncSites);
+          });
+          return;
+        }
+
+        populateSelect(sites);
       });
     } catch (_) {}
   }
@@ -920,6 +960,7 @@
    * 刷新指标概览与表格列表。
    */
   async function refreshAll() {
+    loadPromotionSitesForAssetFilter();
     await Promise.all([fetchSummary(), fetchAssets()]);
   }
 
